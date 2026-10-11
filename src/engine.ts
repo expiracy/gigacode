@@ -1,0 +1,737 @@
+import { createHash, randomUUID } from "node:crypto"
+import { resolve } from "node:path"
+import { parseConfig, resolveModel } from "./config.ts"
+import { validatePlan } from "./graph.ts"
+import { defaultExecutionPlan, defaultPlanningPlan, promptVersion, renderTaskPrompt } from "./workflow.ts"
+import { NoLaunchError, SettledLaunchError, UnsettledLaunchError } from "./types.ts"
+import type { Attempt, CheckEvidence, Config, HostAdapter, Invocation, Lease, Limits, ModelOptions, ModelRef, Plan, Rule, Run, Store, Task, TaskResult, TaskSpec } from "./types.ts"
+
+const terminalRuns = new Set<Run["status"]>(["ready", "succeeded", "partial", "failed", "cancelled"])
+const activeAttempts = new Set<Attempt["status"]>(["reserved", "running", "waiting_permission", "cancelling", "ambiguous"])
+const settledAttempts = new Set<Attempt["status"]>(["succeeded", "failed", "cancelled"])
+const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
+const latest = (task: Task) => task.attempts.at(-1)
+const busy = (run: Run) => run.tasks.some(task => task.attempts.some(attempt => activeAttempts.has(attempt.status)))
+const id = (prefix: string) => `${prefix}_${randomUUID().replaceAll("-", "")}`
+const unresolved = (finding: NonNullable<TaskResult["findings"]>[number]) => finding.blocking && !(finding.evidence?.trim() && ["fixed", "rejected"].includes(finding.disposition ?? ""))
+class ProjectOwnershipError extends Error {
+  constructor() { super("Project scheduler is owned by another process") }
+}
+interface Coordinator {
+  owner: string; lease?: Lease; users: number; heartbeat?: ReturnType<typeof setInterval>; failure?: unknown; stores: Map<Store, number>; driving: Set<string>
+}
+const coordinatorSymbol = Symbol.for("ultra.open-code.project-coordination.v1")
+const coordinatorMap: Map<string, Coordinator> = Reflect.get(globalThis, coordinatorSymbol) ?? new Map<string, Coordinator>()
+Reflect.set(globalThis, coordinatorSymbol, coordinatorMap)
+function coordinator(projectId: string, key?: string): Coordinator {
+  const identity = key ? `${projectId}:${process.platform === "win32" ? resolve(key).toLowerCase() : resolve(key)}` : undefined
+  if (identity && coordinatorMap.has(identity)) return coordinatorMap.get(identity)!
+  const value: Coordinator = { owner: id("owner"), users: 0, stores: new Map(), driving: new Set() }
+  if (identity) coordinatorMap.set(identity, value)
+  return value
+}
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((done, fail) => {
+    const finish = () => { clearTimeout(timer); signal.removeEventListener("abort", aborted); done() }
+    const aborted = () => { clearTimeout(timer); signal.removeEventListener("abort", aborted); fail(signal.reason ?? new Error("Invocation interrupted")) }
+    const timer = setTimeout(finish, ms)
+    signal.addEventListener("abort", aborted, { once: true }); if (signal.aborted) aborted()
+  })
+}
+
+export interface StartOptions {
+  objective: string; mode: "plan" | "execute"; parentSessionId: string; capturedModel: ModelRef; policy: Rule[]; modelOptions?: ModelOptions
+}
+
+/** Deterministic policy. Host side effects occur only through the permission-preserving adapter. */
+export class Engine {
+  private readonly coordination: Coordinator
+  private get owner() { return this.coordination.owner }
+  private get heldLease() { return this.coordination.lease }
+  private set heldLease(value: Lease | undefined) { this.coordination.lease = value }
+  private get leaseFailure() { return this.coordination.failure }
+  private get driving() { return this.coordination.driving }
+  constructor(private readonly store: Store, private readonly host: HostAdapter, readonly projectId: string, readonly directory: string, private readonly config: Config, coordinationKey?: string) {
+    this.coordination = coordinator(projectId, coordinationKey)
+  }
+
+  get(runId: string) { return this.store.get(runId) }
+  list() { return this.store.list(this.projectId) }
+  private required(runId: string): Run {
+    const run = this.store.get(runId)
+    if (!run || run.projectId !== this.projectId) throw new Error(`Unknown project run: ${runId}`)
+    return run
+  }
+  private audit(runId: string, kind: string, data?: unknown, attempt?: Attempt) {
+    this.store.event(this.projectId, { runId, kind, data, taskId: attempt?.taskId, attemptId: attempt?.id })
+  }
+  private change<T>(runId: string, fn: (run: Run) => T, lease = this.heldLease) {
+    this.required(runId)
+    if (this.leaseFailure) throw this.leaseFailure
+    if (lease) return this.store.mutate(runId, fn, lease)
+    const acquired = this.acquire()
+    try { return this.store.mutate(runId, fn, acquired) } finally { this.release() }
+  }
+  private project<T>(fn: (runs: Run[]) => T, lease = this.heldLease): T {
+    if (this.leaseFailure) throw this.leaseFailure
+    if (lease) return this.store.project(this.projectId, fn, lease)
+    const acquired = this.acquire()
+    try { return this.store.project(this.projectId, fn, acquired) } finally { this.release() }
+  }
+  private acquire(): Lease {
+    if (this.heldLease) {
+      this.heldLease = this.store.renew(this.heldLease, Date.now(), 30_000)
+      this.coordination.users++
+      this.coordination.stores.set(this.store, (this.coordination.stores.get(this.store) ?? 0) + 1)
+      return this.heldLease
+    }
+    const lease = this.store.lease(this.projectId, this.owner, Date.now(), 30_000)
+    if (!lease) throw new ProjectOwnershipError()
+    this.heldLease = lease; this.coordination.users++
+    this.coordination.stores.set(this.store, (this.coordination.stores.get(this.store) ?? 0) + 1)
+    this.coordination.failure = undefined
+    const shared = this.coordination
+    shared.heartbeat = setInterval(() => {
+      if (!shared.lease || shared.failure) return
+      const activeStore = shared.stores.keys().next().value
+      try { if (activeStore) shared.lease = activeStore.renew(shared.lease, Date.now(), 30_000) } catch (error) { shared.failure = error }
+    }, 5_000)
+    shared.heartbeat.unref()
+    return lease
+  }
+  private release() {
+    const shared = this.coordination, count = shared.stores.get(this.store) ?? 0
+    if (count <= 1) shared.stores.delete(this.store)
+    else shared.stores.set(this.store, count - 1)
+    if (--shared.users === 0 && this.heldLease) {
+      clearInterval(shared.heartbeat); shared.heartbeat = undefined
+      this.store.release(this.heldLease); this.heldLease = undefined; shared.failure = undefined
+    }
+  }
+  private async acquireWhenFree(signal: AbortSignal, runId?: string): Promise<void> {
+    let waiting = false
+    for (;;) {
+      signal.throwIfAborted()
+      try { this.acquire(); return } catch (error) {
+        if (!(error instanceof ProjectOwnershipError)) throw error
+        if (runId && !waiting) { this.audit(runId, "ownership.waiting", { directory: this.directory }); waiting = true }
+        await abortableDelay(100, signal)
+      }
+    }
+  }
+  async withOwnership<T>(signal: AbortSignal, work: () => Promise<T> | T): Promise<T> {
+    await this.acquireWhenFree(signal)
+    try { signal.throwIfAborted(); return await work() } finally { this.release() }
+  }
+  private newIntent(run: Run) {
+    run.intentId = id("intent"); run.intentExpiresAt = Date.now() + 300_000
+    if (run.supervisorSessionId) {
+      run.supervisorHistory ??= []
+      if (!run.supervisorHistory.includes(run.supervisorSessionId)) run.supervisorHistory.push(run.supervisorSessionId)
+    }
+    run.supervisorSessionId = undefined; run.supervisorAttempt = (run.supervisorAttempt ?? 0) + 1
+    run.continuation++
+  }
+
+  async start(options: StartOptions): Promise<Run> {
+    if (!options.objective.trim() || !options.parentSessionId) throw new Error("Objective and initiating session are required")
+    const workspaceHash = await this.host.workspace(this.directory)
+    const planning = defaultPlanningPlan(options.objective)
+    const execution = defaultExecutionPlan(options.objective, planning.criteria, this.config.checks)
+    const now = Date.now()
+    const run: Run = {
+      id: id("run"), projectId: this.projectId, directory: this.directory, parentSessionId: options.parentSessionId,
+      intentId: id("intent"), intentExpiresAt: now + 300_000, objective: options.objective, mode: options.mode,
+      status: "starting", phase: "planning", revision: planning.revision, plans: [planning],
+      tasks: planning.tasks.map(spec => ({ spec, status: "pending", attempts: [] })),
+      criteria: structuredClone(options.mode === "plan" ? planning.criteria : execution.criteria),
+      capturedModel: structuredClone(options.capturedModel), modelOptions: structuredClone(options.modelOptions ?? {}),
+      config: structuredClone(this.config), policy: structuredClone(options.policy), workspaceHash,
+      createdAt: now, updatedAt: now, activeMs: 0, repairRound: 0, continuation: 0, ownerEpoch: 0, generation: 0,
+      errors: [], notifications: [],
+    }
+    // Resolve every initial selection before admitting work; availability is never guessed or silently changed.
+    const catalog = await this.host.models()
+    for (const task of run.tasks) resolveModel(task.spec, run, catalog)
+    this.project(runs => {
+      if (runs.filter(saved => !terminalRuns.has(saved.status)).length >= this.config.limits.runs) throw new Error("Active run capacity is exhausted")
+      if (options.mode === "execute" && !this.config.parallelWrites && runs.some(saved => saved.mode === "execute" && (!terminalRuns.has(saved.status) || busy(saved)))) {
+        throw new Error("Another execution run owns the project writer reservation")
+      }
+      runs.push(run)
+    })
+    this.audit(run.id, "run.admitted", { mode: run.mode, objective: run.objective, intentId: run.intentId })
+    return this.required(run.id)
+  }
+
+  consumeStartIntent(runId: string, intentId: string, parentSessionId: string): void {
+    this.change(runId, run => {
+      if (run.parentSessionId !== parentSessionId || run.intentId !== intentId || run.intentExpiresAt <= Date.now() || run.supervisorSessionId || run.status !== "starting") {
+        throw new Error("Start intent is expired, consumed, or belongs to another initiating session")
+      }
+      run.intentExpiresAt = 0
+    })
+    this.audit(runId, "intent.consumed", { intentId, parentSessionId })
+  }
+  bindSupervisor(runId: string, intentId: string, sessionId: string): void {
+    this.change(runId, run => {
+      if (run.intentId !== intentId || run.intentExpiresAt !== 0 || run.supervisorSessionId || !sessionId || run.status !== "starting") throw new Error("Supervisor does not match a consumed start intent")
+      run.supervisorSessionId = sessionId; run.status = run.phase === "planning" ? "planning" : "running"
+      run.activeSince = Date.now()
+    })
+    this.audit(runId, "supervisor.bound", { intentId, sessionId })
+  }
+  async launchFailed(runId: string, error: unknown): Promise<Run> {
+    this.change(runId, run => {
+      if (terminalRuns.has(run.status) || ["paused", "cancelling"].includes(run.status)) return
+      if (run.supervisorSessionId) run.status = "recovering"
+      else if (!busy(run)) run.status = "waiting_input"
+      run.errors.push(`Supervisor launch failed: ${String(error)}`)
+    })
+    this.audit(runId, "supervisor.launch_failed", { error: String(error) })
+    return this.required(runId)
+  }
+
+  private attribution(sessionId: string): { run: Run; task: Task; attempt: Attempt } {
+    for (const run of this.list()) for (const task of run.tasks) for (const attempt of task.attempts) {
+      if (attempt.sessionId !== sessionId) continue
+      if (latest(task)?.id !== attempt.id || !["running", "waiting_permission"].includes(attempt.status) || terminalRuns.has(run.status) || ["cancelling", "recovering", "paused"].includes(run.status) || attempt.ownerEpoch !== run.ownerEpoch) {
+        throw new Error("Stale or settled worker submission is not accepted")
+      }
+      return { run, task, attempt }
+    }
+    throw new Error("Worker session is not bound to an attempt")
+  }
+  submit(sessionId: string, input: unknown): void {
+    const { run, task, attempt } = this.attribution(sessionId)
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Task result must be an object")
+    const result = input as TaskResult
+    if (typeof result.summary !== "string" || !result.summary.trim()) throw new Error("Task result summary is required")
+    if (result.needsInput !== undefined && (typeof result.needsInput !== "string" || !result.needsInput.trim())) throw new Error("A needsInput question must be nonempty text")
+    if (result.assessments) for (const assessment of result.assessments) {
+      const criterion = run.criteria.find(item => item.id === assessment.criterionId)
+      if (!criterion || criterion.kind !== "assessment" || typeof assessment.passed !== "boolean" || typeof assessment.explanation !== "string" || !assessment.explanation.trim()) throw new Error("Invalid criterion assessment")
+    }
+    if (result.findings) for (const finding of result.findings) {
+      if (typeof finding.id !== "string" || typeof finding.description !== "string" || typeof finding.blocking !== "boolean") throw new Error("Invalid review finding")
+      if (finding.disposition && !["fixed", "rejected", "deferred"].includes(finding.disposition)) throw new Error("Unknown finding disposition")
+    }
+    if (result.proposal) {
+      if (task.spec.stage !== "design" || !["planner", "synthesizer"].includes(task.spec.role)) throw new Error("Only bound design workers may propose an execution graph")
+      validatePlan(result.proposal, "execute", run.config, run.criteria, this.authorizedModels(run))
+    }
+    const resultHash = hash(result)
+    if (attempt.resultHash) {
+      if (attempt.resultHash === resultHash) return
+      throw new Error("A submitted result is immutable; corrections require another attempt")
+    }
+    this.change(run.id, saved => {
+      const current = saved.tasks.find(item => item.spec.id === task.spec.id)!.attempts.find(item => item.id === attempt.id)!
+      current.result = structuredClone(result); current.resultHash = resultHash
+    })
+    this.audit(run.id, "result.candidate", { sessionId, resultHash }, attempt)
+  }
+  evidence(sessionId: string, evidence: CheckEvidence): void {
+    const { run, task, attempt } = this.attribution(sessionId)
+    const check = run.config.checks.find(item => item.id === evidence.checkId)
+    if (!check || !task.spec.checkIds?.includes(check.id) || evidence.sessionId !== sessionId || evidence.attemptId !== attempt.id || evidence.taskId !== task.spec.id || evidence.command !== check.command || resolve(evidence.cwd) !== resolve(run.directory) || !evidence.callId || evidence.finishedAt < evidence.startedAt || hash(evidence.criterionIds.toSorted()) !== hash(check.criterionIds.toSorted())) {
+      throw new Error("Check evidence does not match the bound native invocation and approved check")
+    }
+    if (!evidence.id || !evidence.workspaceHash || !Number.isFinite(evidence.startedAt) || !Number.isFinite(evidence.finishedAt) || !["passed", "failed", "cancelled", "unknown"].includes(evidence.outcome) || evidence.exit !== null && !Number.isInteger(evidence.exit)) throw new Error("Malformed native check evidence")
+    if (evidence.outcome === "passed" && evidence.exit !== 0) throw new Error("A passed check requires native exit zero")
+    const recorded = this.change(run.id, saved => {
+      const current = saved.tasks.find(item => item.spec.id === task.spec.id)!.attempts.find(item => item.id === attempt.id)!
+      const existing = current.checks.find(item => item.id === evidence.id)
+      if (existing && hash(existing) !== hash(evidence)) throw new Error("Check evidence IDs are immutable")
+      if (!existing) { current.checks.push(structuredClone(evidence)); return true }
+      return false
+    })
+    if (recorded) this.audit(run.id, "check.recorded", { checkId: evidence.checkId, outcome: evidence.outcome, workspaceHash: evidence.workspaceHash }, attempt)
+  }
+  step(sessionId: string, usage?: { tokens?: number; cost?: number }): void {
+    const { run, task, attempt } = this.attribution(sessionId)
+    this.change(run.id, saved => {
+      const current = saved.tasks.find(item => item.spec.id === task.spec.id)!.attempts.find(item => item.id === attempt.id)!
+      current.steps++; if (usage?.tokens !== undefined) current.tokens = usage.tokens; if (usage?.cost !== undefined) current.cost = usage.cost
+    })
+  }
+
+  async drive(runId: string, invocation: Invocation): Promise<Run> {
+    if (this.driving.has(runId)) throw new Error("This run already has a scheduler invocation")
+    this.driving.add(runId)
+    let acquired = false
+    try {
+      await this.acquireWhenFree(invocation.signal, runId); acquired = true
+      for (;;) {
+        invocation.signal.throwIfAborted()
+        const run = await this.tick(runId, invocation, this.heldLease)
+        if (terminalRuns.has(run.status) || ["paused", "waiting_input", "waiting_budget"].includes(run.status)) return run
+        await abortableDelay(100, invocation.signal)
+      }
+    } catch (error) {
+      if (invocation.signal.aborted) {
+        if (acquired) this.change(runId, run => { if (!terminalRuns.has(run.status) && !["paused", "waiting_budget", "cancelling"].includes(run.status)) { run.previousStatus = run.status; run.status = "recovering" } })
+        this.audit(runId, "supervisor.interrupted", { sessionId: invocation.sessionId, waitingOwnership: !acquired })
+      }
+      throw error
+    } finally { this.driving.delete(runId); if (acquired) this.release() }
+  }
+
+  async tick(runId: string, invocation: Invocation, existingLease?: Lease): Promise<Run> {
+    const lease = existingLease ? this.store.renew(existingLease, Date.now(), 30_000) : this.acquire()
+    if (existingLease) this.heldLease = lease
+    try {
+      let run = this.required(runId)
+      if (run.supervisorSessionId !== invocation.sessionId) throw new Error("Scheduler invocation is not the bound supervisor")
+      if (terminalRuns.has(run.status) || ["paused", "waiting_input", "waiting_budget"].includes(run.status)) { await this.deliver(runId); return this.required(runId) }
+      this.change(runId, saved => { saved.ownerEpoch = lease.epoch }, lease)
+      await this.reconcile(runId, lease)
+      run = this.required(runId)
+      if (run.status === "cancelling") { await this.finishCancellation(runId, lease); return this.required(runId) }
+      if (run.status === "pausing") {
+        if (!busy(run)) this.change(runId, saved => { this.stopClock(saved); saved.status = saved.previousStatus === "waiting_budget" ? "waiting_budget" : "paused" }, lease)
+        return this.required(runId)
+      }
+      if (["waiting_input", "waiting_budget"].includes(run.status)) return run
+      const now = Date.now(), elapsed = now - run.createdAt, active = run.activeMs + (run.activeSince ? now - run.activeSince : 0)
+      if (elapsed >= run.config.limits.elapsedMs || active >= run.config.limits.runMs) {
+        this.change(runId, saved => { saved.previousStatus = "waiting_budget"; saved.status = busy(saved) ? "pausing" : "waiting_budget"; if (!busy(saved)) this.stopClock(saved); saved.errors.push("Run time budget exhausted") }, lease)
+        for (const task of run.tasks) for (const attempt of task.attempts) if (activeAttempts.has(attempt.status) && attempt.sessionId) {
+          await this.host.interrupt(attempt.sessionId)
+          this.change(runId, saved => { const current = saved.tasks.find(item => item.spec.id === task.spec.id)!.attempts.find(item => item.id === attempt.id)!; current.status = "cancelling" }, lease)
+        }
+        this.audit(runId, "budget.exhausted", { elapsed, active }); return this.required(runId)
+      }
+      const eligible = run.tasks.filter(task => task.status === "pending" && task.spec.dependencies.every(dependency => {
+        const before = run.tasks.find(item => item.spec.id === dependency)!
+        return before.status === "succeeded" || (!!task.spec.acceptsFailures && ["failed", "blocked", "skipped", "cancelled"].includes(before.status))
+      }))
+      const catalog = eligible.length ? await this.host.models() : []
+      const workspaceHash = await this.host.workspace(run.directory)
+      for (const candidate of eligible) {
+        invocation.signal.throwIfAborted()
+        run = this.required(runId)
+        const spec = candidate.spec
+        const model = resolveModel(spec, run, catalog)
+        let reservation: Attempt | undefined
+        this.store.project(this.projectId, runs => {
+          const saved = runs.find(item => item.id === runId)!, task = saved.tasks.find(item => item.spec.id === spec.id)!
+          if (task.status !== "pending" || !["planning", "running", "starting"].includes(saved.status)) return
+          const occupied = runs.flatMap(item => item.tasks.flatMap(task => task.attempts.filter(attempt => activeAttempts.has(attempt.status))))
+          if (occupied.length >= saved.config.limits.workers) return
+          if (spec.writes && !saved.config.parallelWrites && runs.some(item => item.tasks.some(task => task.spec.writes && task.attempts.some(attempt => activeAttempts.has(attempt.status))))) return
+          if (saved.tasks.reduce((total, task) => total + task.attempts.length, 0) >= saved.config.limits.attempts) {
+            saved.previousStatus = "waiting_budget"; saved.status = busy(saved) ? "pausing" : "waiting_budget"; if (!busy(saved)) this.stopClock(saved); saved.errors.push("Worker attempt budget exhausted"); return
+          }
+          const predecessorResults = saved.tasks.filter(item => spec.dependencies.includes(item.spec.id)).flatMap(item => {
+            const accepted = item.attempts.find(attempt => attempt.id === item.acceptedAttemptId) ?? (spec.acceptsFailures ? latest(item) : undefined)
+            return accepted?.result ? [{ taskId: item.spec.id, result: accepted.result }] : []
+          })
+          reservation = {
+            id: id("attempt"), taskId: spec.id, number: task.attempts.length + 1, status: "reserved", ownerEpoch: lease.epoch,
+            model, createdAt: Date.now(), workspaceHash, inputHash: hash({ objective: saved.objective, mode: saved.mode, revision: saved.revision, spec, model, predecessorResults, workspaceHash, clarifications: saved.clarifications ?? [], criteria: saved.criteria, policy: saved.policy, checks: saved.config.checks, promptVersion, customPrompts: saved.config.prompts ?? {} }),
+            prompt: "", checks: [], steps: 0, candidateHash: saved.candidateHash,
+          }
+          reservation.prompt = renderTaskPrompt(saved, spec, reservation, predecessorResults)
+          task.attempts.push(reservation); task.status = "running"; saved.ownerEpoch = lease.epoch
+          if (!saved.activeSince) saved.activeSince = Date.now()
+        }, lease)
+        if (!reservation) continue
+        const attempt = reservation as Attempt
+        this.audit(runId, "attempt.reserved", { model: attempt.model, inputHash: attempt.inputHash, prompt: attempt.prompt }, attempt)
+        try {
+          const admitted = await this.host.launch(this.required(runId), attempt, spec, invocation, async sessionId => {
+            this.change(runId, saved => {
+              const current = saved.tasks.find(task => task.spec.id === spec.id)!.attempts.find(item => item.id === attempt.id)!
+              if (current.status !== "reserved" || current.sessionId || saved.ownerEpoch !== lease.epoch || saved.status === "cancelling") throw new Error("Dispatch ownership changed before native prelaunch")
+              if (runsWithSession(this.list(), sessionId)) throw new Error("Native session is already bound")
+              current.sessionId = sessionId; current.status = "running"; current.startedAt = Date.now()
+            }, lease)
+            this.audit(runId, "attempt.bound", { sessionId }, attempt)
+          })
+          const bound = this.required(runId).tasks.find(item => item.spec.id === spec.id)!.attempts.find(item => item.id === attempt.id)!
+          if (!bound.sessionId || admitted.sessionId !== bound.sessionId) throw new Error("Native admission did not match persisted prelaunch binding")
+          this.audit(runId, "attempt.launched", { sessionId: admitted.sessionId }, attempt)
+        } catch (error) {
+          const bound = this.required(runId).tasks.find(item => item.spec.id === spec.id)!.attempts.find(item => item.id === attempt.id)!
+          if (error instanceof NoLaunchError && !bound.sessionId) {
+            this.change(runId, saved => {
+              const task = saved.tasks.find(item => item.spec.id === spec.id)!, current = task.attempts.find(item => item.id === attempt.id)!
+              current.status = saved.status === "cancelling" ? "cancelled" : "failed"; current.finishedAt = Date.now(); current.candidateHash = current.workspaceHash; current.error = error.message
+              task.status = current.status; saved.errors.push(`Native launch refused before child creation: ${error.message}`)
+            }, lease)
+            this.audit(runId, "attempt.not_launched", { error: error.message }, attempt)
+            continue
+          }
+          if ((error instanceof SettledLaunchError || error instanceof UnsettledLaunchError) && error.sessionId && (!bound.sessionId || bound.sessionId === error.sessionId)) {
+            let recorded = false
+            this.store.project(this.projectId, runs => {
+              const saved = runs.find(run => run.id === runId)!, task = saved.tasks.find(item => item.spec.id === spec.id)!, current = task.attempts.find(item => item.id === attempt.id)!
+              if (current.sessionId && current.sessionId !== error.sessionId) return
+              if (runs.some(run => run.supervisorSessionId === error.sessionId || run.supervisorHistory?.includes(error.sessionId) || run.tasks.some(task => task.attempts.some(other => other.id !== attempt.id && other.sessionId === error.sessionId)))) return
+              current.sessionId = error.sessionId; recorded = true
+              if (error instanceof SettledLaunchError) {
+                current.status = saved.status === "cancelling" ? "cancelled" : "failed"
+                current.finishedAt = Date.now(); current.candidateHash = current.workspaceHash; current.error = error.message; task.status = current.status
+                saved.errors.push(`Native child settled before release: ${error.message}`)
+              }
+            }, lease)
+            if (recorded) {
+              this.audit(runId, error instanceof SettledLaunchError ? "attempt.settled_before_release" : "attempt.cleanup_unconfirmed", { sessionId: error.sessionId, error: error.message }, attempt)
+              if (error instanceof SettledLaunchError) continue
+            }
+          }
+          this.change(runId, saved => {
+            const task = saved.tasks.find(item => item.spec.id === spec.id)!, current = task.attempts.find(item => item.id === attempt.id)!
+            current.status = "ambiguous"; current.error = String(error); task.status = saved.status === "cancelling" ? "cancelling" : "blocked"
+            if (saved.status !== "cancelling") saved.status = "waiting_input"
+            saved.errors.push(`Ambiguous launch ${current.id}: ${String(error)}; reconcile before retrying`)
+          }, lease)
+          this.audit(runId, "attempt.ambiguous", { error: String(error) }, attempt)
+          break
+        }
+      }
+      await this.finish(runId, await this.host.workspace(run.directory), lease)
+      return this.required(runId)
+    } finally { if (!existingLease) this.release() }
+  }
+
+  private stopClock(run: Run) {
+    if (run.activeSince) run.activeMs += Date.now() - run.activeSince
+    run.activeSince = undefined
+  }
+  private async reconcile(runId: string, lease?: Lease) {
+    const run = this.required(runId)
+    let gap = false
+    for (const task of run.tasks) for (const attempt of task.attempts) {
+      if (!activeAttempts.has(attempt.status) || !attempt.sessionId) continue
+      let snapshot
+      try { snapshot = await this.host.inspect(attempt.sessionId) } catch { snapshot = { sessionId: attempt.sessionId, state: "unknown" as const } }
+      if (snapshot.sessionId !== attempt.sessionId) snapshot = { sessionId: attempt.sessionId, state: "unknown" }
+      if (snapshot.state === "unknown") {
+        gap = true
+        this.change(runId, saved => { if (saved.status !== "cancelling") saved.status = "waiting_input" }, lease)
+        this.audit(runId, "snapshot.gap", { sessionId: attempt.sessionId }, attempt); continue
+      }
+      if (["running", "waiting_permission"].includes(snapshot.state)) {
+        if (lease) this.change(runId, saved => { const current = saved.tasks.find(item => item.spec.id === task.spec.id)!.attempts.find(item => item.id === attempt.id)!; current.ownerEpoch = lease.epoch }, lease)
+        const expired = attempt.startedAt !== undefined && Date.now() - attempt.startedAt >= run.config.limits.workerMs
+        const exhausted = attempt.steps >= run.config.limits.steps
+        if (expired || exhausted || run.status === "cancelling" && attempt.status !== "cancelling") {
+          await this.host.interrupt(attempt.sessionId)
+          this.change(runId, saved => { const t = saved.tasks.find(item => item.spec.id === task.spec.id)!, a = t.attempts.find(item => item.id === attempt.id)!; a.status = "cancelling"; a.error ??= expired ? "Worker deadline exhausted" : exhausted ? "Worker step budget exhausted" : "Run cancellation awaiting native settlement"; t.status = "cancelling" }, lease)
+        } else if (attempt.status !== "cancelling") {
+          this.change(runId, saved => { const t = saved.tasks.find(item => item.spec.id === task.spec.id)!, a = t.attempts.find(item => item.id === attempt.id)!; a.status = snapshot.state === "waiting_permission" ? "waiting_permission" : "running"; t.status = a.status }, lease)
+        }
+        continue
+      }
+      const workspaceHash = snapshot.workspaceHash ?? await this.host.workspace(run.directory)
+      this.change(runId, saved => {
+        const currentTask = saved.tasks.find(item => item.spec.id === task.spec.id)!, current = currentTask.attempts.find(item => item.id === attempt.id)!
+        if (lease) current.ownerEpoch = lease.epoch
+        current.finishedAt = Date.now(); current.candidateHash = workspaceHash
+        if (snapshot.tokens !== undefined) current.tokens = snapshot.tokens
+        if (snapshot.cost !== undefined) current.cost = snapshot.cost
+        if (snapshot.state === "succeeded" && current.result && current.status !== "cancelling" && saved.status !== "cancelling") {
+          current.status = "succeeded"; currentTask.status = "succeeded"; currentTask.acceptedAttemptId = current.id
+          if (currentTask.spec.writes) saved.candidateHash = workspaceHash
+          if (current.result.needsInput) { saved.status = "waiting_input"; saved.errors.push(current.result.needsInput) }
+        } else {
+          current.status = snapshot.state === "interrupted" || current.status === "cancelling" ? "cancelled" : "failed"
+          currentTask.status = current.status; current.error ??= snapshot.error ?? (current.result ? "Native worker did not succeed" : "Native success has no attributable task result")
+        }
+      }, lease)
+      this.audit(runId, "attempt.settled", { sessionId: attempt.sessionId, state: snapshot.state, workspaceHash }, attempt)
+    }
+    return gap
+  }
+
+  private async finish(runId: string, workspaceHash: string, lease?: Lease) {
+    const run = this.required(runId)
+    if (!["planning", "running", "starting"].includes(run.status) || busy(run)) return
+    // A failed dependency cannot leave a run silently pending forever.
+    this.change(runId, saved => {
+      for (const task of saved.tasks) if (task.status === "pending" && !task.spec.acceptsFailures && task.spec.dependencies.some(id => ["failed", "blocked", "cancelled", "skipped"].includes(saved.tasks.find(item => item.spec.id === id)!.status))) task.status = "blocked"
+    }, lease)
+    const refreshed = this.required(runId)
+    if (refreshed.tasks.some(task => task.status === "pending")) return
+    const results = refreshed.tasks.filter(task => task.status === "succeeded").map(task => ({ task, attempt: task.attempts.find(attempt => attempt.id === task.acceptedAttemptId)! }))
+    const failed = refreshed.tasks.some(task => ["failed", "blocked", "cancelled"].includes(task.status))
+    if (refreshed.phase === "planning") {
+      if (failed) return this.terminal(runId, "partial", "Planning did not obtain every required result", lease)
+      const proposed = results.toReversed().find(item => item.attempt.result?.proposal)?.attempt.result?.proposal
+      let proposal = proposed ?? defaultExecutionPlan(refreshed.objective, refreshed.criteria, refreshed.config.checks)
+      // A plan-only run stores an execution proposal but never admits writers by itself.
+      proposal = validatePlan(proposal, "execute", refreshed.config, refreshed.criteria, this.authorizedModels(refreshed))
+      const planningCriteria = refreshed.plans[0]!.criteria.filter(criterion => criterion.required && criterion.kind === "assessment")
+      const assessments = results.flatMap(item => item.attempt.result?.assessments ?? [])
+      const assessment = planningCriteria.length > 0 && planningCriteria.every(criterion => assessments.some(value => value.criterionId === criterion.id && value.passed) && !assessments.some(value => value.criterionId === criterion.id && !value.passed))
+      const blockers = results.flatMap(item => item.attempt.result?.findings ?? []).some(unresolved)
+      if (!assessment || blockers) return this.terminal(runId, "partial", "Proposal lacks a passing requirement assessment or has blocking critique", lease)
+      this.change(runId, saved => {
+        const revision = Math.max(saved.revision + 1, proposal.revision)
+        proposal = { ...proposal, revision }; saved.proposal = proposal; saved.plans.push(proposal); saved.revision = revision; saved.workspaceHash = workspaceHash
+        if (saved.mode === "plan") { this.stopClock(saved); saved.status = "ready" }
+        else { saved.phase = "execution"; saved.status = "running"; saved.criteria = proposal.criteria; this.addExecutionTasks(saved, proposal) }
+      }, lease)
+      this.audit(runId, "proposal.saved", { revision: proposal.revision, workspaceHash });
+      if (this.required(runId).status === "ready") {
+        this.change(runId, saved => saved.notifications.push({ id: id("notification"), text: `Design ready for review: saved proposal revision ${proposal.revision}`, delivered: false }), lease)
+        await this.deliver(runId)
+      }
+      return
+    }
+    const currentReviews = results.filter(item => item.task.spec.role === "reviewer" && item.task.spec.stage === "review" && item.attempt.workspaceHash === workspaceHash && (refreshed.repairRound === 0 || item.task.spec.id === `repair.review.${refreshed.repairRound}`))
+    const blocking = currentReviews.flatMap(item => item.attempt.result?.findings ?? []).filter(unresolved)
+    const candidateHash = refreshed.candidateHash ?? refreshed.workspaceHash
+    const freshChecks = results.flatMap(item => item.attempt.checks).filter(check => check.workspaceHash === candidateHash && candidateHash === workspaceHash)
+    const lastChecks = new Map<string, CheckEvidence>()
+    for (const check of freshChecks.toSorted((left, right) => left.finishedAt - right.finishedAt)) lastChecks.set(check.checkId, check)
+    const checks = [...lastChecks.values()].filter(check => check.outcome === "passed" && check.exit === 0)
+    const failedCheck = [...lastChecks.values()].some(check => check.outcome !== "passed" || check.exit !== 0)
+    const requiredChecks = refreshed.config.checks.filter(check => check.criterionIds.some(id => refreshed.criteria.some(criterion => criterion.id === id && criterion.required)) || refreshed.tasks.some(task => task.spec.checkIds?.includes(check.id)))
+    const nativeChecksCovered = requiredChecks.length > 0 && requiredChecks.every(check => lastChecks.get(check.id)?.outcome === "passed" && lastChecks.get(check.id)?.exit === 0)
+    const assessments = results.filter(item => !item.task.spec.writes && item.attempt.workspaceHash === workspaceHash).flatMap(item => item.attempt.result?.assessments ?? [])
+    const covered = refreshed.criteria.filter(item => item.required).every(criterion => criterion.kind === "check" ? checks.some(check => check.criterionIds.includes(criterion.id)) : assessments.some(item => item.criterionId === criterion.id && item.passed) && !assessments.some(item => item.criterionId === criterion.id && !item.passed))
+    if (!failed && !failedCheck && nativeChecksCovered && currentReviews.length > 0 && !blocking.length && covered && refreshed.criteria.some(item => item.required && item.kind === "check")) {
+      return this.terminal(runId, "succeeded", "Required assessments and fresh native checks passed", lease)
+    }
+    if (refreshed.repairRound < refreshed.config.limits.repairRounds && (failed || failedCheck || !nativeChecksCovered || blocking.length || !covered)) {
+      this.repair(runId, workspaceHash, lease); return
+    }
+    await this.terminal(runId, "partial", "Required verification or review remains unresolved", lease)
+  }
+  private async terminal(runId: string, status: Run["status"], text: string, lease?: Lease) {
+    this.change(runId, saved => { this.stopClock(saved); saved.status = status; if (status !== "succeeded") saved.errors.push(text); saved.notifications.push({ id: id("notification"), text, delivered: false }) }, lease)
+    this.audit(runId, "run.terminal", { status, text })
+    await this.deliver(runId)
+  }
+  private async deliver(runId: string) {
+    const run = this.required(runId)
+    for (const notification of run.notifications.filter(item => !item.delivered)) {
+      try {
+        await this.host.publish(run, notification.id, notification.text)
+        this.change(runId, saved => { const current = saved.notifications.find(item => item.id === notification.id)!; current.delivered = true })
+        this.audit(runId, "notification.delivered", { id: notification.id })
+      } catch (error) { this.audit(runId, "notification.pending", { id: notification.id, error: String(error) }) }
+    }
+  }
+  private repair(runId: string, workspaceHash: string, lease?: Lease) {
+    const saved = this.required(runId)
+    if (saved.tasks.length + 3 > saved.config.limits.attempts || saved.tasks.reduce((total, task) => total + task.attempts.length, 0) + 3 > saved.config.limits.attempts) {
+      this.change(runId, run => { this.stopClock(run); run.status = "waiting_budget"; run.errors.push("Repair graph requires additional worker attempt budget") }, lease)
+      this.audit(runId, "budget.exhausted", { reason: "repair_attempts" })
+      return
+    }
+    this.change(runId, run => {
+      const round = ++run.repairRound, implement = `repair.write.${round}`, review = `repair.review.${round}`, verify = `repair.verify.${round}`
+      const tasks: TaskSpec[] = [
+        { id: implement, title: `Repair round ${round}`, role: "implementer", stage: "implementation", instructions: "Resolve recorded blocking findings and failed checks without changing acceptance criteria.", dependencies: run.tasks.map(task => task.spec.id), acceptsFailures: true, writes: true, ownedPaths: ["**"] },
+        { id: review, title: `Review repair ${round}`, role: "reviewer", stage: "review", instructions: "Independently assess the repaired candidate and submit request assessments and concrete findings.", dependencies: [implement], writes: false },
+        { id: verify, title: `Verify repair ${round}`, role: "verifier", stage: "verification", instructions: "Run every configured native check against the repaired candidate and report evidence.", dependencies: [implement], writes: false, checkIds: run.config.checks.map(check => check.id) },
+      ]
+      const plan = validatePlan({ revision: run.revision + 1, tasks: [...run.tasks.map(task => task.spec), ...tasks], criteria: run.criteria, rationale: `Bounded repair round ${round}` }, "execute", run.config, run.criteria, this.authorizedModels(run))
+      run.revision = plan.revision; run.plans.push(plan); run.tasks.push(...tasks.map(spec => ({ spec, status: "pending" as const, attempts: [] }))); run.candidateHash = workspaceHash
+      // Previous failures remain in immutable history but no longer block the replacement repair graph.
+      for (const task of run.tasks) if (["failed", "blocked", "cancelled"].includes(task.status)) task.status = "skipped"
+    }, lease)
+    this.audit(runId, "plan.repaired", { round: this.required(runId).repairRound })
+  }
+
+  async pause(runId: string): Promise<Run> {
+    this.change(runId, run => {
+      if (["ready", "paused", "succeeded", "partial", "failed", "cancelled"].includes(run.status)) return
+      if (run.status === "cancelling") throw new Error("Cancellation cannot be paused")
+      run.previousStatus = run.status; run.status = busy(run) ? "pausing" : "paused"; if (!busy(run)) this.stopClock(run)
+    })
+    this.audit(runId, "run.pause"); return this.required(runId)
+  }
+  async resume(runId: string): Promise<Run> {
+    await this.recover(runId)
+    const reconciled = this.required(runId)
+    if (this.questions(reconciled).length) throw new Error("Unanswered worker input requires provideInput before resume")
+    if (await this.host.workspace(reconciled.directory) !== (reconciled.candidateHash ?? reconciled.workspaceHash)) throw new Error("Resume workspace is stale; replan before dispatching more work")
+    this.project(runs => {
+      const run = runs.find(item => item.id === runId)!
+      if (!["paused", "waiting_input", "waiting_budget"].includes(run.status)) throw new Error("Only paused or waiting runs can resume")
+      if (run.tasks.some(task => task.attempts.some(attempt => attempt.status === "ambiguous"))) throw new Error("Ambiguous launches must be reconciled before resume")
+      this.readmission(runs, run)
+      this.newIntent(run); run.status = "starting"
+    })
+    this.audit(runId, "run.resume"); return this.required(runId)
+  }
+  private questions(run: Run) {
+    return run.tasks.flatMap(task => {
+      const attempt = task.attempts.find(item => item.id === task.acceptedAttemptId)
+      const question = attempt?.result?.needsInput
+      return question && !run.clarifications?.some(item => item.taskId === task.spec.id && item.question === question && item.at >= (attempt!.finishedAt ?? attempt!.createdAt)) ? [{ task, attempt: attempt!, question }] : []
+    })
+  }
+  async provideInput(runId: string, answer: string): Promise<Run> {
+    if (typeof answer !== "string" || !answer.trim()) throw new Error("A nonempty user answer is required")
+    const lease = this.acquire()
+    try {
+      const run = this.required(runId), question = this.questions(run)[0]
+      if (run.status !== "waiting_input" || !question) throw new Error("This run has no unanswered worker question")
+      const interrupted = new Set<string>()
+      for (const task of run.tasks) for (const attempt of task.attempts) if (activeAttempts.has(attempt.status) && attempt.sessionId) {
+        interrupted.add(task.spec.id)
+        this.change(runId, saved => { const current = saved.tasks.find(item => item.spec.id === task.spec.id)!.attempts.find(item => item.id === attempt.id)!; current.status = "cancelling" }, lease)
+        try { await this.host.interrupt(attempt.sessionId) } catch (error) { this.audit(runId, "interrupt.unconfirmed", { sessionId: attempt.sessionId, error: String(error) }, attempt) }
+      }
+      const deadline = Date.now() + 2_000
+      for (;;) {
+        const gap = await this.reconcile(runId, lease)
+        if (!busy(this.required(runId)) || gap || Date.now() >= deadline) break
+        await new Promise(done => setTimeout(done, 25))
+      }
+      if (busy(this.required(runId))) {
+        this.audit(runId, "input.waiting_settlement", { taskId: question.task.spec.id })
+        return this.required(runId)
+      }
+      const workspaceHash = await this.host.workspace(run.directory)
+      this.project(runs => {
+        const saved = runs.find(item => item.id === runId)!
+        if (saved.status !== "waiting_input" || this.questions(saved)[0]?.attempt.id !== question.attempt.id) throw new Error("Worker question changed before the answer could be recorded")
+        const reset = new Set([question.task.spec.id, ...interrupted])
+        for (const task of saved.tasks) if (task.attempts.some(attempt => attempt.id === task.acceptedAttemptId && attempt.workspaceHash !== workspaceHash)) reset.add(task.spec.id)
+        let changed = true
+        while (changed) {
+          changed = false
+          for (const task of saved.tasks) if (!reset.has(task.spec.id) && task.spec.dependencies.some(id => reset.has(id))) { reset.add(task.spec.id); changed = true }
+        }
+        saved.clarifications ??= []
+        saved.clarifications.push({ taskId: question.task.spec.id, question: question.question, answer: answer.trim(), at: Date.now() })
+        for (const task of saved.tasks) if (reset.has(task.spec.id)) { task.status = "pending"; task.acceptedAttemptId = undefined }
+        saved.workspaceHash = workspaceHash; if (saved.phase === "execution") saved.candidateHash = workspaceHash
+        if (!this.questions(saved).length) { this.readmission(runs, saved); this.newIntent(saved); saved.status = "starting" }
+      }, lease)
+      this.audit(runId, "input.provided", { taskId: question.task.spec.id, question: question.question, answer: answer.trim() })
+      return this.required(runId)
+    } finally { this.release() }
+  }
+  setBudget(runId: string, overrides: Partial<Limits>): Run {
+    const run = this.required(runId), limits = parseConfig({ limits: { ...run.config.limits, ...overrides } }).limits
+    for (const key of Object.keys(run.config.limits) as (keyof Limits)[]) if (limits[key] < run.config.limits[key]) throw new Error("Explicit budget updates may only increase limits")
+    this.change(runId, saved => {
+      if (!["waiting_budget", "paused", "waiting_input"].includes(saved.status)) throw new Error("Budgets can only be updated while a run is waiting or paused")
+      saved.config.limits = limits
+    })
+    this.audit(runId, "budget.updated", { previous: run.config.limits, limits })
+    return this.required(runId)
+  }
+  async cancel(runId: string): Promise<Run> {
+    const run = this.required(runId)
+    if (terminalRuns.has(run.status) && run.status !== "ready") return run
+    this.change(runId, saved => { saved.status = "cancelling"; for (const task of saved.tasks) for (const attempt of task.attempts) if (activeAttempts.has(attempt.status) && attempt.sessionId) { attempt.status = "cancelling"; task.status = "cancelling" } })
+    for (const task of this.required(runId).tasks) for (const attempt of task.attempts) if (activeAttempts.has(attempt.status) && attempt.sessionId) {
+      try { await this.host.interrupt(attempt.sessionId) } catch (error) { this.audit(runId, "interrupt.unconfirmed", { sessionId: attempt.sessionId, error: String(error) }, attempt) }
+    }
+    const deadline = Date.now() + 2_000
+    for (;;) {
+      const gap = await this.reconcile(runId, this.heldLease)
+      await this.finishCancellation(runId, this.heldLease)
+      const current = this.required(runId)
+      if (!busy(current) || gap || current.tasks.some(task => task.attempts.some(attempt => activeAttempts.has(attempt.status) && !attempt.sessionId)) || Date.now() >= deadline) break
+      await new Promise(done => setTimeout(done, 25))
+    }
+    this.audit(runId, "run.cancel"); return this.required(runId)
+  }
+  private async finishCancellation(runId: string, lease?: Lease) {
+    if (!busy(this.required(runId))) {
+      this.change(runId, run => { for (const task of run.tasks) if (task.status === "pending") task.status = "cancelled" }, lease)
+      await this.terminal(runId, "cancelled", "Cancellation settled; partial artifacts are retained", lease)
+    }
+  }
+  async recover(runId?: string): Promise<Run[]> {
+    const target = runId ? this.required(runId) : undefined
+    if (target && resolve(target.directory) !== resolve(this.directory)) throw new Error("Recovery requires the run's owning location")
+    const runs = (target ? [target] : this.list().filter(run => resolve(run.directory) === resolve(this.directory))).filter(run => !this.driving.has(run.id))
+    const lease = this.acquire()
+    try {
+      for (const run of runs) {
+        const preserve = ["paused", "ready", "succeeded", "partial", "failed", "cancelled"].includes(run.status)
+        this.change(run.id, saved => {
+          if (!preserve) saved.ownerEpoch = lease.epoch
+            if (!preserve && saved.supervisorSessionId && this.store.events(this.projectId, saved.id).some(event => event.kind === "supervisor.interrupted" && (event.data as { sessionId?: string; waitingOwnership?: boolean }).sessionId === saved.supervisorSessionId && (event.data as { waitingOwnership?: boolean }).waitingOwnership)) saved.status = "recovering"
+          if (saved.status === "starting" && !saved.supervisorSessionId && saved.intentExpiresAt > 0 && saved.intentExpiresAt <= Date.now()) { saved.status = "waiting_input"; saved.errors.push("Unconsumed start intent expired; resume creates a fresh intent") }
+          for (const task of saved.tasks) for (const attempt of task.attempts) if (activeAttempts.has(attempt.status) && !attempt.sessionId) {
+            attempt.status = "ambiguous"; task.status = "blocked"; if (saved.status !== "cancelling" && !preserve) saved.status = "waiting_input"
+          }
+        }, lease)
+        if (!preserve) await this.reconcile(run.id, lease)
+        if (this.required(run.id).status === "recovering") this.change(run.id, saved => { saved.status = "waiting_input"; saved.errors.push("Supervisor stopped; native attempts reconciled before explicit continuation") }, lease)
+        if (this.required(run.id).status === "cancelling") await this.finishCancellation(run.id, lease)
+        await this.deliver(run.id)
+        this.audit(run.id, "run.reconciled", { preserved: preserve })
+      }
+      return runs.map(run => this.required(run.id))
+    } finally { this.release() }
+  }
+  async runSaved(runId: string, revision: number): Promise<Run> {
+    const run = this.required(runId)
+    if (run.status !== "ready" || !run.proposal || run.proposal.revision !== revision) throw new Error("Saved proposal revision is not ready for execution")
+    const workspaceHash = await this.host.workspace(run.directory)
+    if (workspaceHash !== run.workspaceHash) throw new Error("Saved proposal workspace is stale")
+    const plan = validatePlan(run.proposal, "execute", run.config, run.criteria, this.authorizedModels(run))
+    this.project(runs => {
+      const saved = runs.find(item => item.id === runId)!
+      if (saved.status !== "ready" || saved.proposal?.revision !== revision || saved.workspaceHash !== workspaceHash) throw new Error("Saved proposal changed before execution admission")
+      this.readmission(runs, saved, true)
+      saved.mode = "execute"; saved.phase = "execution"; this.addExecutionTasks(saved, plan); saved.criteria = plan.criteria
+      this.newIntent(saved); saved.status = "starting"
+    })
+    this.audit(runId, "proposal.executing", { revision }); return this.required(runId)
+  }
+  async retry(runId: string, taskId: string): Promise<Run> {
+    const run = this.required(runId), task = run.tasks.find(item => item.spec.id === taskId), attempt = task && latest(task)
+    if (!task || !attempt || !settledAttempts.has(attempt.status) || !["failed", "cancelled", "blocked"].includes(task.status)) throw new Error("Retry requires a settled failed attempt")
+    const affected = this.dependencyClosure(run, [taskId]), snapshots = new Map<string, string | undefined>()
+    for (const affectedTask of run.tasks.filter(item => affected.has(item.spec.id))) {
+      if (affectedTask.attempts.some(attempt => activeAttempts.has(attempt.status))) throw new Error("Dependent workers must be settled before retry invalidates their inputs")
+      const before = latest(affectedTask)
+      snapshots.set(affectedTask.spec.id, before?.id)
+      if (before?.sessionId && !["succeeded", "failed", "interrupted"].includes((await this.host.inspect(before.sessionId)).state)) throw new Error("Old worker or dependent worker has not settled")
+    }
+    if (await this.host.workspace(run.directory) !== (attempt.candidateHash ?? attempt.workspaceHash)) throw new Error("Retry inputs are stale")
+    this.project(runs => {
+      const saved = runs.find(item => item.id === runId)!
+      this.readmission(runs, saved)
+      if (latest(saved.tasks.find(item => item.spec.id === taskId)!)?.id !== attempt.id) throw new Error("Retry attempt changed during admission")
+      for (const affectedTask of saved.tasks.filter(item => affected.has(item.spec.id))) {
+        if (latest(affectedTask)?.id !== snapshots.get(affectedTask.spec.id) || affectedTask.attempts.some(attempt => activeAttempts.has(attempt.status))) throw new Error("Dependent attempt changed during retry admission")
+        affectedTask.status = "pending"; affectedTask.acceptedAttemptId = undefined
+      }
+      if (terminalRuns.has(saved.status) || ["paused", "waiting_input", "waiting_budget"].includes(saved.status)) { this.newIntent(saved); saved.status = "starting" }
+    })
+    this.audit(runId, "task.retry", { taskId }); return this.required(runId)
+  }
+  private authorizedModels(run: Run): string[] {
+    const captured = `${run.capturedModel.providerID}/${run.capturedModel.id}${run.capturedModel.variant ? `#${run.capturedModel.variant}` : ""}`
+    return [captured, run.modelOptions.default, ...Object.values(run.modelOptions.roles ?? {}), ...Object.values(run.modelOptions.stages ?? {})].filter((value): value is string => typeof value === "string")
+  }
+  private dependencyClosure(run: Run, seeds: Iterable<string>): Set<string> {
+    const closure = new Set(seeds)
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const task of run.tasks) if (!closure.has(task.spec.id) && task.spec.dependencies.some(id => closure.has(id))) { closure.add(task.spec.id); changed = true }
+    }
+    return closure
+  }
+  private readmission(runs: Run[], run: Run, execution = run.mode === "execute") {
+    if (runs.filter(saved => saved.id !== run.id && !terminalRuns.has(saved.status)).length >= run.config.limits.runs) throw new Error("Active run capacity is exhausted")
+    if (execution && !run.config.parallelWrites && runs.some(saved => saved.id !== run.id && saved.mode === "execute" && (!terminalRuns.has(saved.status) || busy(saved)))) throw new Error("Another execution owns the project writer reservation")
+  }
+  private addExecutionTasks(run: Run, plan: Plan): void {
+    for (const spec of plan.tasks) {
+      const previous = run.tasks.find(task => task.spec.id === spec.id)
+      if (previous && hash(previous.spec) !== hash(spec)) throw new Error(`Execution proposal redefines historical task ${spec.id}`)
+      if (!previous) run.tasks.push({ spec, status: "pending", attempts: [] })
+    }
+  }
+}
+
+function runsWithSession(runs: Run[], sessionId: string): boolean {
+  return runs.some(run => run.supervisorSessionId === sessionId || run.supervisorHistory?.includes(sessionId) || run.tasks.some(task => task.attempts.some(attempt => attempt.sessionId === sessionId)))
+}

@@ -1,0 +1,154 @@
+{
+  "testedAt": "2026-10-11",
+  "hostVersion": "2.0.25",
+  "platform": "win32",
+  "hostRuntime": "1.4.2",
+  "hostProfile": "CLI serve --service",
+  "apiSourceReference": "b44eea9e204024db2b480a136ece29d790d5f593",
+  "evidence": ".spike/run-1791722976141/report.json",
+  "checks": [
+    {
+      "name": "plugin registration and SQLite runtime",
+      "status": "pass",
+      "durationMs": 17,
+      "error": null
+    },
+    {
+      "name": "deterministic command avoids model requests",
+      "status": "pass",
+      "durationMs": 21,
+      "error": null
+    },
+    {
+      "name": "genuine tool context and selected model",
+      "status": "pass",
+      "durationMs": 163,
+      "error": null
+    },
+    {
+      "name": "background child and prelaunch permission installation",
+      "status": "pass",
+      "durationMs": 251,
+      "error": null
+    },
+    {
+      "name": "concurrent native children keep distinct invocation bindings",
+      "status": "pass",
+      "durationMs": 321,
+      "error": null
+    },
+    {
+      "name": "permission ask suspends tool admission",
+      "status": "pass",
+      "durationMs": 975,
+      "error": null
+    },
+    {
+      "name": "permission rejection prevents native execution",
+      "status": "pass",
+      "durationMs": 155,
+      "error": null
+    },
+    {
+      "name": "read-only child cannot bypass native write restrictions",
+      "status": "pass",
+      "durationMs": 253,
+      "error": null
+    },
+    {
+      "name": "supervisor can dispatch a worker at depth two",
+      "status": "pass",
+      "durationMs": 456,
+      "error": null
+    },
+    {
+      "name": "unavailable model is rejected without fallback",
+      "status": "pass",
+      "durationMs": 175,
+      "error": null
+    },
+    {
+      "name": "queued prompt does not interrupt an active tool",
+      "status": "pass",
+      "durationMs": 1689,
+      "error": null
+    },
+    {
+      "name": "native completion waits for the active parent tool's step boundary",
+      "status": "pass",
+      "durationMs": 2227,
+      "error": null
+    },
+    {
+      "name": "cancellation reaches the real tool abort signal",
+      "status": "pass",
+      "durationMs": 181,
+      "error": null
+    },
+    {
+      "name": "background child cancellation is acknowledged before release",
+      "status": "pass",
+      "durationMs": 236,
+      "error": null
+    },
+    {
+      "name": "prelaunch failure never prompts a child",
+      "status": "pass",
+      "durationMs": 186,
+      "error": null
+    },
+    {
+      "name": "native check returns structured evidence",
+      "status": "pass",
+      "durationMs": 750,
+      "error": null
+    },
+    {
+      "name": "foreign location ownership is rejected",
+      "status": "pass",
+      "durationMs": 13,
+      "error": null
+    },
+    {
+      "name": "host events are deduplicated",
+      "status": "pass",
+      "durationMs": 19,
+      "error": null
+    },
+    {
+      "name": "plugin reload cleans registrations and preserves state",
+      "status": "pass",
+      "durationMs": 196,
+      "error": null
+    },
+    {
+      "name": "service restart resumes the same background child",
+      "status": "pass",
+      "durationMs": 923,
+      "error": null
+    },
+    {
+      "name": "SQLite and native session snapshots survive host restart",
+      "status": "pass",
+      "durationMs": 707,
+      "error": null
+    },
+    {
+      "name": "native session.log supplies historical events",
+      "status": "unsupported",
+      "durationMs": 256,
+      "error": "Error: Installed CLI supplies synchronization markers but no historical session events; reconcile snapshots and persist observed events in our database"
+    },
+    {
+      "name": "native worktrees, placement, event filtering, and dirty protection",
+      "status": "pass",
+      "durationMs": 2876,
+      "error": null
+    }
+  ],
+  "unitTests": {
+    "passed": 8,
+    "failed": 0
+  },
+  "typecheck": "passed"
+}
