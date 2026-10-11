@@ -294,6 +294,18 @@ export class Engine {
       this.change(runId, saved => { saved.ownerEpoch = lease.epoch }, lease)
       await this.reconcile(runId, lease)
       run = this.required(runId)
+      if (run.status === "recovering") {
+        // This fresh, bound invocation proves that the old driver has drained and its owner is live.
+        // Reuse reconciled attempts; never turn an unbound launch or unanswered question into dispatch.
+        this.change(runId, saved => {
+          for (const task of saved.tasks) for (const attempt of task.attempts) if (activeAttempts.has(attempt.status) && !attempt.sessionId) {
+            attempt.status = "ambiguous"; task.status = "blocked"; saved.status = "waiting_input"
+          }
+          if (saved.status === "recovering") saved.status = this.questions(saved).length ? "waiting_input" : saved.previousStatus === "pausing" ? "pausing" : saved.phase === "planning" ? "planning" : "running"
+        }, lease)
+        this.audit(runId, "supervisor.reentered", { sessionId: invocation.sessionId, status: this.required(runId).status })
+        run = this.required(runId)
+      }
       if (run.status === "cancelling") { await this.finishCancellation(runId, lease); return this.required(runId) }
       if (run.status === "pausing") {
         if (!busy(run)) this.change(runId, saved => { this.stopClock(saved); saved.status = saved.previousStatus === "waiting_budget" ? "waiting_budget" : "paused" }, lease)
@@ -313,12 +325,16 @@ export class Engine {
         const before = run.tasks.find(item => item.spec.id === dependency)!
         return before.status === "succeeded" || (!!task.spec.acceptsFailures && ["failed", "blocked", "skipped", "cancelled"].includes(before.status))
       }))
+      if (!eligible.length && busy(run)) return run
       const catalog = eligible.length ? await this.host.models() : []
-      const workspaceHash = await this.host.workspace(run.directory)
+      let workspaceHash: string | undefined
       for (const candidate of eligible) {
         invocation.signal.throwIfAborted()
         run = this.required(runId)
         const spec = candidate.spec
+        const occupied = this.list().flatMap(saved => saved.tasks.flatMap(task => task.attempts.filter(attempt => activeAttempts.has(attempt.status)).map(() => task)))
+        if (occupied.length >= run.config.limits.workers || spec.writes && !run.config.parallelWrites && occupied.some(task => task.spec.writes)) continue
+        const inputWorkspaceHash = workspaceHash ??= await this.host.workspace(run.directory)
         const model = resolveModel(spec, run, catalog)
         let reservation: Attempt | undefined
         this.store.project(this.projectId, runs => {
@@ -336,7 +352,7 @@ export class Engine {
           })
           reservation = {
             id: id("attempt"), taskId: spec.id, number: task.attempts.length + 1, status: "reserved", ownerEpoch: lease.epoch,
-            model, createdAt: Date.now(), workspaceHash, inputHash: hash({ objective: saved.objective, mode: saved.mode, revision: saved.revision, spec, model, predecessorResults, workspaceHash, clarifications: saved.clarifications ?? [], criteria: saved.criteria, policy: saved.policy, checks: saved.config.checks, promptVersion, customPrompts: saved.config.prompts ?? {} }),
+            model, createdAt: Date.now(), workspaceHash: inputWorkspaceHash, inputHash: hash({ objective: saved.objective, mode: saved.mode, revision: saved.revision, spec, model, predecessorResults, workspaceHash: inputWorkspaceHash, clarifications: saved.clarifications ?? [], criteria: saved.criteria, policy: saved.policy, checks: saved.config.checks, promptVersion, customPrompts: saved.config.prompts ?? {} }),
             prompt: "", checks: [], steps: 0, candidateHash: saved.candidateHash,
           }
           reservation.prompt = renderTaskPrompt(saved, spec, reservation, predecessorResults)
@@ -398,7 +414,7 @@ export class Engine {
           break
         }
       }
-      await this.finish(runId, await this.host.workspace(run.directory), lease)
+      if (!busy(this.required(runId))) await this.finish(runId, await this.host.workspace(run.directory), lease)
       return this.required(runId)
     } finally { if (!existingLease) this.release() }
   }
@@ -415,6 +431,8 @@ export class Engine {
       let snapshot
       try { snapshot = await this.host.inspect(attempt.sessionId) } catch { snapshot = { sessionId: attempt.sessionId, state: "unknown" as const } }
       if (snapshot.sessionId !== attempt.sessionId) snapshot = { sessionId: attempt.sessionId, state: "unknown" }
+      const current = this.required(runId).tasks.find(item => item.spec.id === task.spec.id)?.attempts.find(item => item.id === attempt.id)
+      if (!current || !activeAttempts.has(current.status) || current.sessionId !== attempt.sessionId) continue
       if (snapshot.state === "unknown") {
         gap = true
         this.change(runId, saved => { if (saved.status !== "cancelling") saved.status = "waiting_input" }, lease)
@@ -422,19 +440,20 @@ export class Engine {
       }
       if (["running", "waiting_permission"].includes(snapshot.state)) {
         if (lease) this.change(runId, saved => { const current = saved.tasks.find(item => item.spec.id === task.spec.id)!.attempts.find(item => item.id === attempt.id)!; current.ownerEpoch = lease.epoch }, lease)
-        const expired = attempt.startedAt !== undefined && Date.now() - attempt.startedAt >= run.config.limits.workerMs
-        const exhausted = attempt.steps >= run.config.limits.steps
-        if (expired || exhausted || run.status === "cancelling" && attempt.status !== "cancelling") {
+        const expired = current.startedAt !== undefined && Date.now() - current.startedAt >= run.config.limits.workerMs
+        const exhausted = current.steps >= run.config.limits.steps
+        if (expired || exhausted || run.status === "cancelling" && current.status !== "cancelling") {
           await this.host.interrupt(attempt.sessionId)
-          this.change(runId, saved => { const t = saved.tasks.find(item => item.spec.id === task.spec.id)!, a = t.attempts.find(item => item.id === attempt.id)!; a.status = "cancelling"; a.error ??= expired ? "Worker deadline exhausted" : exhausted ? "Worker step budget exhausted" : "Run cancellation awaiting native settlement"; t.status = "cancelling" }, lease)
-        } else if (attempt.status !== "cancelling") {
-          this.change(runId, saved => { const t = saved.tasks.find(item => item.spec.id === task.spec.id)!, a = t.attempts.find(item => item.id === attempt.id)!; a.status = snapshot.state === "waiting_permission" ? "waiting_permission" : "running"; t.status = a.status }, lease)
+          this.change(runId, saved => { const t = saved.tasks.find(item => item.spec.id === task.spec.id)!, a = t.attempts.find(item => item.id === attempt.id)!; if (!activeAttempts.has(a.status)) return; a.status = "cancelling"; a.error ??= expired ? "Worker deadline exhausted" : exhausted ? "Worker step budget exhausted" : "Run cancellation awaiting native settlement"; t.status = "cancelling" }, lease)
+        } else if (current.status !== "cancelling") {
+          this.change(runId, saved => { const t = saved.tasks.find(item => item.spec.id === task.spec.id)!, a = t.attempts.find(item => item.id === attempt.id)!; if (a.status === "cancelling" || !activeAttempts.has(a.status)) return; a.status = snapshot.state === "waiting_permission" ? "waiting_permission" : "running"; t.status = a.status }, lease)
         }
         continue
       }
       const workspaceHash = snapshot.workspaceHash ?? await this.host.workspace(run.directory)
-      this.change(runId, saved => {
+      const settled = this.change(runId, saved => {
         const currentTask = saved.tasks.find(item => item.spec.id === task.spec.id)!, current = currentTask.attempts.find(item => item.id === attempt.id)!
+        if (!activeAttempts.has(current.status) || current.sessionId !== attempt.sessionId) return false
         if (lease) current.ownerEpoch = lease.epoch
         current.finishedAt = Date.now(); current.candidateHash = workspaceHash
         if (snapshot.tokens !== undefined) current.tokens = snapshot.tokens
@@ -447,8 +466,9 @@ export class Engine {
           current.status = snapshot.state === "interrupted" || current.status === "cancelling" ? "cancelled" : "failed"
           currentTask.status = current.status; current.error ??= snapshot.error ?? (current.result ? "Native worker did not succeed" : "Native success has no attributable task result")
         }
+        return true
       }, lease)
-      this.audit(runId, "attempt.settled", { sessionId: attempt.sessionId, state: snapshot.state, workspaceHash }, attempt)
+      if (settled) this.audit(runId, "attempt.settled", { sessionId: attempt.sessionId, state: snapshot.state, workspaceHash }, attempt)
     }
     return gap
   }
@@ -500,6 +520,9 @@ export class Engine {
     const nativeChecksCovered = requiredChecks.length > 0 && requiredChecks.every(check => lastChecks.get(check.id)?.outcome === "passed" && lastChecks.get(check.id)?.exit === 0)
     const assessments = results.filter(item => !item.task.spec.writes && item.attempt.workspaceHash === workspaceHash).flatMap(item => item.attempt.result?.assessments ?? [])
     const covered = refreshed.criteria.filter(item => item.required).every(criterion => criterion.kind === "check" ? checks.some(check => check.criterionIds.includes(criterion.id)) : assessments.some(item => item.criterionId === criterion.id && item.passed) && !assessments.some(item => item.criterionId === criterion.id && !item.passed))
+    if (!requiredChecks.length && !failed && currentReviews.length > 0 && !blocking.length && covered) {
+      return this.terminal(runId, "partial", "No configured native checks establish completion; the reviewed candidate is retained without unnecessary repair", lease)
+    }
     if (!failed && !failedCheck && nativeChecksCovered && currentReviews.length > 0 && !blocking.length && covered && refreshed.criteria.some(item => item.required && item.kind === "check")) {
       return this.terminal(runId, "succeeded", "Required assessments and fresh native checks passed", lease)
     }
@@ -600,7 +623,7 @@ export class Engine {
       }
       if (busy(this.required(runId))) {
         this.audit(runId, "input.waiting_settlement", { taskId: question.task.spec.id })
-        return this.required(runId)
+        throw new Error("Worker settlement is unconfirmed; your answer was not recorded. Inspect this run and submit the answer in a new call after its workers settle.")
       }
       const workspaceHash = await this.host.workspace(run.directory)
       this.project(runs => {
@@ -663,6 +686,7 @@ export class Engine {
     const lease = this.acquire()
     try {
       for (const run of runs) {
+        if (this.driving.has(run.id)) continue
         const preserve = ["paused", "ready", "succeeded", "partial", "failed", "cancelled"].includes(run.status)
         this.change(run.id, saved => {
           if (!preserve) saved.ownerEpoch = lease.epoch
@@ -673,7 +697,24 @@ export class Engine {
           }
         }, lease)
         if (!preserve) await this.reconcile(run.id, lease)
-        if (this.required(run.id).status === "recovering") this.change(run.id, saved => { saved.status = "waiting_input"; saved.errors.push("Supervisor stopped; native attempts reconciled before explicit continuation") }, lease)
+        if (this.driving.has(run.id)) continue
+        if (!preserve && run.supervisorSessionId && ["starting", "planning", "running", "recovering"].includes(run.status)) {
+          let snapshot
+          try { snapshot = await this.host.inspect(run.supervisorSessionId) } catch { snapshot = { sessionId: run.supervisorSessionId, state: "unknown" as const } }
+          if (this.driving.has(run.id)) continue
+          if (snapshot.sessionId !== run.supervisorSessionId) snapshot = { sessionId: run.supervisorSessionId, state: "unknown" }
+          const ownerEvents = this.store.events(this.projectId, run.id).filter(event => ["supervisor.interrupted", "supervisor.reentered"].includes(event.kind) && (event.data as { sessionId?: string }).sessionId === run.supervisorSessionId)
+          const stopped = ["succeeded", "failed", "interrupted"].includes(snapshot.state) || snapshot.state === "unknown" && ownerEvents.at(-1)?.kind === "supervisor.interrupted"
+          this.change(run.id, saved => {
+            if (saved.supervisorSessionId !== run.supervisorSessionId || ["paused", "pausing", "cancelling"].includes(saved.status) || terminalRuns.has(saved.status)) return
+            if (stopped) {
+              saved.status = "waiting_input"
+              const error = "Supervisor stopped; native attempts reconciled before explicit continuation"
+              if (!saved.errors.includes(error)) saved.errors.push(error)
+            } else if (snapshot.state === "unknown") saved.status = "recovering"
+          }, lease)
+          if (snapshot.state === "unknown" && !stopped) this.audit(run.id, "supervisor.snapshot.gap", { sessionId: run.supervisorSessionId })
+        } else if (this.required(run.id).status === "recovering") this.change(run.id, saved => { saved.status = "waiting_input"; saved.errors.push("Supervisor stopped; native attempts reconciled before explicit continuation") }, lease)
         if (this.required(run.id).status === "cancelling") await this.finishCancellation(run.id, lease)
         await this.deliver(run.id)
         this.audit(run.id, "run.reconciled", { preserved: preserve })

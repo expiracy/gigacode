@@ -46,6 +46,24 @@ export function invocation(context: ToolContext): Invocation {
   return { native: context, signal: context.signal, sessionId: context.sessionID, messageId: context.messageID, callId: context.id }
 }
 
+/** Evidenced precreation refusals in the two pinned hosts; unfamiliar failures remain uncertain. */
+function precreationRefusal(error: unknown, agent: string, model: ModelSelection): boolean {
+  const failure = error as { _tag?: unknown; message?: unknown } | undefined
+  if (failure?._tag !== "Tool.Error" || typeof failure.message !== "string") return false
+  const reference = `${model.ref.providerID}/${model.ref.id}`
+  const requested = `${reference}${model.ref.variant ? `#${model.ref.variant}` : ""}`
+  const exact = [
+    `Subagent denied: ${agent}`, `Unknown agent: ${agent}`, `Agent ${agent} cannot run as a subagent`,
+    `Model "${reference}" is not available. Use the models tool to see what is available.`,
+    `Invalid model "${requested}". Use "providerID/modelID" or "providerID/modelID#variant".`,
+    ...(model.ref.variant ? [`Model "${reference}" has no variants. Omit the variant.`] : []),
+  ]
+  if (exact.includes(failure.message)) return true
+  if (/^Subagent depth limit reached \(\d+\)\. Increase "experimental\.subagent_depth" to allow nested subagents\.$/.test(failure.message)) return true
+  const prefix = `Variant "${model.ref.variant}" is not available for "${reference}". Available: `
+  return !!model.ref.variant && failure.message.startsWith(prefix) && /^[\w.-]+(?:, [\w.-]+)*\.$/.test(failure.message.slice(prefix.length))
+}
+
 /** The only place the scheduler can invoke native side effects. Every call keeps a real ToolContext. */
 export class OpenCodeAdapter implements HostAdapter {
   readonly checks = new Map<string, { sessionId: string; messageId: string; command: string }>()
@@ -139,7 +157,7 @@ export class OpenCodeAdapter implements HostAdapter {
         this.record(run, "native.prelaunch.settled", { sessionId: child, promptAdmitted: false, proof: "native execution.awaitIdle after interrupt", error: String(error) })
         throw new SettledLaunchError(child, String(error))
       }
-      if (!child && (error as any)?._tag === "Tool.Error" && (error as any)?.message === `Subagent denied: ${agent}`) throw new NoLaunchError(`Native delegation was denied before child creation: ${agent}`)
+      if (!child && precreationRefusal(error, agent, model)) throw new NoLaunchError(`Native delegation refused before child creation: ${String(error)}`)
       throw error
     } finally { if (--claim.users === 0 && this.delegations.get(key) === claim) this.delegations.delete(key) }
   }

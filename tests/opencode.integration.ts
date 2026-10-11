@@ -6,6 +6,7 @@ import { Rpc } from "@opencode/plugin"
 import { Database } from "bun:sqlite"
 import { EXPECTED_VERSION, startHost, waitFor, type IsolatedHost } from "../spike/host.ts"
 import type { Run } from "../src/types.ts"
+import { promptVersion } from "../src/workflow.ts"
 import { manifest } from "../src/workspace.ts"
 import { SQLiteStore } from "../src/store.ts"
 import { createWorkflowFixture } from "./workflow-fixture.ts"
@@ -178,7 +179,7 @@ export async function runOpenCodeIntegration() {
         assert.equal(feedback.location?.directory, host!.project)
         assert.equal(feedback.data.error, undefined)
         assert.equal((feedback.data.result?.config as Run["config"]).models.roles?.planner, "fixture/alternate")
-        assert.equal(feedback.data.result?.promptVersion, "ultra/2")
+        assert.equal(feedback.data.result?.promptVersion, promptVersion)
         assert.deepEqual(await client.session.inbox.list({ sessionID: session.id }), beforeInbox, "Command feedback must not be queued as future model input")
         assert.deepEqual(await client.session.context({ sessionID: session.id }), beforeContext)
         assert.equal(fixture.requests.length, beforeRequests)
@@ -189,7 +190,7 @@ export async function runOpenCodeIntegration() {
         assert.equal(configuration.config.models.roles?.planner, "fixture/alternate")
         assert.equal(configuration.config.checks[0]?.id, "fixture-check")
         assert.equal(configuration.hostVersion, EXPECTED_VERSION)
-        assert.equal(configuration.promptVersion, "ultra/2")
+        assert.equal(configuration.promptVersion, promptVersion)
         assert.equal(configuration.directory, host!.project)
         assert.equal(configuration.state, join(host!.project, ".ultracode", "state.sqlite"))
         assert.deepEqual(await client.session.inbox.list({ sessionID: session.id }), beforeInbox)
@@ -595,7 +596,12 @@ export async function runOpenCodeIntegration() {
         const inspected = await askPrimary(ultraParent.id, "Inspect the Ultra graph after switching the initiating conversation to Build.", [{ name: "ultra_control", arguments: { action: "inspect", runId: modeRun.id } }])
         const control = nativeTools(inspected, "ultra_control").at(-1)
         assert.equal(control?.state.status, "completed", JSON.stringify(control))
-        assert.ok(JSON.stringify(control?.state).includes(modeRun.id))
+        assert(control?.state.status === "completed")
+        const inspectionText = control.state.content.map(part => part.type === "text" ? part.text : "").join("")
+        const inspectionView = JSON.parse(inspectionText)
+        assert.equal(inspectionView.run.id, modeRun.id)
+        assert.equal(inspectionView.events, undefined, "Model content must omit the full native audit stream")
+        assert.ok(!inspectionText.includes('"prompt"'), "Model inspection must not repeat captured worker prompts")
         const request = fixture.requests.findLast(value => value.marker === "primary")!
         assert.ok(request.tools.includes("ultra_control"))
         assert.ok(!request.tools.includes("ultra_task"))
@@ -611,6 +617,18 @@ export async function runOpenCodeIntegration() {
         assert.ok(modeRun.tasks.find(task => task.spec.id === "native.verify")?.attempts.some(attempt => attempt.checks.some(check => check.checkId === "fixture-check" && check.outcome === "passed")))
         const history = await rpc.inspect({ runId: modeRun.id }, options()) as { events: { kind: string; data: Record<string, any> }[] }
         for (const event of history.events.filter(event => event.kind === "context.observed")) assert.ok(!event.data.tools.some((name: string) => ["ultra_task", "ultra_control", "ultra_start"].includes(name)))
+        const proofContext = await askPrimary(ultraParent.id, "Inspect the recorded native verification evidence without starting another graph.", [{ name: "ultra_control", arguments: { action: "inspect", runId: modeRun.id, taskId: "native.verify" } }])
+        const proof = nativeTools(proofContext, "ultra_control").at(-1)
+        assert(proof?.state.status === "completed", JSON.stringify(proof))
+        const proofText = proof.state.content.map(part => part.type === "text" ? part.text : "").join("")
+        const proofView = JSON.parse(proofText)
+        const recorded = modeRun.tasks.find(task => task.spec.id === "native.verify")!.attempts.flatMap(attempt => attempt.checks).find(check => check.checkId === "fixture-check" && check.exit === 0)!
+        assert.deepEqual(proofView.tasks.flatMap((task: any) => task.attempts.flatMap((attempt: any) => attempt.checks)).find((check: any) => check.id === recorded.id), recorded, "Native model content must retain actual check output and provenance")
+        assert.ok(Buffer.byteLength(proofText, "utf8") < 32 * 1024)
+        assert.ok(!proofText.includes('"prompt"') && !proofText.includes('"events"'))
+        const fullProof = await rpc.inspect({ runId: modeRun.id, taskId: "native.verify" }, options()) as { run: Run; events: unknown[] }
+        assert.ok(fullProof.run.tasks[0]!.attempts[0]!.prompt.length > 0 && fullProof.events.length > 0, "Full audit inspection must remain available through RPC")
+        assert.equal(runs(await rpc.status({}, options())).length, before)
         assert.equal(modeFeedback.length, 0)
         await client.session.wait({ sessionID: modeRun.supervisorSessionId as any }, { signal: AbortSignal.timeout(15_000) })
         await client.session.wait({ sessionID: ultraParent.id }, { signal: AbortSignal.timeout(15_000) })

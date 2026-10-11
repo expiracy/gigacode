@@ -2,6 +2,8 @@
 
 An independent, transparent implementation of thorough multi-agent workflows for OpenCode 2.
 
+OpenCode is the compatibility target. Other clients, including OpenChamber, use the same native agents, tools, sessions, permissions, and plugin configuration.
+
 The v1 runtime is implemented: discovery, design, independent critique, implementation, review, native verification, bounded repair, and evidence-backed reporting. A persistent task graph controls asynchronous native agents while the initiating conversation stays available.
 
 Prompts, graph revisions, model selections, native session bindings, attempts, observed context, tool activity, checks, and recovery decisions are inspectable. Model assessments and actual command evidence remain separate.
@@ -49,6 +51,10 @@ Pause the current workflow.
 Ultra uses the existing graph engine through native `ultra_task` and `ultra_control` tools. General questions, configuration inspection, and clarification remain conversation; they do not automatically admit a graph based on prompt length. Planning saves a read-only proposal. Implementation requests authorise design and execution within their scope, under native permissions. Role and stage model settings continue to apply.
 
 Progress and results use normal native tool and subagent activity. Follow-up controls stay bound to their initiating conversation; repeated calls cannot launch the same intent twice. Selecting Build or Plan does not cancel a workflow. The initiating conversation retains coordinator restrictions while its run is active, including while paused; cancel or finish that run before direct project edits there. Other conversations retain their normal agent behaviour. The model selects tools from clear schemas; actual model quality and instruction following require separate evaluation.
+
+Each worker has a saved native child-session identity. Recovery reconciles those sessions before continuing; an unknown launch or session outcome requires inspection rather than another dispatch. A returning bound supervisor can continue its existing attempts after interruption. Native clients can render the supervisor and workers as ordinary subagent cards with navigation and Stop controls; nested workers appear inside the supervisor's session.
+
+Conversational inspection returns a compact, redacted view of actual task attempts and native checks. It keeps valid JSON below 30,000 bytes, prioritizes accepted and recent evidence, reports omitted records, and includes bounded log previews. Ask for a specific task's evidence for more detail; RPC inspection and exported audits retain the full redacted history.
 
 The native command interface remains available for explicit controls:
 
@@ -141,6 +147,10 @@ Use `/ultracode config` to inspect effective settings in a searchable native ter
 Ultra's terminal viewer is read-only. OpenCode's built-in **Open settings** action edits CLI appearance and interaction settings in `cli.json`, separately from server plugin options. Its public terminal plugin API has no settings contribution interface. An editable **Ultra settings** dialog with global/project inheritance and model pickers, and a live workflow panel are [proposed in the design](docs/design.md#change-native-ux--menu-settings-and-live-workflow-inspection); they are not implemented yet. OpenChamber can already edit the standard plugin options as described below.
 
 Model selection order is authorised task override, run stage, run role, effective project stage, effective project role, run default, effective project default, then inheritance. Effective project mappings include inherited global defaults. Model and variant resolve together. Missing models, invalid variants, and known lack of tool support are rejected without fallback. Each attempt saves its resolved choice and origin.
+
+Versioned task prompts explain the role, scope, criteria, configured checks, and typed submission contract. Handoffs limit each narrative summary to 6,000 characters while retaining complete structured findings, assessments, proposals, and evidence references. The full original result remains saved, and accepted design dependencies are included once. This reduces repeated narrative without selecting behaviour by model name; aggregate context budgeting remains a separate proposal.
+
+For test-first work, proposal workers see the configured check catalogue and can plan a test-writing worker, a verifier recording the expected failure, an implementation worker, and independent final review and verification. Writers edit their owned files; only assigned verifiers execute configured commands. Historical failures remain inspectable, while completion requires evidence against the final workspace. Pending downstream proof makes no assessment claim; an actual failed assessment still prevents success.
 
 When every layer omits `checks`, the plugin detects existing `test`, `typecheck`, and `lint` package scripts and maps them to the `verification` criterion. It uses Bun for a Bun lockfile and npm otherwise. An explicit `checks: []` disables inherited checks and detection. Prefer project-specific commands in `ultracode.json`; shared checks run in each selected project. Use check criterion IDs distinct from the default assessment criterion `request`.
 

@@ -9,7 +9,7 @@ import { ArtifactStore } from "./artifacts.ts"
 import { loadProjectConfig, resolveModel } from "./config.ts"
 import { parseCommand, type UltraCommand } from "./commands.ts"
 import { ULTRA_AGENT_ID, ULTRA_AGENT_NAME } from "./agents.ts"
-import { agentControlSchema, agentTaskSchema, controlCommand, primaryPermissionAllowed, primaryToolAllowed } from "./agent-control.ts"
+import { agentControlSchema, agentTaskSchema, controlCommand, inspectionContent, primaryPermissionAllowed, primaryToolAllowed } from "./agent-control.ts"
 import { Error as NativeToolError, type ToolContext } from "@opencode/plugin/promise/tool"
 import { OpenCodeAdapter, invocation, invocationKey, sessionID, visibleTools } from "./opencode.ts"
 import { UltraRpc, type CommandResult } from "./rpc.ts"
@@ -231,7 +231,7 @@ export default Plugin.define({
           const result = command.type === "status" && !command.id ? { runs: parentRuns(context.sessionID).map(summary) } : await controlRaw(command, context.sessionID, context)
           const output = sanitizeEventData(result)
           if (receiptId) store.event(ctx.location.project.id, { id: `${receiptId}_result`, kind: "agent.control.result", ...("id" in command ? { runId: required(command.id!).id } : {}), data: output })
-          return { content: JSON.stringify(output), output }
+          return { content: command.type === "inspect" ? inspectionContent((output as { run: Run }).run, command.taskId) : JSON.stringify(output), output }
         } })
         editor.add({ name: "ultra_start", description: "Consume an authorized Ultracode start intent and launch its native supervisor.", input: Schema.Struct({ runId: Schema.String, intentId: Schema.String }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           const run = required(input.runId)

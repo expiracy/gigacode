@@ -197,6 +197,63 @@ test("native check failure adds a bounded repair graph with unchanged required c
   expect(engine.get(run.id)!.plans).toHaveLength(2)
 })
 
+test.each(["pending", "failed"] as const)("a TDD graph retains RED evidence and requires honest fresh review (%s)", async reviewState => {
+  const freshGap = reviewState === "failed"
+  const run = await start("execute")
+  store.mutate(run.id, saved => { saved.config.limits.repairRounds = 0 })
+  const specs: TaskSpec[] = [
+    { ...task("write-tests", true), ownedPaths: ["tests/**"] },
+    { ...task("red-check", false, ["write-tests"]), role: "verifier", stage: "verification", checkIds: ["test"] },
+    { ...task("write-code", true, ["red-check"]), ownedPaths: ["src/**"] },
+    { ...task("final-review", false, ["write-code"]), role: "reviewer", stage: "review" },
+    { ...task("green-check", false, ["write-code"]), role: "verifier", stage: "verification", checkIds: ["test"] },
+  ]
+  install(run, specs, "execution")
+  const recordCheck = (launch: (typeof host.launches)[number], outcome: "passed" | "failed") => {
+    const check = config.checks[0]!, at = Date.now()
+    engine.evidence(launch.sessionId, { id: `evidence-${launch.task.id}`, attemptId: launch.attempt.id, taskId: launch.task.id, sessionId: launch.sessionId, callId: `native-${launch.task.id}`, checkId: check.id, command: check.command, criterionIds: check.criterionIds, cwd: path, startedAt: at, finishedAt: at, exit: outcome === "passed" ? 0 : 1, outcome, output: outcome === "passed" ? "Regression passes with the implementation" : "Regression fails because requested behavior is absent", workspaceHash: host.hash })
+  }
+  await engine.tick(run.id, invocation())
+  const testWriter = host.launches[0]!
+  expect(testWriter.task.id).toBe("write-tests")
+  engine.submit(testWriter.sessionId, { summary: "Added the requested regression within tests scope" })
+  host.hash = "workspace:red-regression"; host.settle(testWriter.sessionId)
+  await engine.tick(run.id, invocation())
+  const red = host.launches[1]!
+  expect(red.task.id).toBe("red-check")
+  recordCheck(red, "failed")
+  engine.submit(red.sessionId, { summary: "Observed expected RED failure", assessments: [{ criterionId: "request", passed: false, explanation: "The regression establishes that requested behavior is still missing" }] })
+  host.settle(red.sessionId)
+  await engine.tick(run.id, invocation())
+  const codeWriter = host.launches[2]!
+  expect(codeWriter.task.id).toBe("write-code")
+  expect(engine.get(run.id)!.repairRound).toBe(0)
+  engine.submit(codeWriter.sessionId, { summary: "Implemented the behavior within source scope" })
+  host.hash = "workspace:green-candidate"; host.settle(codeWriter.sessionId)
+  await engine.tick(run.id, invocation())
+  expect(host.launches.slice(3).map(launch => launch.task.id)).toEqual(["final-review", "green-check"])
+  for (const launch of host.launches.slice(3)) {
+    expect(launch.attempt.workspaceHash).toBe("workspace:green-candidate")
+    if (launch.task.id === "green-check") {
+      recordCheck(launch, "passed")
+      engine.submit(launch.sessionId, { summary: "Verified the completed candidate", assessments: [{ criterionId: "request", passed: true, explanation: "The final implementation and regression establish the requested behavior" }] })
+    } else engine.submit(launch.sessionId, { summary: freshGap ? "Independent review found a missing required case in the current candidate" : "Independent code review found no gap; final check proof remains the downstream verifier's responsibility", findings: [], ...(freshGap ? { assessments: [{ criterionId: "request", passed: false, explanation: "Inspected code omits a required case despite the passing check" }] } : {}) })
+    host.settle(launch.sessionId)
+  }
+  await engine.tick(run.id, invocation())
+  const saved = engine.get(run.id)!, redAttempt = saved.tasks.find(item => item.spec.id === "red-check")!.attempts[0]!
+  expect(saved.status).toBe(freshGap ? "partial" : "succeeded")
+  expect(saved.repairRound).toBe(0)
+  expect(redAttempt.checks[0]!.outcome).toBe("failed")
+  expect(redAttempt.checks[0]!.exit).toBe(1)
+  expect(redAttempt.result!.assessments![0]!.passed).toBe(false)
+  expect(saved.tasks.find(item => item.spec.id === "final-review")!.attempts[0]!.result!.assessments?.[0]?.passed).toBe(freshGap ? false : undefined)
+  expect(saved.tasks.find(item => item.spec.id === "green-check")!.attempts[0]!.checks[0]!.outcome).toBe("passed")
+  expect(saved.tasks.filter(item => item.spec.writes).map(item => item.spec.ownedPaths)).toEqual([["tests/**"], ["src/**"]])
+  expect(saved.tasks.filter(item => item.spec.writes).every(item => item.attempts.every(attempt => attempt.checks.length === 0))).toBe(true)
+  expect(host.launches).toHaveLength(5)
+})
+
 test("a successful-looking summary cannot substitute for native checks or independent review", async () => {
   const run = await start("execute"); install(run, [task("implement", true)], "execution")
   store.mutate(run.id, saved => { saved.config.limits.repairRounds = 0 })
@@ -224,6 +281,51 @@ test("run budget stops dispatch and settles interrupted workers before waiting_b
   expect(host.launches).toHaveLength(1)
 })
 
+test("waiting scheduler ticks skip workspace hashing while launch and final gates use fresh snapshots", async () => {
+  const run = await start(); install(run, [task("first"), task("second", false, ["first"])])
+  const workspace = host.workspace.bind(host)
+  let snapshots = 0
+  host.workspace = async () => { snapshots++; return workspace() }
+  await engine.tick(run.id, invocation())
+  expect(snapshots).toBeGreaterThan(0)
+  snapshots = 0
+  for (let i = 0; i < 5; i++) await engine.tick(run.id, invocation())
+  expect(snapshots).toBe(0)
+  const first = host.launches[0]!
+  engine.submit(first.sessionId, { summary: "First discovery complete", assessments: [{ criterionId: "request", passed: true, explanation: "Inspected requested behavior" }] })
+  host.hash = "workspace:after-first"; host.settle(first.sessionId)
+  await engine.tick(run.id, invocation())
+  const second = host.launches[1]!
+  expect(second.attempt.workspaceHash).toBe("workspace:after-first")
+  expect(snapshots).toBeGreaterThan(0)
+  snapshots = 0
+  engine.submit(second.sessionId, { summary: "Second discovery complete", assessments: [{ criterionId: "request", passed: true, explanation: "Confirmed requested behavior" }] })
+  host.hash = "workspace:after-second"; host.settle(second.sessionId)
+  await engine.tick(run.id, invocation())
+  expect(engine.get(run.id)!.status).toBe("ready")
+  expect(engine.get(run.id)!.workspaceHash).toBe("workspace:after-second")
+  expect(snapshots).toBeGreaterThan(0)
+})
+
+test("workers blocked by project capacity do not hash the workspace before an actual admission", async () => {
+  const run = await start(); install(run, [task("first"), task("independent")])
+  store.mutate(run.id, saved => { saved.config.limits.workers = 1 })
+  const workspace = host.workspace.bind(host)
+  let snapshots = 0
+  host.workspace = async () => { snapshots++; return workspace() }
+  await engine.tick(run.id, invocation())
+  expect(host.launches).toHaveLength(1)
+  snapshots = 0
+  for (let i = 0; i < 5; i++) await engine.tick(run.id, invocation())
+  expect(snapshots).toBe(0)
+  engine.submit(host.launches[0]!.sessionId, { summary: "First task complete" })
+  host.hash = "workspace:capacity-released"; host.settle(host.launches[0]!.sessionId)
+  await engine.tick(run.id, invocation())
+  expect(host.launches).toHaveLength(2)
+  expect(host.launches[1]!.attempt.workspaceHash).toBe("workspace:capacity-released")
+  expect(snapshots).toBeGreaterThan(0)
+})
+
 test("a second process cannot dispatch or mutate while the first owns the project lease", async () => {
   const run = await start(); install(run, [task("one")])
   const lease = store.lease("project", "another-process", Date.now(), 30_000)!
@@ -243,6 +345,154 @@ test("aborted supervisor records recovering instead of claiming active workers s
   await engine.recover(run.id)
   expect(engine.get(run.id)!.status).toBe("waiting_input")
   expect(host.launches).toHaveLength(1)
+})
+
+test("the bound supervisor can reenter after interruption and finish its existing worker without duplicate dispatch", async () => {
+  const run = await start(); install(run, [task("one")])
+  const first = new AbortController()
+  host.afterBind = () => first.abort(new Error("Native tool invocation interrupted"))
+  await expect(engine.drive(run.id, { ...invocation(), signal: first.signal })).rejects.toThrow(/interrupted/)
+  expect(engine.get(run.id)!.status).toBe("recovering")
+  host.afterBind = undefined
+  const next = new AbortController()
+  const resumed = engine.drive(run.id, { ...invocation(), callId: "next-native-call", signal: next.signal })
+  try {
+    for (let i = 0; i < 40 && engine.get(run.id)!.status === "recovering"; i++) await new Promise(done => setTimeout(done, 5))
+    expect(engine.get(run.id)!.status).toBe("planning")
+    const worker = host.launches[0]!
+    engine.submit(worker.sessionId, { summary: "Completed original work", assessments: [{ criterionId: "request", passed: true, explanation: "Inspected original requirement" }] })
+    host.settle(worker.sessionId)
+    expect((await resumed).status).toBe("ready")
+    expect(host.launches).toHaveLength(1)
+    expect(engine.get(run.id)!.tasks[0]!.attempts).toHaveLength(1)
+  } finally { next.abort(new Error("Reentry test cleanup")); await resumed.catch(() => {}) }
+})
+
+test("supervisor reentry waits for input when a worker snapshot cannot be reconciled", async () => {
+  const run = await start(); install(run, [task("one")])
+  await engine.tick(run.id, invocation())
+  store.mutate(run.id, saved => { saved.status = "recovering" })
+  host.settle(host.launches[0]!.sessionId, "unknown")
+  const saved = await engine.drive(run.id, { ...invocation(), callId: "reconcile-native-call" })
+  expect(saved.status).toBe("waiting_input")
+  expect(host.launches).toHaveLength(1)
+  expect(saved.tasks[0]!.attempts[0]!.status).toBe("running")
+})
+
+test.each(["failed", "interrupted", "succeeded"] as const)("recovery quarantines a %s native supervisor without duplicating its workers", async state => {
+  const run = await start("execute"); install(run, [task("write", true), task("after", false, ["write"])], "execution")
+  await engine.tick(run.id, invocation())
+  const original = host.launches[0]!
+  host.settle("supervisor", state)
+  const recovered = (await engine.recover(run.id))[0]!
+  expect(recovered.status).toBe("waiting_input")
+  expect(recovered.tasks[0]!.attempts[0]!.status).toBe("running")
+  await expect(start("execute")).rejects.toThrow(/writer|execution/i)
+  const resumed = await engine.resume(run.id)
+  expect(resumed.status).toBe("starting")
+  expect(resumed.supervisorHistory).toEqual(["supervisor"])
+  engine.consumeStartIntent(run.id, resumed.intentId, "parent"); engine.bindSupervisor(run.id, resumed.intentId, "replacement")
+  await engine.tick(run.id, invocation("replacement"))
+  expect(host.launches).toHaveLength(1)
+  expect(engine.get(run.id)!.tasks[0]!.attempts[0]!.sessionId).toBe(original.sessionId)
+})
+
+test("recovery leaves a native supervisor that is still running or waiting for permission in control", async () => {
+  const run = await start(); install(run, [task("one")])
+  await engine.tick(run.id, invocation())
+  for (const state of ["running", "waiting_permission"] as const) {
+    host.settle("supervisor", state)
+    await engine.recover(run.id)
+    expect(engine.get(run.id)!.status).toBe("planning")
+    expect(engine.get(run.id)!.supervisorSessionId).toBe("supervisor")
+    expect(host.launches).toHaveLength(1)
+    await expect(engine.resume(run.id)).rejects.toThrow(/paused|waiting|supervisor/i)
+  }
+})
+
+test("an unknown supervisor snapshot cannot authorize a replacement, even after workers settle", async () => {
+  const run = await start("execute"); install(run, [task("write", true)], "execution")
+  await engine.tick(run.id, invocation())
+  const original = host.launches[0]!
+  host.settle("supervisor", "unknown")
+  await engine.recover(run.id)
+  expect(engine.get(run.id)!.status).toBe("recovering")
+  host.settle(original.sessionId)
+  await expect(engine.resume(run.id)).rejects.toThrow(/supervisor|recover|unknown|paused|waiting/i)
+  expect(engine.get(run.id)!.supervisorSessionId).toBe("supervisor")
+  expect(host.launches).toHaveLength(1)
+  host.settle("supervisor", "interrupted")
+  const resumed = await engine.resume(run.id)
+  expect(resumed.status).toBe("starting")
+  expect(resumed.supervisorHistory).toEqual(["supervisor"])
+})
+
+test("a recovery snapshot cannot stop a bound driver that entered while the snapshot was pending", async () => {
+  const run = await start(); install(run, [task("one")])
+  store.mutate(run.id, saved => { saved.status = "recovering" })
+  const inspect = host.inspect.bind(host), stop = new AbortController()
+  let reentry: Promise<Run> | undefined
+  host.inspect = async sessionId => {
+    if (sessionId === "supervisor" && !reentry) {
+      reentry = engine.drive(run.id, { ...invocation(), callId: "concurrent-reentry", signal: stop.signal })
+      for (let i = 0; i < 40 && !host.launches.length; i++) await new Promise(done => setTimeout(done, 5))
+      expect(engine.get(run.id)!.status).toBe("planning")
+      return { sessionId, state: "failed" }
+    }
+    return inspect(sessionId)
+  }
+  try {
+    await engine.recover(run.id)
+    expect(engine.get(run.id)!.status).toBe("planning")
+    expect(host.launches).toHaveLength(1)
+  } finally { stop.abort(new Error("Concurrent recovery test cleanup")); await reentry?.catch(() => {}) }
+})
+
+test("a late running snapshot cannot rewind a worker settled by the bound driver", async () => {
+  const run = await start(); install(run, [task("one")])
+  await engine.tick(run.id, invocation())
+  const worker = host.launches[0]!, inspect = host.inspect.bind(host)
+  let pending = true
+  engine.submit(worker.sessionId, { summary: "Settled task", assessments: [{ criterionId: "request", passed: true, explanation: "Inspected the request" }] })
+  host.settle("supervisor", "running")
+  host.inspect = async sessionId => {
+    if (sessionId === worker.sessionId && pending) {
+      pending = false
+      host.settle(worker.sessionId)
+      await engine.tick(run.id, invocation())
+      return { sessionId, state: "running" }
+    }
+    return inspect(sessionId)
+  }
+  await engine.recover(run.id)
+  const saved = engine.get(run.id)!
+  expect(saved.status).toBe("ready")
+  expect(saved.tasks[0]!.status).toBe("succeeded")
+  expect(saved.tasks[0]!.attempts[0]!.status).toBe("succeeded")
+  expect(host.launches).toHaveLength(1)
+})
+
+test("a running snapshot taken before cancellation cannot restore a cancelling worker", async () => {
+  const run = await start("execute"); install(run, [task("write", true)], "execution")
+  await engine.tick(run.id, invocation())
+  const worker = host.launches[0]!, inspect = host.inspect.bind(host)
+  let pending = true
+  host.interruptState = "unknown"
+  host.inspect = async sessionId => {
+    const snapshot = await inspect(sessionId)
+    if (sessionId === worker.sessionId && pending) {
+      pending = false
+      await engine.cancel(run.id)
+    }
+    return snapshot
+  }
+  await engine.tick(run.id, invocation())
+  const saved = engine.get(run.id)!
+  expect(saved.status).toBe("cancelling")
+  expect(saved.tasks[0]!.status).toBe("cancelling")
+  expect(saved.tasks[0]!.attempts[0]!.status).toBe("cancelling")
+  expect(host.launches).toHaveLength(1)
+  await expect(start("execute")).rejects.toThrow(/writer|execution/i)
 })
 
 test("permission-blocked native launch retains the project lease through an awaited boundary", async () => {
@@ -267,6 +517,26 @@ test("repair attempts stop at the configured bound and retain original checks an
   expect(complete.criteria).toEqual(run.criteria)
   expect(complete.tasks.filter(item => item.spec.writes)).toHaveLength(3)
   expect(complete.tasks[0]!.attempts[0]!.status).toBe("succeeded")
+})
+
+test("missing configured machine checks cannot trigger repair writers for an otherwise healthy candidate", async () => {
+  const withoutChecks = new Engine(store, host, "project", path, { ...config, checks: [] })
+  const run = await withoutChecks.start({ objective: "Inspect behavior", mode: "execute", parentSessionId: "parent", capturedModel: { providerID: "fixture", id: "test" }, policy: [] })
+  install(run, [task("implement", true), { ...task("review", false, ["implement"]), role: "reviewer", stage: "review" }, { ...task("verify", false, ["implement"]), role: "verifier", stage: "verification", checkIds: [] }], "execution")
+  await withoutChecks.tick(run.id, invocation())
+  for (let i = 0; i < 2; i++) {
+    for (const launch of host.launches.filter(launch => host.sessions.get(launch.sessionId)?.state === "running")) {
+      withoutChecks.submit(launch.sessionId, { summary: "Observed candidate satisfies the request", assessments: [{ criterionId: "request", passed: true, explanation: "Independent code inspection confirms required behavior" }], findings: [] })
+      host.settle(launch.sessionId)
+    }
+    await withoutChecks.tick(run.id, invocation())
+  }
+  const saved = withoutChecks.get(run.id)!
+  expect(saved.status).toBe("partial")
+  expect(saved.repairRound).toBe(0)
+  expect(saved.errors.some(error => /configured.*check|check.*configur/i.test(error))).toBe(true)
+  expect(host.launches.map(launch => launch.task.id)).toEqual(["implement", "review", "verify"])
+  expect(saved.tasks.some(item => item.spec.id.startsWith("repair."))).toBe(false)
 })
 
 test("submitted candidates are immutable and native snapshot identity must match the worker", async () => {
@@ -418,15 +688,20 @@ test("a needsInput result cannot resume or finish until a user answer creates fr
   expect(host.launches.every(launch => launch.task.id !== "dependent")).toBe(true)
 })
 
-test("providing input retains waiting_input while another child cannot be confirmed settled", async () => {
+test("providing input reports that the answer was not recorded while another child cannot be confirmed settled", async () => {
   const run = await start(); install(run, [task("question"), task("parallel")]); await engine.tick(run.id, invocation())
   engine.submit(host.launches[0]!.sessionId, { summary: "Need a choice", needsInput: "Choose behavior" })
   host.settle(host.launches[0]!.sessionId); await engine.tick(run.id, invocation())
   host.interruptState = "unknown"
-  const waiting = await engine.provideInput(run.id, "Preserve current behavior")
+  await expect(engine.provideInput(run.id, "Preserve current behavior")).rejects.toThrow(/answer.*not recorded|not recorded.*answer/i)
+  const waiting = engine.get(run.id)!
   expect(waiting.status).toBe("waiting_input")
   expect(waiting.clarifications).toBeUndefined()
   expect(host.launches).toHaveLength(2)
+  host.interruptState = "interrupted"
+  const answered = await engine.provideInput(run.id, "Preserve current behavior")
+  expect(answered.status).toBe("starting")
+  expect(answered.clarifications?.[0]?.answer).toBe("Preserve current behavior")
 })
 
 test("explicit budget increase preserves counters and can resume an exhausted run", async () => {

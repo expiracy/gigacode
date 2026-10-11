@@ -10,6 +10,17 @@ import { NoLaunchError, SettledLaunchError, UnsettledLaunchError } from "../src/
 
 const model: ModelSelection = { requested: "fixture/model", origin: "captured", ref: { providerID: "fixture", id: "model" } }
 
+// Both pinned native handlers reject these before sessions.create and progress.
+const precreationFailures = [
+  { label: "depth limit", message: 'Subagent depth limit reached (1). Increase "experimental.subagent_depth" to allow nested subagents.', model },
+  { label: "missing agent", message: "Unknown agent: ultra-supervisor", model },
+  { label: "primary-only agent", message: "Agent ultra-supervisor cannot run as a subagent", model },
+  { label: "missing model", message: 'Model "fixture/model" is not available. Use the models tool to see what is available.', model },
+  { label: "model without variants", message: 'Model "fixture/model" has no variants. Omit the variant.', model: { ...model, ref: { ...model.ref, variant: "fast" } } },
+  { label: "unavailable variant", message: 'Variant "fast" is not available for "fixture/model". Available: slow, default.', model: { ...model, ref: { ...model.ref, variant: "fast" } } },
+  { label: "invalid native model reference", message: 'Invalid model "fixture/". Use "providerID/modelID" or "providerID/modelID#variant".', model: { ...model, ref: { ...model.ref, id: "" } } },
+] satisfies { label: string; message: string; model: ModelSelection }[]
+
 function admissionFixture(options: { ignorePermissionUpdate?: boolean; status?: string; failure?: unknown; failureAfterPrelaunch?: boolean; cleanupActive?: boolean; cleanupFailure?: boolean } = {}) {
   const order: string[] = []
   const events: unknown[] = []
@@ -145,6 +156,50 @@ describe("native admission and lifecycle regressions", () => {
     expect(caught).toBeInstanceOf(NoLaunchError)
     expect(fixture.order).not.toContain("identity-bound")
     expect(fixture.order).not.toContain("prompt-admitted")
+  })
+
+  for (const failure of precreationFailures) test(`classifies the pinned native ${failure.label} refusal before child creation as no launch`, async () => {
+    const fixture = admissionFixture({ failure: new NativeToolError({ message: failure.message }) })
+    let caught: unknown
+    try { await fixture.adapter.supervisor(fixture.run, invocation(fixture.context), failure.model, async () => { fixture.order.push("identity-bound") }) } catch (error) { caught = error }
+    expect(caught).toBeInstanceOf(NoLaunchError)
+    expect(fixture.order).toEqual([])
+    expect(fixture.adapter.delegations.size).toBe(0)
+  })
+
+  test("never treats transport lookalikes or a known refusal after child release as proof of no launch", async () => {
+    for (const failure of precreationFailures) for (const options of [
+      { failure: new Error(failure.message) },
+      { failure: new NativeToolError({ message: failure.message }), failureAfterPrelaunch: true },
+    ]) {
+      const fixture = admissionFixture(options)
+      let caught: unknown
+      try { await fixture.adapter.supervisor(fixture.run, invocation(fixture.context), failure.model, async () => {}) } catch (error) { caught = error }
+      expect(caught).toBeDefined()
+      expect(caught).not.toBeInstanceOf(NoLaunchError)
+      expect(fixture.adapter.delegations.size).toBe(0)
+    }
+  })
+
+  test("keeps unknown typed failures and mismatched native refusal targets uncertain", async () => {
+    for (const message of [
+      "Native transport disconnected",
+      "Parent session not found: ses_parent", // Also emitted by sessions.create; ordering is not proven.
+      "Unknown agent: different-agent",
+      "Agent different-agent cannot run as a subagent",
+      'Model "fixture/different-model" is not available. Use the models tool to see what is available.',
+      'Model "fixture/model" has no variants. Omit the variant.', // No variant was requested.
+      'Variant "different-variant" is not available for "fixture/model". Available: slow.',
+      'Invalid model "different/model". Use "providerID/modelID" or "providerID/modelID#variant".',
+      'Subagent depth limit reached (1). Increase "experimental.subagent_depth" to allow nested subagents. Transport disconnected',
+    ]) {
+      const fixture = admissionFixture({ failure: new NativeToolError({ message }) })
+      let caught: unknown
+      try { await fixture.adapter.supervisor(fixture.run, invocation(fixture.context), model, async () => {}) } catch (error) { caught = error }
+      expect(caught).toBeDefined()
+      expect(caught).not.toBeInstanceOf(NoLaunchError)
+      expect(fixture.order).toEqual([])
+    }
   })
 
   test("keeps arbitrary childless failures, lookalike messages, and post-prelaunch denials uncertain", async () => {
