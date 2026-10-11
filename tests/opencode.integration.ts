@@ -96,10 +96,11 @@ export async function runOpenCodeIntegration() {
     await cp(resolve("src"), join(pluginDirectory, "src"), { recursive: true })
     pluginSnapshot = { directory: pluginDirectory, hash: (await manifest(pluginDirectory)).hash }
     testInstrumentation = await cancellationBootstrap(root, fixture.baseURL)
-    host = await startHost({ root, fixtureURL: fixture.baseURL, pluginDirectory: testInstrumentation.directory, pluginOptions: {
-      models: { roles: { planner: "fixture/alternate" } },
+    host = await startHost({ root, fixtureURL: fixture.baseURL, pluginDirectory: testInstrumentation.directory, installGlobal: true, pluginOptions: {
+      models: { roles: { planner: "fixture/alternate", reviewer: "fixture/alternate" }, stages: { reporting: "fixture/alternate" } },
       checks: [{ id: "fixture-check", command: "echo fixtureverified", criterionIds: ["verification"] }],
       limits: { workers: 2, repairRounds: 0, workerMs: 15_000, runMs: 60_000 },
+      prompts: { planner: "GLOBAL_PLANNER_INSTRUCTIONS", reviewer: "GLOBAL_REVIEWER_INSTRUCTIONS" },
     } })
     const client = host.client
     const location = { directory: host.project }
@@ -112,6 +113,71 @@ export async function runOpenCodeIntegration() {
       assert.equal((configuration.config as { models?: { roles?: { planner?: string } } } | undefined)?.models?.roles?.planner ?? (configuration.models as { roles?: { planner?: string } } | undefined)?.roles?.planner, "fixture/alternate")
       assert.equal(fixture.requests.length, 0)
       return configuration
+    })
+    await check("one global installation supplies isolated project overrides and state", async () => {
+      for (const directory of [host!.project, host!.otherProject]) for (const file of ["opencode.json", "opencode.jsonc"]) assert.equal(existsSync(join(directory, file)), false)
+      const installed = JSON.parse(await readFile(join(host!.root, "config", "opencode.json"), "utf8"))
+      assert.equal(installed.plugins.length, 1)
+      assert.equal(installed.plugins[0].package, testInstrumentation!.directory)
+      assert.match(installed.agents["ultra-supervisor"].system, /exact runId and intentId/)
+      await writeFile(join(host!.otherProject, "ultracode.json"), JSON.stringify({
+        models: { roles: { planner: "fixture/test" } },
+        checks: [], limits: { workers: 1 }, prompts: { reviewer: "PROJECT_REVIEWER_INSTRUCTIONS" },
+      }, null, 2) + "\n")
+      const otherLocation = { directory: host!.otherProject }
+      const otherOptions = () => ({ location: otherLocation, signal: AbortSignal.timeout(5_000) })
+      const otherParent = await client.session.create({ location: otherLocation, model: { providerID: "fixture", id: "test" } })
+      await client.session.prompt({ sessionID: otherParent.id, text: "ACTIVATE_GLOBAL_OTHER_PROJECT", resume: false })
+      const primaryConfig = await rpc.config({}, options()) as { config: Run["config"]; state: string }
+      const otherConfig = await rpc.config({}, otherOptions()) as { config: Run["config"]; state: string }
+      assert.equal(primaryConfig.config.models.roles?.planner, "fixture/alternate")
+      assert.equal(otherConfig.config.models.roles?.planner, "fixture/test")
+      assert.equal(otherConfig.config.models.roles?.reviewer, "fixture/alternate")
+      assert.equal(otherConfig.config.models.stages?.reporting, "fixture/alternate")
+      assert.equal(otherConfig.config.limits.workers, 1)
+      assert.equal(otherConfig.config.limits.workerMs, primaryConfig.config.limits.workerMs)
+      assert.equal(otherConfig.config.limits.repairRounds, 0)
+      assert.equal(otherConfig.config.prompts?.planner, "GLOBAL_PLANNER_INSTRUCTIONS")
+      assert.equal(otherConfig.config.prompts?.reviewer, "PROJECT_REVIEWER_INSTRUCTIONS")
+      assert.equal(primaryConfig.config.prompts?.reviewer, "GLOBAL_REVIEWER_INSTRUCTIONS")
+      assert.equal(primaryConfig.config.checks[0]?.id, "fixture-check")
+      assert.deepEqual(otherConfig.config.checks, [])
+      assert.equal(primaryConfig.state, join(host!.project, ".ultracode", "state.sqlite"))
+      assert.equal(otherConfig.state, join(host!.otherProject, ".ultracode", "state.sqlite"))
+      assert.notEqual(primaryConfig.state, otherConfig.state)
+      assert.deepEqual(runs(await rpc.status({}, otherOptions())), [])
+      assert.deepEqual(runs(await rpc.status({}, options())), [])
+      await client.session.command({ sessionID: otherParent.id, name: "ultracode", text: "plan GLOBAL_INSTALL_PROJECT_NO_CHECKS: Design a fixture in the second project using its optional overrides." })
+      const admitted = await waitFor("other project global command admission", async () => runs(await rpc.status({}, otherOptions())), values => values.length === 1, 10_000)
+      const otherRunId = admitted[0]!.id
+      const saved = await waitFor("other project plan settles with overrides", async () => runs(await rpc.status({ runId: otherRunId }, otherOptions()))[0], run => !!run && ["ready", "partial", "failed", "cancelled"].includes(run.status), 60_000)
+      assert(saved)
+      assert.equal(saved.status, "ready", saved.errors.join("; "))
+      const planner = saved.tasks.find(task => task.spec.role === "planner")!.attempts.at(-1)!
+      const reviewer = saved.tasks.find(task => task.spec.role === "reviewer")!.attempts.at(-1)!
+      assert.equal(planner.model.ref.id, "test")
+      assert.equal(reviewer.model.ref.id, "alternate")
+      assert.deepEqual(saved.config.checks, [])
+      assert.ok(fixture.requests.some(request => request.runId === otherRunId && request.role === "planner" && request.model === "test"))
+      assert.ok(fixture.requests.some(request => request.runId === otherRunId && request.role === "reviewer" && request.model === "alternate"))
+      const inspected = await rpc.inspect({ runId: otherRunId }, otherOptions()) as { events: { kind: string; data: Record<string, unknown> }[] }
+      for (const [role, prompt] of [["planner", "GLOBAL_PLANNER_INSTRUCTIONS"], ["reviewer", "PROJECT_REVIEWER_INSTRUCTIONS"]]) {
+        const contexts = inspected.events.filter(event => event.kind === "context.observed" && event.data.role === role)
+        assert(contexts.length > 0)
+        const captured = await Promise.all(contexts.map(event => readFile(String(event.data.artifact), "utf8")))
+        assert.ok(captured.some(text => text.includes(prompt)), `Native ${role} context omitted merged instructions`)
+      }
+      assert.deepEqual(runs(await rpc.status({}, options())), [])
+      assert.equal(existsSync(join(host!.otherProject, "implemented.txt")), false)
+      const otherState = new SQLiteStore(otherConfig.state)
+      const primaryState = new SQLiteStore(primaryConfig.state)
+      try {
+        assert.equal(otherState.list(saved.projectId).length, 1)
+        assert.equal(primaryState.list(saved.projectId).length, 0)
+      } finally { otherState.close(); primaryState.close() }
+      await client.session.wait({ sessionID: otherParent.id }, { signal: AbortSignal.timeout(10_000) })
+      for (const directory of [host!.project, host!.otherProject]) for (const file of ["opencode.json", "opencode.jsonc"]) assert.equal(existsSync(join(directory, file)), false)
+      return { oneGlobalPlugin: installed.plugins[0].package, primary: primaryConfig, other: otherConfig, otherRun: { id: saved.id, projectId: saved.projectId, status: saved.status, planner: planner.model, reviewer: reviewer.model }, primaryRuns: 0, projectNativeConfigurations: 0 }
     })
     await check("invalid native command makes no model request", async () => {
       const before = fixture.requests.length
@@ -327,7 +393,7 @@ export async function runOpenCodeIntegration() {
       return { newRuns: 0, ordinaryRequests: fixture.requests.length - before }
     })
     await check("unavailable configured model rejects native admission without fallback", async () => {
-      const secondary = await startHost({ root: join(root, "unknown-model"), fixtureURL: fixture.baseURL, pluginDirectory, pluginOptions: { models: { default: "fixture/missing" } } })
+      const secondary = await startHost({ root: join(root, "unknown-model"), fixtureURL: fixture.baseURL, pluginDirectory, installGlobal: true, pluginOptions: { models: { default: "fixture/missing" } } })
       try {
         const secondaryLocation = { directory: secondary.project }
         const secondaryRpc = secondary.client.rpc(WorkflowRpc)

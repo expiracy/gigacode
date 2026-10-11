@@ -57,11 +57,12 @@ export function modelRef(reference: string, inherited?: ModelRef): ModelRef {
 
 function models(value: unknown): ModelOptions {
   const input = strictRecord(value, ["default", "roles", "stages"], "models")
-  const result: ModelOptions = { roles: {}, stages: {} }
+  const result: ModelOptions = {}
   if (input.default !== undefined) result.default = modelReference(input.default)
   for (const [field, allowed] of [["roles", roles], ["stages", stages]] as const) {
     if (input[field] === undefined) continue
     const entries = strictRecord(input[field], allowed, `models.${field}`)
+    result[field] = {}
     for (const [name, reference] of Object.entries(entries)) {
       (result[field] as Record<string, string>)[name] = modelReference(reference)
     }
@@ -74,12 +75,16 @@ function integer(value: unknown, label: string, minimum = 1): number {
   return value
 }
 
-export function parseConfig(options: unknown): Config {
+export type ConfigOptions = Omit<Partial<Config>, "limits"> & { limits?: Partial<Limits> }
+
+/** Validate one layer without supplying defaults or changing omitted-check discovery. */
+export function parseConfigOptions(options: unknown): ConfigOptions {
   const input = strictRecord(options === undefined ? {} : options, ["models", "limits", "checks", "parallelWrites", "autoThreshold", "prompts"], "configuration")
-  const result = structuredClone(defaultConfig)
-  if (input.models !== undefined) result.models = { ...result.models, ...models(input.models) }
+  const result: ConfigOptions = {}
+  if (input.models !== undefined) result.models = models(input.models)
   if (input.limits !== undefined) {
     const overrides = strictRecord(input.limits, Object.keys(defaultConfig.limits), "limits")
+    result.limits = {}
     for (const [name, value] of Object.entries(overrides)) {
       result.limits[name as keyof Limits] = integer(value, `limits.${name}`, name === "repairRounds" ? 0 : 1)
     }
@@ -120,10 +125,47 @@ export function parseConfig(options: unknown): Config {
   return result
 }
 
-/** Resolve project-declared checks consistently for the live host and offline previews. */
-export async function loadProjectConfig(options: unknown, directory: string): Promise<Config> {
-  const config = parseConfig(options)
-  if ((options as { checks?: unknown } | undefined)?.checks !== undefined) return config
+/** Validate every source before merging; arrays replace and named option maps inherit. */
+export function mergeConfigOptions(...layers: unknown[]): ConfigOptions {
+  const validated = layers.map(parseConfigOptions)
+  const result: ConfigOptions = {}
+  for (const layer of validated) {
+    if (layer.models !== undefined) {
+      const inherited = result.models ?? {}
+      result.models = { ...inherited, ...layer.models }
+      if (layer.models.roles !== undefined) result.models.roles = { ...inherited.roles, ...layer.models.roles }
+      if (layer.models.stages !== undefined) result.models.stages = { ...inherited.stages, ...layer.models.stages }
+    }
+    if (layer.limits !== undefined) result.limits = { ...result.limits, ...layer.limits }
+    if (layer.prompts !== undefined) result.prompts = { ...result.prompts, ...layer.prompts }
+    if (layer.checks !== undefined) result.checks = layer.checks
+    if (layer.parallelWrites !== undefined) result.parallelWrites = layer.parallelWrites
+    if (layer.autoThreshold !== undefined) result.autoThreshold = layer.autoThreshold
+  }
+  return result
+}
+
+export function parseConfig(options: unknown): Config {
+  return mergeConfigOptions(defaultConfig, options) as Config
+}
+
+/** Global/native options < exact-directory project override < explicit preview options. */
+export async function loadProjectConfig(options: unknown, directory: string, overrides?: unknown): Promise<Config> {
+  const base = parseConfigOptions(options)
+  const path = join(directory, "ultracode.json")
+  let project: ConfigOptions | undefined
+  try {
+    project = parseConfigOptions(JSON.parse(await readFile(path, "utf8")))
+  } catch (error) {
+    // Some runtimes include file contents in JSON syntax errors and their causes.
+    if (error instanceof SyntaxError) throw new Error(`Cannot load project configuration ${path}: invalid JSON`)
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new Error(`Cannot load project configuration ${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
+    }
+  }
+  const merged = mergeConfigOptions(base, project, overrides)
+  const config = parseConfig(merged)
+  if (merged.checks !== undefined) return config
   try {
     const pkg = JSON.parse(await readFile(join(directory, "package.json"), "utf8"))
     const runner = existsSync(join(directory, "bun.lock")) || existsSync(join(directory, "bun.lockb")) ? "bun" : "npm"

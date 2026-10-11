@@ -6,16 +6,26 @@ The v1 runtime is implemented: discovery, design, independent critique, implemen
 
 Prompts, graph revisions, model selections, native session bindings, attempts, observed context, tool activity, checks, and recovery decisions are inspectable. Model assessments and actual command evidence remain separate.
 
-## Install in a project
+## Install globally
 
 Requires Bun **1.3.10 or newer** and installed `@opencode/cli` **2.0.25**. This exact host version is enforced; Windows is verified. Git is optional for normal workflows.
 
 ```powershell
 bun install --frozen-lockfile --ignore-scripts
+bun run install:global
+```
+
+Run these commands from this checkout, then restart OpenCode. The plugin becomes available in each project without another installation. The installer registers this local package in the global `opencode.json` or `opencode.jsonc`, adds `ultra-supervisor` and `ultra-worker`, and sets native delegation depth to at least two. It preserves existing providers, models, and permission settings and saves the original configuration when changed. JSONC is rewritten as formatted JSON; the backup retains comments. Repeating an unchanged installation creates no extra registrations or backups. Keep this checkout available at its installed path.
+
+The global directory is `OPENCODE_CONFIG_DIR` when set, otherwise `XDG_CONFIG_HOME/opencode`, or `~/.config/opencode` when XDG is unset. These are OpenCode 2.0.25's paths on Windows too. To select another global directory, use `--config-dir`; OpenCode must use the same directory through `OPENCODE_CONFIG_DIR`.
+
+An optional standalone project installation remains available:
+
+```powershell
 bun run install:project --project "C:\path\to\your-project"
 ```
 
-Run these commands from this checkout, then restart OpenCode in the target project. The installer registers this local package in the project's `opencode.json` or `opencode.jsonc`, adds `ultra-supervisor` and `ultra-worker`, and sets native delegation depth to at least two. It preserves existing provider and permission settings and saves the original configuration in a backup file. JSONC is rewritten as formatted JSON; the backup retains comments. Keep this checkout available at its installed path.
+For a globally installed plugin, use the project override file described below. An existing project registration targeting the same plugin replaces its global native options under OpenCode's rules. To inherit global defaults, move that registration's `options` into `ultracode.json` and remove only its Ultra entry from the project's `plugins` array, preserving other plugins and native settings. Different package references for the same plugin can create duplicate IDs; use the single global registration.
 
 Select a connected model in OpenCode, then use:
 
@@ -60,10 +70,10 @@ Automatic mode is explicit opt-in. After `on`, ordinary prompts of at least `aut
 
 ## Models, checks, and prompts
 
-By default, every role inherits the initiating session's captured model and variant. To configure options, create a JSON file and pass it to the installer:
+By default, every role inherits the initiating session's captured model and variant. To configure shared defaults, create a JSON file and pass it to the global installer:
 
 ```powershell
-bun run install:project --project "C:\path\to\your-project" --config "C:\path\to\ultra-options.json"
+bun run install:global --config "C:\path\to\ultra-options.json"
 ```
 
 Example options; replace the model references with entries from your connected OpenCode catalogue:
@@ -91,9 +101,21 @@ Example options; replace the model references with entries from your connected O
 }
 ```
 
-Selection order is authorised task override, run stage, run role, project stage, project role, run default, project default, then inheritance. Current user commands configure project options; internal contracts retain run overrides. Model and variant resolve together. Missing models, invalid variants, and known lack of tool support are rejected without fallback. Each attempt saves its resolved choice and origin.
+To override selected defaults for one project, add an optional `ultracode.json` in the directory where OpenCode runs:
 
-When `checks` is omitted, the plugin detects existing `test`, `typecheck`, and `lint` package scripts and maps them to the `verification` criterion. It uses Bun for a Bun lockfile and npm otherwise. An explicit `checks: []` disables detection. Use check criterion IDs distinct from the default assessment criterion `request`.
+```json
+{
+  "models": { "roles": { "reviewer": "other-provider/project-review-model" } },
+  "limits": { "workers": 2 },
+  "prompts": { "reviewer": "Check this project's public API compatibility." }
+}
+```
+
+The plugin merges OpenCode's effective native plugin options with this file, then supplies built-in defaults. Models by role or stage, limits, and prompts merge field by field. Scalars replace inherited values; `checks` replaces the entire inherited array, including an explicit `[]`. Each layer is validated independently. No override file or project installation is required. The plugin reads only the exact session directory's `ultracode.json`; it does not search parent directories. Restart OpenCode after editing it. New runs capture the resulting configuration; existing runs retain their saved settings.
+
+Model selection order is authorised task override, run stage, run role, effective project stage, effective project role, run default, effective project default, then inheritance. Effective project mappings include inherited global defaults. Model and variant resolve together. Missing models, invalid variants, and known lack of tool support are rejected without fallback. Each attempt saves its resolved choice and origin.
+
+When every layer omits `checks`, the plugin detects existing `test`, `typecheck`, and `lint` package scripts and maps them to the `verification` criterion. It uses Bun for a Bun lockfile and npm otherwise. An explicit `checks: []` disables inherited checks and detection. Prefer project-specific commands in `ultracode.json`; shared checks run in each selected project. Use check criterion IDs distinct from the default assessment criterion `request`.
 
 Verifiers execute only configured commands through the native shell tool, under the real worker invocation and native permissions. Exit status, caller identity, command, directory, and candidate hash establish evidence. Execution without a required machine check ends as `partial`; a model saying “tests passed” cannot establish success.
 
@@ -117,7 +139,7 @@ bun run test
 bun run test:integration
 ```
 
-The native integration suite uses isolated configuration, homes, databases, and a local scripted model provider, with no paid model calls. It tests production registration, plan and execution, role restrictions, native check provenance, export, restart, expired intents, cancellation, automatic mode, and unavailable models. Evidence and logs remain under `.spike/integration-<timestamp>-<id>/`.
+The native integration suite uses the global installer with isolated configuration, homes, Git roots, databases, and a local scripted model provider, with no paid model calls. It tests global availability, overrides and state isolation across two projects, production registration, plan and execution, role restrictions, native check provenance, export, restart, expired intents, cancellation, automatic mode, and unavailable models. Evidence and logs remain under `.spike/integration-<timestamp>-<id>/`.
 
 `bun run spike` reproduces the earlier 22-probe host compatibility matrix and requires Git. Set `OPENCODE_SPIKE_BIN` if the matching executable is outside the normal Windows npm location or `PATH`.
 
@@ -130,7 +152,7 @@ bun run ultra status --project "C:\path\to\your-project"
 bun run ultra export <run-id> --project "C:\path\to\your-project"
 ```
 
-The offline CLI reads saved snapshots; dispatch and lifecycle controls run inside OpenCode. For an existing native worktree, select its run location with `--project` and the canonical project's database with `--state`:
+Offline `validate` and `render` select native plugin options from the direct global and project files, following replacement for an identical package target. They then merge `ultracode.json` and apply explicit `--config` options last. Ambiguous registrations are rejected. Use `--global-config <directory>` to preview an isolated global profile. These commands read direct files; OpenCode's native ancestor and include discovery still needs the live host. Snapshot commands read saved state without loading configuration; dispatch and lifecycle controls run inside OpenCode. For an existing native worktree, select its run location with `--project` and the canonical project's database with `--state`:
 
 ```powershell
 bun run ultra inspect <run-id> --project "C:\path\to\worktree" --state "C:\path\to\main-project\.ultracode\state.sqlite"

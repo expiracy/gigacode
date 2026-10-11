@@ -57,16 +57,16 @@ function criteria(prompt: string): Criterion[] {
   }
   throw new Error("Native worker criteria JSON was incomplete")
 }
-function proposal(required: Criterion[]): Plan {
+function proposal(required: Criterion[], machineChecks = true): Plan {
   const verification = { id: "verification", description: "The configured native verification command passes.", required: true, kind: "check" as const }
   return {
     revision: 2,
     rationale: "Write one fixture file, independently review it, run a native check, and report the accepted evidence.",
-    criteria: [...required, ...(required.some(value => value.id === verification.id) ? [] : [verification])],
+    criteria: [...required, ...(!machineChecks || required.some(value => value.id === verification.id) ? [] : [verification])],
     tasks: [
       { id: "native.implement", title: "Implement fixture", role: "implementer", stage: "implementation", instructions: "Write implemented.txt containing native implementation verified followed by a newline.", dependencies: [], writes: true, ownedPaths: ["implemented.txt"] },
       { id: "native.review", title: "Review fixture", role: "reviewer", stage: "review", instructions: "Read the fixture candidate and independently assess the required criteria.", dependencies: ["native.implement"], writes: false },
-      { id: "native.verify", title: "Verify fixture", role: "verifier", stage: "verification", instructions: "Execute fixture-check through ultra_check and report the actual result.", dependencies: ["native.implement"], writes: false, checkIds: ["fixture-check"] },
+      { id: "native.verify", title: "Verify fixture", role: "verifier", stage: "verification", instructions: machineChecks ? "Execute fixture-check through ultra_check and report the actual result." : "Report that machine checks are disabled and assess available read-only evidence.", dependencies: ["native.implement"], writes: false, checkIds: machineChecks ? ["fixture-check"] : [] },
       { id: "native.report", title: "Report fixture", role: "synthesizer", stage: "reporting", instructions: "Report the reviewed fixture and captured native check evidence.", dependencies: ["native.review", "native.verify"], writes: false },
     ],
   }
@@ -135,7 +135,7 @@ export function createWorkflowFixture(): WorkflowFixture {
             if (meta.stage === "design" || meta.role === "reviewer") {
               result.assessments = required.filter(value => value.kind === "assessment").map(value => ({ criterionId: value.id, passed: true, explanation: "The fixture design and candidate satisfy the requested scoped behavior." }))
             }
-            if (meta.stage === "design" && ["planner", "synthesizer"].includes(meta.role)) result.proposal = proposal(required)
+            if (meta.stage === "design" && ["planner", "synthesizer"].includes(meta.role)) result.proposal = proposal(required, !prompt.includes("GLOBAL_INSTALL_PROJECT_NO_CHECKS"))
             if (meta.role === "reviewer") result.findings = []
             calls = [{ name: "ultra_submit", arguments: { result } }]
           }

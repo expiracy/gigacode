@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test tests/*.test.ts spike/*.test.ts",
     "test:integration": "bun run tests/opencode.integration.ts",
-    "install:project": "bun run scripts/install.ts",
+    "install:global": "bun run scripts/install.ts --global",
+    "install:project": "bun run scripts/install.ts --local",
     "ultra": "bun run scripts/cli.ts",
     "spike": "bun run spike/run.ts"
   },

@@ -102,33 +102,25 @@ export function isolatedEnvironment(root: string, password: string): Record<stri
   }
 }
 
-export async function startHost(options: {
+export interface IsolatedHostOptions {
   root: string
   fixtureURL: string
   pluginDirectory: string
   pluginOptions?: Record<string, unknown>
   service?: boolean
-}): Promise<IsolatedHost> {
+  installGlobal?: boolean
+}
+
+/** Keep isolated provider configuration separate from production installation. */
+export async function prepareHostConfiguration(options: IsolatedHostOptions): Promise<void> {
   const root = resolve(options.root)
-  const project = join(root, "project")
-  const otherProject = join(root, "other-project")
-  const port = await freePort()
-  const password = crypto.randomUUID()
-  const baseURL = `http://127.0.0.1:${port}`
-  const environment = isolatedEnvironment(root, password)
-  for (const directory of [project, otherProject, "home", "appdata", "localappdata", "xdg-config", "data", "state", "cache", "tmp", "config", "npm-cache", "bun-cache"].map(p => p === project || p === otherProject ? p : join(root, p))) {
-    await mkdir(directory, { recursive: true })
-  }
-  await writeFile(join(root, "models.json"), "{}\n")
-  await writeFile(join(root, "empty.npmrc"), "\n")
-  await writeFile(join(project, "protected.txt"), "original\n")
-  await writeFile(join(project, "README.md"), "Isolated compatibility fixture. No external model calls.\n")
+  await mkdir(join(root, "config"), { recursive: true })
   const fixtureModel = {
     name: "Compatibility fixture",
     capabilities: { tools: true, input: ["text"], output: ["text"] },
     limit: { context: 32_768, output: 4_096 },
   }
-  const configuration = {
+  const configuration: Record<string, unknown> = {
     update: "disable",
     model: "fixture/test",
     providers: {
@@ -153,7 +145,58 @@ export async function startHost(options: {
     },
     plugins: [{ package: resolve(options.pluginDirectory), ...(options.pluginOptions ? { options: options.pluginOptions } : {}) }],
   }
+  if (options.installGlobal) {
+    delete configuration.experimental
+    delete configuration.agents
+    delete configuration.plugins
+  }
   await writeFile(join(root, "config", "opencode.json"), JSON.stringify(configuration, null, 2))
+  if (options.installGlobal) {
+    const { installGlobal } = await import("../scripts/install.ts")
+    await installGlobal({ configDirectory: join(root, "config"), pluginPath: options.pluginDirectory, hostVersion: EXPECTED_VERSION, config: options.pluginOptions })
+  }
+}
+
+export async function startHost(options: IsolatedHostOptions): Promise<IsolatedHost> {
+  const root = resolve(options.root)
+  const project = join(root, "project")
+  const otherProject = join(root, "other-project")
+  const port = await freePort()
+  const password = crypto.randomUUID()
+  const baseURL = `http://127.0.0.1:${port}`
+  const environment = isolatedEnvironment(root, password)
+  for (const directory of [project, otherProject, "home", "appdata", "localappdata", "xdg-config", "data", "state", "cache", "tmp", "config", "npm-cache", "bun-cache"].map(p => p === project || p === otherProject ? p : join(root, p))) {
+    await mkdir(directory, { recursive: true })
+  }
+  await writeFile(join(root, "models.json"), "{}\n")
+  await writeFile(join(root, "empty.npmrc"), "\n")
+  await writeFile(join(project, "protected.txt"), "original\n")
+  await writeFile(join(project, "README.md"), "Isolated compatibility fixture. No external model calls.\n")
+  if (options.installGlobal) {
+    // Fixtures live under this checkout. Distinct repositories stop native
+    // canonical project discovery from inheriting the workspace's Git root.
+    const git = Bun.which("git")
+    if (!git) throw new Error("Git is required to isolate native global-installation projects")
+    const noHooks = join(root, "no-git-hooks")
+    const emptyGitConfig = join(root, "empty.gitconfig")
+    await mkdir(noHooks, { recursive: true })
+    await writeFile(emptyGitConfig, "\n")
+    await writeFile(join(otherProject, "README.md"), "Other isolated global installation project.\n")
+    const gitEnvironment = {
+      ...environment,
+      GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: emptyGitConfig, GIT_TERMINAL_PROMPT: "0",
+      GIT_AUTHOR_NAME: "Ultra integration fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+      GIT_COMMITTER_NAME: "Ultra integration fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+    }
+    for (const directory of [project, otherProject]) {
+      for (const args of [["init", "--quiet", "--initial-branch=main"], ["add", "README.md", ...(directory === project ? ["protected.txt"] : [])], ["commit", "--quiet", "--no-gpg-sign", "--no-verify", "-m", "Initialize isolated integration fixture"]]) {
+        const command = Bun.spawn([git, "-c", `core.hooksPath=${noHooks}`, ...args], { cwd: directory, env: gitEnvironment, stdin: "ignore", stdout: "pipe", stderr: "pipe", windowsHide: true })
+        const [exit, output] = await Promise.all([command.exited, new Response(command.stderr).text()])
+        if (exit !== 0) throw new Error(`Could not isolate fixture Git project (${args[0]}): ${output}`)
+      }
+    }
+  }
+  await prepareHostConfiguration(options)
   // --service uses its own saved password; keep both stable/channel config names isolated.
   for (const file of ["service.json", "service-v2.json"]) {
     await writeFile(join(root, "config", file), JSON.stringify({ password, remote: false }))

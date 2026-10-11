@@ -1,19 +1,20 @@
 import { existsSync } from "node:fs"
 import { readFile, realpath } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { Database } from "bun:sqlite"
 import { ArtifactStore } from "../src/artifacts.ts"
-import { loadProjectConfig } from "../src/config.ts"
+import { loadProjectConfig, parseConfigOptions } from "../src/config.ts"
 import { SQLiteStore, sanitizeEventData } from "../src/store.ts"
 import { defaultExecutionPlan, defaultPlanningPlan } from "../src/workflow.ts"
-import { parseNativeConfiguration, productionPluginDirectory } from "./install.ts"
+import { globalConfigDirectory, parseNativeConfiguration, productionPluginDirectory } from "./install.ts"
 import type { Config, Run } from "../src/types.ts"
 
 export const localHelp = `Ultra Open Code local CLI
 
 bun scripts/cli.ts help
-bun scripts/cli.ts validate [--config <ultra-options.json>]
-bun scripts/cli.ts render [--execute] <objective>
+bun scripts/cli.ts validate [--config <ultra-options.json>] [--global-config <directory>]
+bun scripts/cli.ts render [--execute] [--global-config <directory>] <objective>
 bun scripts/cli.ts list
 bun scripts/cli.ts status [run-id]
 bun scripts/cli.ts inspect <run-id> [task-id]
@@ -24,6 +25,12 @@ not reconnect, dispatch workers, or modify run state. Use /ultracode inside Open
 to start, pause, resume, cancel, retry, or execute a workflow. validate checks option
 syntax; model availability and native permissions are checked in the live host.
 
+validate and render read global OpenCode plugin options and optional ultracode.json;
+--config is applied last. A native project registration replaces the same global
+registration's entire options object. Use ultracode.json for partial overrides.
+These offline previews read selected config directories directly, without native
+ancestor or include discovery. --global-config selects an isolated config directory.
+
 list, status, inspect, and export also accept --state <state.sqlite> to select a
 shared project database for a worktree. --project still filters the run directory.
 Exports are written to artifacts beside the selected database.`
@@ -32,14 +39,45 @@ export interface LocalResult { exitCode: number; output: string }
 const json = (value: unknown) => JSON.stringify(sanitizeEventData(value), null, 2)
 const samePath = (left: string, right: string) => process.platform === "win32" ? resolve(left).toLowerCase() === resolve(right).toLowerCase() : resolve(left) === resolve(right)
 
-async function configuration(directory: string, explicit?: string): Promise<Config> {
-  if (explicit) return loadProjectConfig(parseNativeConfiguration(await readFile(resolve(explicit), "utf8")), directory)
-  const path = [join(directory, "opencode.json"), join(directory, "opencode.jsonc")].find(existsSync)
-  if (!path) return loadProjectConfig({}, directory)
-  const native = parseNativeConfiguration(await readFile(path, "utf8"))
-  if (!Array.isArray(native.plugins)) return loadProjectConfig({}, directory)
-  const entry = native.plugins.find((plugin: any) => typeof plugin?.package === "string" && (plugin.package === "ultra-open-code" || samePath(plugin.package, productionPluginDirectory) || samePath(plugin.package, join(productionPluginDirectory, "index.ts"))))
-  return loadProjectConfig(entry?.options ?? {}, directory)
+interface NativeRegistration { target: string; options: unknown }
+
+function ambiguousRegistrations(): Error {
+  return new Error("Ambiguous Ultra plugin registrations use different package aliases; move project options to ultracode.json and retain one Ultra registration before offline preview")
+}
+
+async function nativeOptions(directory: string): Promise<NativeRegistration | undefined> {
+  const paths = [join(directory, "opencode.json"), join(directory, "opencode.jsonc")].filter(existsSync)
+  if (paths.length > 1) throw new Error(`Both opencode.json and opencode.jsonc exist in ${directory}; select a single configuration for offline preview`)
+  const path = paths[0]
+  if (!path) return undefined
+  const source = await readFile(path, "utf8")
+  let native: Record<string, any>
+  try { native = parseNativeConfiguration(source) }
+  catch { throw new Error(`Invalid native OpenCode configuration: ${path}`) }
+  if (native.plugins === undefined) return undefined
+  if (!Array.isArray(native.plugins)) throw new Error(`plugins must be a native OpenCode 2 array: ${path}`)
+  let selected: NativeRegistration | undefined
+  for (const plugin of native.plugins) {
+    if (typeof plugin !== "string" && (!plugin || typeof plugin !== "object" || Array.isArray(plugin) || typeof plugin.package !== "string")) throw new Error(`Existing plugin entries must use a native package string or {package, options?} shape: ${path}`)
+    const packageName = typeof plugin === "string" ? plugin : plugin.package
+    const packagePath = packageName.startsWith("file://") ? fileURLToPath(packageName) : resolve(directory, packageName)
+    if (packageName === "ultra-open-code" || [productionPluginDirectory, join(productionPluginDirectory, "index.ts"), join(productionPluginDirectory, "index.js")].some(known => samePath(packagePath, known))) {
+      const target = packageName === "ultra-open-code" ? "package:ultra-open-code" : `local:${packagePath}`
+      if (selected && selected.target !== target) throw ambiguousRegistrations()
+      selected = { target, options: typeof plugin === "string" ? undefined : plugin.options }
+    }
+  }
+  return selected && { ...selected, options: parseConfigOptions(selected.options) }
+}
+
+async function configuration(directory: string, configDirectory: string, explicit?: string): Promise<Config> {
+  const [global, project, override] = await Promise.all([
+    nativeOptions(configDirectory),
+    nativeOptions(directory),
+    explicit ? readFile(resolve(explicit), "utf8").then(parseNativeConfiguration) : undefined,
+  ])
+  if (global && project && global.target !== project.target) throw ambiguousRegistrations()
+  return loadProjectConfig((project ?? global)?.options, directory, override)
 }
 
 function summary(run: Run) {
@@ -47,21 +85,23 @@ function summary(run: Run) {
 }
 
 /** Offline inspection only: genuine native invocation contexts are never fabricated. */
-export async function executeLocalCommand(args: string[], options: { directory?: string } = {}): Promise<LocalResult> {
+export async function executeLocalCommand(args: string[], options: { directory?: string; configDirectory?: string } = {}): Promise<LocalResult> {
   let store: SQLiteStore | undefined
   try {
     const input: string[] = []
     let directory = options.directory ?? process.cwd()
     let configPath: string | undefined
+    let globalPath: string | undefined
     let statePath: string | undefined
     let execute = false
     for (let index = 0; index < args.length; index++) {
       const value = args[index]!
-      if (value === "--project" || value === "--config" || value === "--state") {
+      if (value === "--project" || value === "--config" || value === "--state" || value === "--global-config") {
         const next = args[++index]
         if (!next) throw new Error(`Missing ${value} argument`)
         if (value === "--project") directory = next
         else if (value === "--config") configPath = next
+        else if (value === "--global-config") globalPath = next
         else statePath = next
       } else if (value === "--execute") execute = true
       else if (value.startsWith("--")) throw new Error(`Unknown local option: ${value}`)
@@ -72,18 +112,18 @@ export async function executeLocalCommand(args: string[], options: { directory?:
     if (verb === "help") return { exitCode: 0, output: localHelp }
     directory = await realpath(resolve(directory))
     if (verb === "validate") {
-      if (arguments_.length || execute) throw new Error("validate accepts --config and --project only")
-      return { exitCode: 0, output: json({ valid: true, supportedRuntime: "2.0.25", modelAvailability: "requires the live OpenCode catalog", config: await configuration(directory, configPath) }) }
+      if (arguments_.length || execute) throw new Error("validate accepts --config, --global-config, and --project only")
+      return { exitCode: 0, output: json({ valid: true, supportedRuntime: "2.0.25", modelAvailability: "requires the live OpenCode catalog", config: await configuration(directory, resolve(globalPath ?? options.configDirectory ?? globalConfigDirectory()), configPath) }) }
     }
     if (verb === "render") {
       if (!arguments_.length) throw new Error("render requires an objective")
       const objective = arguments_.join(" ")
       const planning = defaultPlanningPlan(objective)
-      const config = await configuration(directory, configPath)
+      const config = await configuration(directory, resolve(globalPath ?? options.configDirectory ?? globalConfigDirectory()), configPath)
       return { exitCode: 0, output: json(execute ? defaultExecutionPlan(objective, planning.criteria, config.checks) : planning) }
     }
     if (!["list", "status", "inspect", "export"].includes(verb)) throw new Error(`Unknown local command: ${verb}. Start and control workflows through /ultracode inside OpenCode.`)
-    if (configPath || execute) throw new Error("Snapshot commands accept --project and --state only")
+    if (configPath || globalPath || execute) throw new Error("Snapshot commands accept --project and --state only")
     if ((verb === "list" && arguments_.length) || (verb === "status" && arguments_.length > 1) || (verb === "inspect" && (arguments_.length < 1 || arguments_.length > 2)) || (verb === "export" && arguments_.length !== 1)) throw new Error(localHelp)
     const databasePath = resolve(statePath ?? join(directory, ".ultracode", "state.sqlite"))
     const stateDirectory = dirname(databasePath)
