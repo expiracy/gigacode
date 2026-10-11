@@ -7,6 +7,7 @@ import { ArtifactStore } from "../src/artifacts.ts"
 import { loadProjectConfig, parseConfigOptions } from "../src/config.ts"
 import { SQLiteStore, sanitizeEventData } from "../src/store.ts"
 import { defaultExecutionPlan, defaultPlanningPlan } from "../src/workflow.ts"
+import { supportedVersions } from "../src/compatibility.ts"
 import { globalConfigDirectory, parseNativeConfiguration, productionPluginDirectory } from "./install.ts"
 import type { Config, Run } from "../src/types.ts"
 
@@ -113,7 +114,7 @@ export async function executeLocalCommand(args: string[], options: { directory?:
     directory = await realpath(resolve(directory))
     if (verb === "validate") {
       if (arguments_.length || execute) throw new Error("validate accepts --config, --global-config, and --project only")
-      return { exitCode: 0, output: json({ valid: true, supportedRuntime: "2.0.25", modelAvailability: "requires the live OpenCode catalog", config: await configuration(directory, resolve(globalPath ?? options.configDirectory ?? globalConfigDirectory()), configPath) }) }
+      return { exitCode: 0, output: json({ valid: true, supportedRuntimes: supportedVersions, modelAvailability: "requires the live OpenCode catalog", config: await configuration(directory, resolve(globalPath ?? options.configDirectory ?? globalConfigDirectory()), configPath) }) }
     }
     if (verb === "render") {
       if (!arguments_.length) throw new Error("render requires an objective")

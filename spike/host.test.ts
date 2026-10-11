@@ -1,7 +1,20 @@
 import { expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
-import { isolatedEnvironment, prepareHostConfiguration } from "./host.ts"
+import { expectedHostVersion, isolatedEnvironment, prepareHostConfiguration } from "./host.ts"
+
+test("native compatibility candidates are explicit and default to the original tested version", () => {
+  expect(expectedHostVersion(undefined)).toBe("2.0.25")
+  expect(expectedHostVersion("2.0.25")).toBe("2.0.25")
+  expect(expectedHostVersion("2.0.26")).toBe("2.0.26")
+  for (const version of ["", "2.0.24", "2.0.27", "latest", "2.0.26 "]) expect(() => expectedHostVersion(version)).toThrow(/candidate/)
+})
+
+test("project configuration discovery is disabled unless the isolated probe opts in", () => {
+  expect(isolatedEnvironment("C:\\fixture", "local-password").OPENCODE_CONFIG_PROJECT_DISABLE).toBe("1")
+  expect(isolatedEnvironment("C:\\fixture", "local-password", { projectConfiguration: true }).OPENCODE_CONFIG_PROJECT_DISABLE).toBeUndefined()
+  expect(isolatedEnvironment("C:\\fixture", "local-password", { projectConfiguration: false }).OPENCODE_CONFIG_PROJECT_DISABLE).toBe("1")
+})
 
 test("child environment excludes inherited provider credentials and redirects state", () => {
   process.env.ULTRA_SPIKE_PRIVATE_TEST = "do-not-forward"

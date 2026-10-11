@@ -212,7 +212,7 @@ describe("project installer and local CLI", () => {
     const path = join(directory, "opencode.json")
     await writeFile(path, '{"agents":{"ultra-supervisor":{"mode":"primary"}}}')
     const original = await readFile(path, "utf8")
-    await expect(installProject({ directory, pluginPath: plugin, hostVersion: "2.0.26" })).rejects.toThrow("2.0.25")
+    await expect(installProject({ directory, pluginPath: plugin, hostVersion: "2.0.27" })).rejects.toThrow("2.0.25")
     await expect(installProject({ directory, pluginPath: plugin, hostVersion: "2.0.25" })).rejects.toThrow("ultra-supervisor")
     expect(await readFile(path, "utf8")).toBe(original)
   })

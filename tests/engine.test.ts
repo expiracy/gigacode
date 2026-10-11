@@ -259,6 +259,53 @@ test("submitted candidates are immutable and native snapshot identity must match
   expect(engine.get(run.id)!.tasks[0]!.acceptedAttemptId).toBeUndefined()
 })
 
+test("malformed nested worker results are rejected before persistence and can be corrected", async () => {
+  const run = await start(); install(run, [task("one")]); await engine.tick(run.id, invocation())
+  const sessionId = host.launches[0]!.sessionId
+  for (const malformed of [
+    { findings: [{ id: "finding", description: "Observed gap", blocking: true, evidence: {} }] },
+    { findings: {} }, { findings: [null] }, { findings: [{ id: "", description: "Gap", blocking: true }] },
+    { assessments: {} }, { assessments: [null] }, { artifacts: "result.md" }, { artifacts: [123] },
+    { needsInput: 123 }, { summary: "   " },
+  ]) {
+    expect(() => engine.submit(sessionId, { summary: "Observed result", ...malformed })).toThrow(/Invalid task result/)
+    expect(engine.get(run.id)!.tasks[0]!.attempts[0]!.result).toBeUndefined()
+    expect(store.events("project", run.id).some(event => event.kind === "result.candidate")).toBe(false)
+  }
+  engine.submit(sessionId, { summary: "Observed result", assessments: [{ criterionId: "request", passed: true, explanation: "Inspected requested behavior" }] })
+  host.settle(sessionId)
+  await expect(engine.tick(run.id, invocation())).resolves.toBeDefined()
+  expect(engine.get(run.id)!.status).toBe("ready")
+})
+
+test("bounded repair preserves the union of admitted writer scopes", async () => {
+  const run = await start("execute")
+  install(run, [
+    { ...task("first", true), ownedPaths: ["src/first.ts", "tests/first.test.ts"] },
+    { ...task("second", true, ["first"]), ownedPaths: ["src/second.ts", "tests/first.test.ts"] },
+    { ...task("review", false, ["second"]), role: "reviewer", stage: "review" },
+    { ...task("verify", false, ["second"]), role: "verifier", stage: "verification", checkIds: ["test"] },
+  ], "execution")
+  await engine.tick(run.id, invocation()); await settleWave(run.id); await settleWave(run.id); await settleWave(run.id, "failed")
+  const repair = engine.get(run.id)!.tasks.find(task => task.spec.id === "repair.write.1")!
+  expect(repair.spec.ownedPaths).toEqual(["src/first.ts", "tests/first.test.ts", "src/second.ts"])
+  await engine.tick(run.id, invocation())
+  expect(host.launches.find(launch => launch.task.id === "repair.write.1")!.task.ownedPaths).toEqual(repair.spec.ownedPaths)
+})
+
+test("a graph without admitted writer scope cannot create a repair writer", async () => {
+  const run = await start("execute")
+  install(run, [
+    { ...task("review"), role: "reviewer", stage: "review" },
+    { ...task("verify"), role: "verifier", stage: "verification", checkIds: ["test"] },
+  ], "execution")
+  await engine.tick(run.id, invocation()); await settleWave(run.id, "failed")
+  expect(engine.get(run.id)!.status).toBe("partial")
+  expect(engine.get(run.id)!.repairRound).toBe(0)
+  expect(engine.get(run.id)!.tasks.some(task => task.spec.writes)).toBe(false)
+  expect(engine.get(run.id)!.errors.join(" ")).toContain("writer scope")
+})
+
 test("retry appends an attempt with the captured model and rejects prior-session submissions", async () => {
   const run = await start(); install(run, [task("one")]); await engine.tick(run.id, invocation())
   const original = host.launches[0]!

@@ -4,7 +4,12 @@ import { existsSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { createServer } from "node:net"
 
-export const EXPECTED_VERSION = "2.0.25"
+export function expectedHostVersion(value: string | undefined): "2.0.25" | "2.0.26" {
+  const version = value ?? "2.0.25"
+  if (version !== "2.0.25" && version !== "2.0.26") throw new Error(`Unsupported compatibility candidate: ${version}; select 2.0.25 or 2.0.26 with OPENCODE_TEST_VERSION`)
+  return version
+}
+export const EXPECTED_VERSION = expectedHostVersion(process.env.OPENCODE_TEST_VERSION)
 
 export interface IsolatedHost {
   root: string
@@ -69,7 +74,7 @@ export function findBinary(): string {
 }
 
 /** Never forward provider tokens, user configuration, or telemetry settings. */
-export function isolatedEnvironment(root: string, password: string): Record<string, string> {
+export function isolatedEnvironment(root: string, password: string, options: { projectConfiguration?: boolean } = {}): Record<string, string> {
   const environment: Record<string, string> = {}
   for (const name of ["PATH", "Path", "SystemRoot", "SYSTEMROOT", "WINDIR", "ComSpec", "COMSPEC", "PATHEXT", "OS", "TERM", "LANG"]) {
     if (process.env[name]) environment[name] = process.env[name]!
@@ -89,7 +94,8 @@ export function isolatedEnvironment(root: string, password: string): Record<stri
     OPENCODE_TEST_HOME: join(root, "home"),
     OPENCODE_CONFIG_DIR: join(root, "config"),
     OPENCODE_DB: join(root, "host.sqlite"),
-    OPENCODE_CONFIG_PROJECT_DISABLE: "1",
+    ...(options.projectConfiguration ? {} : { OPENCODE_CONFIG_PROJECT_DISABLE: "1" }),
+    OPENCODE_TEST_VERSION: EXPECTED_VERSION,
     OPENCODE_DISABLE_MODELS_FETCH: "1",
     OPENCODE_MODELS_PATH: join(root, "models.json"),
     OPENCODE_PASSWORD: password,
@@ -109,6 +115,7 @@ export interface IsolatedHostOptions {
   pluginOptions?: Record<string, unknown>
   service?: boolean
   installGlobal?: boolean
+  projectConfiguration?: boolean
 }
 
 /** Keep isolated provider configuration separate from production installation. */
@@ -164,7 +171,7 @@ export async function startHost(options: IsolatedHostOptions): Promise<IsolatedH
   const port = await freePort()
   const password = crypto.randomUUID()
   const baseURL = `http://127.0.0.1:${port}`
-  const environment = isolatedEnvironment(root, password)
+  const environment = isolatedEnvironment(root, password, options)
   for (const directory of [project, otherProject, "home", "appdata", "localappdata", "xdg-config", "data", "state", "cache", "tmp", "config", "npm-cache", "bun-cache"].map(p => p === project || p === otherProject ? p : join(root, p))) {
     await mkdir(directory, { recursive: true })
   }

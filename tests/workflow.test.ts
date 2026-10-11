@@ -42,7 +42,7 @@ describe("default workflows and transparent prompts", () => {
     const run = { id: "run-1", objective: "Fix queue ordering", directory: process.cwd(), revision: 1, mode: "plan", criteria: [{ id: "goal", description: "Queue order is preserved", required: true, kind: "assessment" }], config: parseConfig({ prompts: { planner: "Explain migration costs." } }) } as Run
     const attempt = { id: "attempt-1", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "provider/model#deep", ref: { providerID: "provider", id: "model", variant: "deep" }, origin: "project.role" } } as Attempt
     const rendered = renderTaskPrompt(run, task, attempt, [{ taskId: "explore", result: { summary: "Observed queue behavior" } }])
-    for (const value of ["ultra/1", "run-1", "attempt-1", "inputs", "snapshot", "provider/model#deep", "Queue order is preserved", "Explain migration costs.", "Observed queue behavior", "ultra_submit", '"summary"', '"proposal"']) expect(rendered).toContain(value)
+    for (const value of ["ultra/2", "run-1", "attempt-1", "inputs", "snapshot", "provider/model#deep", "Queue order is preserved", "Explain migration costs.", "Observed queue behavior", "ultra_submit", '"summary"', '"proposal"']) expect(rendered).toContain(value)
     expect(rendered).toContain("untrusted")
     expect(rendered).toContain("read-only")
     expect(rendered).toContain("ultra_submit({result:")
@@ -58,5 +58,19 @@ describe("default workflows and transparent prompts", () => {
     expect(rendered).toContain("Which order should equal priorities use?")
     expect(rendered).toContain("Preserve insertion order.")
     expect(rendered.indexOf("Preserve insertion order.")).toBeLessThan(rendered.indexOf("Role instructions:"))
+  })
+
+  test("gives design workers a valid example using actual assessment IDs and typed tool schema guidance", () => {
+    const task = defaultPlanningPlan("Fix queue ordering").tasks.find(task => task.id === "design")!
+    const run = { id: "run-1", objective: "Fix queue ordering", directory: process.cwd(), revision: 1, mode: "plan", phase: "planning", criteria: [{ id: "queue-order", description: "Preserve insertion order", required: true, kind: "assessment" }, { id: "unit", description: "Tests pass", required: true, kind: "check" }], config: parseConfig({}) } as Run
+    const attempt = { id: "attempt-1", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "provider/model", ref: { providerID: "provider", id: "model" }, origin: "captured" } } as Attempt
+    const rendered = renderTaskPrompt(run, task, attempt, [])
+    expect(rendered).toContain("typed input schema")
+    expect(rendered).toContain("every required assessment criterion")
+    expect(rendered).toContain("submit needsInput instead of inventing an assessment")
+    expect(rendered).toContain('"criterionId":"queue-order"')
+    expect(rendered).not.toContain('"criterionId":"unit"')
+    expect(rendered).toContain("Example submission")
+    expect(rendered).not.toContain("optional Plan { revision:")
   })
 })

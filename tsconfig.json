@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["index.ts", "src/**/*.ts", "tests/**/*.ts", "spike/**/*.ts", "scripts/**/*.ts"]
+  "include": ["index.ts", "tui.ts", "src/**/*.ts", "tests/**/*.ts", "spike/**/*.ts", "scripts/**/*.ts"]
 }

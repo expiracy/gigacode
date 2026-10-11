@@ -1,6 +1,6 @@
 # OpenCode 2 compatibility spike
 
-Tested on 2026-10-11 against the installed `@opencode/cli` **2.0.25**, on Windows. Matching `@opencode/plugin` and `@opencode/client` packages are pinned in the lockfile. The host reports bundled Bun **1.4.2**; the test harness uses Bun **1.3.10**.
+The initial spike was tested on 2026-10-11 against the installed `@opencode/cli` **2.0.25**, on Windows. The subsequent [2.0.26 extension](#opencode-2026-extension) checks the host selected by the inspected OpenChamber development revision; released OpenChamber 2.2.0 still pins 2.0.25. The `@opencode/plugin` and `@opencode/client` packages remain pinned to 2.0.25 in the lockfile; their relevant contracts were compared with 2.0.26 before native checks. The original host reports bundled Bun **1.4.2**; the test harness uses Bun **1.3.10**.
 
 Result: **22 real-host probes passed, one capability is unavailable in this CLI profile, and eight fixture/isolation unit tests passed.** TypeScript checking passed. These tests establish host integration behavior, not model quality or Claude parity.
 
@@ -21,7 +21,7 @@ bun test
 bun run spike
 ```
 
-Requires Bun, Git, and OpenCode 2.0.25. `OPENCODE_SPIKE_BIN` can specify the executable. The runner checks the host version and the plugin rejects other versions.
+Requires Bun, Git, and OpenCode 2.0.25 or 2.0.26. The default test target remains 2.0.25. To test 2.0.26, set `OPENCODE_TEST_VERSION=2.0.26` and point `OPENCODE_SPIKE_BIN` at its executable. The runner verifies the selected host version, and the plugin rejects versions outside this explicit allowlist.
 
 The harness starts `opencode serve --service` on a free loopback port with a random local password. It redirects configuration, homes, caches, logs, temporary files, provider catalog, and the host database into a fresh `.spike/run-<timestamp>/` fixture. Child processes receive an environment allowlist. The only configured model provider is a local OpenAI-compatible HTTP fixture; no user credentials are forwarded.
 
@@ -81,8 +81,16 @@ Several rows share one probe; the runner contains 23 probes total.
 
 The spike is a diagnostic plugin, not the workflow engine. It does not implement task graph scheduling, leases, graph revisions, role/stage configuration, budgets, command intents, artifact acceptance, or a notification outbox.
 
-Only Windows/OpenCode 2.0.25 is tested. Other versions, operating systems, real providers, model variants, and TUI installation remain unverified. The prelaunch callback ordering is version-sensitive and needs a fail-closed compatibility gate. Idle plugin reload is proven; in-flight reload and observer continuity remain unproven. Restart recovery uses `--service`, a held text-generation request, and the same native child; it does not establish exactly-once external effects or recovery for ordinary `serve`.
+The original spike establishes Windows/OpenCode 2.0.25 primitives; the later 2.0.26 result is recorded below. Other host versions, operating systems, real providers, and model variants remain outside the spike's scope. Production terminal rendering is recorded separately in the maintained design. The prelaunch callback ordering is version-sensitive and needs an exact compatibility gate. Idle plugin reload is proven; in-flight reload and observer continuity remain unproven. Restart recovery uses `--service`, a held text-generation request, and the same native child; it does not establish exactly-once external effects or recovery for ordinary `serve`.
 
 Worktree placement uses an API-created fixture child and verifies native move semantics. Moving a native delegated child inside its prelaunch callback, then binding its first task prompt and destination policy, remains a separate test before parallel writers are enabled. Worktree/permission checks are not an operating-system filesystem sandbox.
 
 The spike originally handed off to the read-only vertical slice. That slice and full execution with one writer are now implemented in the production plugin, including durable run/task/attempt state, model resolution, command intents, the native supervisor bridge, snapshot reconciliation, lifecycle controls, budgets, repair, and exports. See the [dated implementation checkpoint](design.md#14-implementation-checkpoint-and-remaining-validation) for the separate production test results and remaining extensions. Historical event replay from the CLI remains unavailable.
+
+## OpenCode 2.0.26 extension
+
+On 11 October 2026, the same spike ran against an isolated official `@opencode/cli-windows-x64` 2.0.26 package. **22 native probes pass, one historical-event capability remains unsupported, and zero probes fail**, with 76 local fixture requests. Evidence is `.spike/run-1791744069663/report.json`. The installed executable and the live server identify 2.0.26; the package metadata does not independently attest a build commit. No global OpenCode installation was changed.
+
+Source reference [d21b0790a6c146815f28fea604e41e922f009590](https://github.com/anomalyco/opencode/commit/d21b0790a6c146815f28fea604e41e922f009590) retains the child-create → awaited progress → prompt ordering. Completion tracking moves from a plugin-scoped job helper to the global job service, which still requires separate in-flight reload validation. The official packages' 62 plugin declaration files, 62 plugin implementation files, and 31 client declaration files match the inspected 2.0.25 files. Effect remains `4.0.0-rc.112`; the terminal peers move to OpenTUI 0.5.17. Comparison evidence is `.spike/opencode-2.0.26/sdk-type-comparison.json` and `critical-contract-comparison.json`.
+
+The production plugin and installer now share the exact 2.0.25/2.0.26 allowlist and report the actual host version. The test harness records its selected version rather than labelling every run 2.0.25. Other hosts remain rejected. See the [client settings delivery](design.md#change-client-settings--single-command-and-openchamber-configuration) for production workflow and OpenChamber settings checks beyond this diagnostic spike.

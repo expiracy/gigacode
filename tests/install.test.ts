@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises"
 import { join, relative, resolve } from "node:path"
@@ -14,7 +14,102 @@ async function fixture() {
   return { root, plugin, configDirectory }
 }
 
+async function hostFixture(manifest?: Record<string, unknown>) {
+  const value = await fixture()
+  const packageDirectory = join(value.root, "host")
+  const binary = join(packageDirectory, "bin", process.platform === "win32" ? "opencode.exe" : "opencode")
+  await mkdir(join(packageDirectory, "bin"), { recursive: true })
+  await writeFile(binary, "fixture binary; never executed\n")
+  if (manifest) await writeFile(join(packageDirectory, "package.json"), JSON.stringify(manifest))
+  const appData = join(value.root, "appdata")
+  const unrelated = join(appData, "npm", "node_modules", "@opencode", "cli")
+  await mkdir(unrelated, { recursive: true })
+  await writeFile(join(unrelated, "package.json"), JSON.stringify({ name: "@opencode/cli", version: "2.0.25" }))
+  return { ...value, packageDirectory, binary, appData }
+}
+
+describe("installed host discovery", () => {
+  const nativeName = `@opencode/cli-${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`
+  test("recognizes the exact official native package for the selected platform and architecture", async () => {
+    const value = await hostFixture({ name: nativeName, version: "2.0.26", os: [process.platform], cpu: [process.arch] })
+    expect(installer.installedVersion({ binary: value.binary, appData: value.appData })).toEqual({ version: "2.0.26", source: join(value.packageDirectory, "package.json") })
+  })
+
+  const mismatches: Record<string, unknown>[] = [
+    { name: "some-opencode-wrapper", version: "2.0.26" },
+    { name: process.platform === "win32" ? "@opencode/cli-linux-x64" : "@opencode/cli-windows-x64", version: "2.0.26", os: [process.platform], cpu: [process.arch] },
+    { name: `@opencode/cli-${process.platform === "win32" ? "windows" : process.platform}-${process.arch === "arm64" ? "x64" : "arm64"}`, version: "2.0.26", os: [process.platform], cpu: [process.arch] },
+    { name: nativeName, version: "2.0.26", os: ["unsupported"], cpu: [process.arch] },
+    { name: nativeName, version: "2.0.26", os: [process.platform], cpu: ["unsupported"] },
+  ]
+  test.each(mismatches)("refuses a mismatching selected manifest without using another installed CLI: %j", async manifest => {
+    const value = await hostFixture(manifest)
+    const spawn = spyOn(Bun, "spawnSync")
+    try {
+      expect(() => installer.installedVersion({ binary: value.binary, appData: value.appData })).toThrow("selected OpenCode")
+      expect(spawn).not.toHaveBeenCalled()
+    } finally { spawn.mockRestore() }
+  })
+
+  test("refuses a missing explicitly selected binary instead of using an unrelated CLI manifest", async () => {
+    const value = await hostFixture()
+    expect(() => installer.installedVersion({ binary: join(value.root, "missing", "opencode.exe"), appData: value.appData })).toThrow("selected OpenCode")
+  })
+
+  test("checks a bare selected executable with --version in an isolated environment", async () => {
+    const value = await hostFixture()
+    const spawn = spyOn(Bun, "spawnSync").mockReturnValue({ exitCode: 0, stdout: new Uint8Array(Buffer.from("opencode v2.0.26\r\n")), stderr: new Uint8Array() } as any)
+    try {
+      expect(installer.installedVersion({ binary: value.binary, appData: value.appData })).toEqual({ version: "2.0.26", source: `${value.binary} --version (isolated profile)` })
+      const [command, options] = spawn.mock.calls[0]!
+      expect(command).toEqual([value.binary, "--version"])
+      expect(options).toMatchObject({ timeout: 5_000, maxBuffer: 4096, windowsHide: true })
+      expect(options!.env!.OPENCODE_CONFIG_PROJECT_DISABLE).toBe("1")
+      expect(options!.env!.OPENCODE_CONFIG).toBeUndefined()
+      expect(options!.env!.OPENCODE_CONFIG_CONTENT).toBeUndefined()
+      expect(options!.env!.OPENAI_API_KEY).toBeUndefined()
+      expect(options!.env!.ANTHROPIC_API_KEY).toBeUndefined()
+      expect(options!.env!.USERPROFILE).toBe(options!.cwd)
+      expect(existsSync(options!.cwd as string)).toBe(false)
+    } finally { spawn.mockRestore() }
+  })
+
+  test("resolves a relative bare executable before changing its version probe directory", async () => {
+    const value = await hostFixture()
+    const spawn = spyOn(Bun, "spawnSync").mockReturnValue({ exitCode: 0, stdout: Buffer.from("2.0.26\n"), stderr: Buffer.alloc(0) } as any)
+    try {
+      expect(installer.installedVersion({ binary: relative(process.cwd(), value.binary), appData: value.appData }).version).toBe("2.0.26")
+      expect(spawn.mock.calls[0]![0]).toEqual([value.binary, "--version"])
+    } finally { spawn.mockRestore() }
+  })
+
+  test.each([
+    { exitCode: 1, stdout: "2.0.26", stderr: "synthetic-secret" },
+    { exitCode: 0, stdout: "Welcome!\n2.0.26", stderr: "" },
+    { exitCode: 0, stdout: "2.0.26-dev", stderr: "" },
+    { exitCode: null, stdout: "", stderr: "synthetic-secret" },
+  ])("refuses failed or ambiguous bare-executable version output: %j", async output => {
+    const value = await hostFixture()
+    const spawn = spyOn(Bun, "spawnSync").mockReturnValue({ ...output, stdout: Buffer.from(output.stdout), stderr: Buffer.from(output.stderr) } as any)
+    try {
+      let error: unknown
+      try { installer.installedVersion({ binary: value.binary, appData: value.appData }) } catch (caught) { error = caught }
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).message).toContain("selected OpenCode")
+      expect((error as Error).message).not.toContain("synthetic-secret")
+      expect(existsSync(spawn.mock.calls[0]![1]!.cwd as string)).toBe(false)
+    } finally { spawn.mockRestore() }
+  })
+})
+
 describe("global installer", () => {
+  test("accepts the exact 2.0.26 host version", async () => {
+    const { plugin, configDirectory } = await fixture()
+    const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.26" })
+    expect(installed.supportedVersion).toBe("2.0.26")
+    expect(JSON.parse(await readFile(installed.path, "utf8")).plugins).toEqual([{ package: plugin }])
+  })
+
   test("uses the pinned host's global path rules on every platform", () => {
     expect(installer.globalConfigDirectory({}, "/home/example")).toBe(resolve("/home/example/.config/opencode"))
     expect(installer.globalConfigDirectory({ XDG_CONFIG_HOME: "/xdg" }, "/home/example")).toBe(resolve("/xdg/opencode"))
@@ -110,7 +205,7 @@ describe("global installer", () => {
 
   test("rejects invalid input before creating a missing configuration directory", async () => {
     const { plugin, configDirectory } = await fixture()
-    await expect(installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.26" })).rejects.toThrow("2.0.25")
+    await expect(installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.27" })).rejects.toThrow("2.0.25")
     await expect(installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25", config: { limits: { workers: 0 } } })).rejects.toThrow("workers")
     expect(existsSync(configDirectory)).toBe(false)
   })

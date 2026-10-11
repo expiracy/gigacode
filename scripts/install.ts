@@ -1,12 +1,13 @@
-import { existsSync, lstatSync, readFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import { homedir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { parseConfigOptions } from "../src/config.ts"
+import { assertHostVersion, supportedVersions } from "../src/compatibility.ts"
 import type { Rule } from "../src/types.ts"
 
-export const supportedVersion = "2.0.25"
+export const supportedVersion = supportedVersions.join(" or ")
 export const productionPluginDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
 /** OpenCode 2.0.25 @opencode/util/global and global-roots, including on Windows. */
@@ -57,18 +58,77 @@ function samePath(left: string, right: string): boolean {
   return process.platform === "win32" ? resolve(left).toLowerCase() === resolve(right).toLowerCase() : resolve(left) === resolve(right)
 }
 
-function installedVersion(): { version: string; source: string } {
+const nativePackages: Record<string, { platform: string; architecture: string }> = {
+  "@opencode/cli-windows-x64": { platform: "win32", architecture: "x64" },
+  "@opencode/cli-windows-x64-baseline": { platform: "win32", architecture: "x64" },
+  "@opencode/cli-windows-arm64": { platform: "win32", architecture: "arm64" },
+  "@opencode/cli-darwin-x64": { platform: "darwin", architecture: "x64" },
+  "@opencode/cli-darwin-x64-baseline": { platform: "darwin", architecture: "x64" },
+  "@opencode/cli-darwin-arm64": { platform: "darwin", architecture: "arm64" },
+  "@opencode/cli-linux-x64": { platform: "linux", architecture: "x64" },
+  "@opencode/cli-linux-x64-baseline": { platform: "linux", architecture: "x64" },
+  "@opencode/cli-linux-x64-musl": { platform: "linux", architecture: "x64" },
+  "@opencode/cli-linux-x64-baseline-musl": { platform: "linux", architecture: "x64" },
+  "@opencode/cli-linux-arm64": { platform: "linux", architecture: "arm64" },
+  "@opencode/cli-linux-arm64-musl": { platform: "linux", architecture: "arm64" },
+}
+
+function bareBinaryVersion(binary: string): { version: string; source: string } {
+  // Even --version initializes OpenCode logging. Give the explicitly selected
+  // executable a disposable profile, no project config, and no provider secrets.
+  const temporaryRoot = resolve(tmpdir())
+  const profile = mkdtempSync(join(temporaryRoot, "ultra-host-version-"))
+  if (dirname(profile) !== temporaryRoot) throw new Error("Invalid temporary OpenCode version profile")
+  const environment: Record<string, string> = {}
+  for (const name of ["PATH", "Path", "SystemRoot", "SYSTEMROOT", "WINDIR", "ComSpec", "COMSPEC", "PATHEXT", "OS", "LANG"]) {
+    if (process.env[name]) environment[name] = process.env[name]!
+  }
+  Object.assign(environment, {
+    HOME: profile, USERPROFILE: profile, OPENCODE_TEST_HOME: profile,
+    XDG_CONFIG_HOME: join(profile, "config"), XDG_DATA_HOME: join(profile, "data"),
+    XDG_STATE_HOME: join(profile, "state"), XDG_CACHE_HOME: join(profile, "cache"),
+    OPENCODE_CONFIG_DIR: join(profile, "config"), APPDATA: join(profile, "appdata"), LOCALAPPDATA: join(profile, "localappdata"),
+    TMP: profile, TEMP: profile, TMPDIR: profile,
+    OPENCODE_CONFIG_PROJECT_DISABLE: "1", OPENCODE_DISABLE_MODELS_FETCH: "1",
+  })
+  try {
+    for (const name of ["config", "data", "state", "cache", "appdata", "localappdata"]) mkdirSync(join(profile, name))
+    const result = Bun.spawnSync([binary, "--version"], { cwd: profile, env: environment, stdout: "pipe", stderr: "pipe", timeout: 5_000, maxBuffer: 4096, windowsHide: true })
+    const release = /^(?:opencode v)?(\d+\.\d+\.\d+)$/.exec(new TextDecoder().decode(result.stdout).trim())
+    if (result.exitCode !== 0 || !release) throw new Error("Invalid version response")
+    return { version: release[1]!, source: `${binary} --version (isolated profile)` }
+  } catch {
+    throw new Error(`Cannot verify selected OpenCode binary ${binary}: --version must report an OpenCode release within five seconds`)
+  } finally { rmSync(profile, { recursive: true, force: true }) }
+}
+
+/** Explicit binary selection never falls back to another installation. */
+export function installedVersion(options: { binary?: string; appData?: string } = { binary: process.env.OPENCODE_BIN ?? process.env.OPENCODE_SPIKE_BIN, appData: process.env.APPDATA }): { version: string; source: string } {
+  const explicit = options.binary !== undefined
+  const selected = options.binary ?? Bun.which("opencode")
+  const binary = selected ? resolve(selected) : selected
+  if (explicit && (!binary || !existsSync(binary) || !statSync(binary).isFile())) throw new Error(`Cannot verify selected OpenCode binary: ${binary ?? "empty path"}`)
   const candidates: string[] = []
-  const binary = process.env.OPENCODE_BIN ?? process.env.OPENCODE_SPIKE_BIN ?? Bun.which("opencode")
   if (binary) {
     candidates.push(join(dirname(binary), "package.json"), join(dirname(dirname(binary)), "package.json"))
     candidates.push(join(dirname(binary), "node_modules", "@opencode", "cli", "package.json"))
   }
-  if (process.env.APPDATA) candidates.push(join(process.env.APPDATA, "npm", "node_modules", "@opencode", "cli", "package.json"))
   for (const path of candidates) {
     if (!existsSync(path)) continue
-    const manifest = JSON.parse(readFileSync(path, "utf8"))
-    if (manifest.name === "@opencode/cli" && typeof manifest.version === "string") return { version: manifest.version, source: path }
+    let manifest: Record<string, unknown> | undefined
+    try { manifest = JSON.parse(readFileSync(path, "utf8")) } catch { /* The selected manifest fails closed below. */ }
+    const native = typeof manifest?.name === "string" ? nativePackages[manifest.name] : undefined
+    if (manifest && typeof manifest.version === "string" && (manifest.name === "@opencode/cli" || native &&
+      native.platform === process.platform && native.architecture === process.arch &&
+      Array.isArray(manifest.os) && manifest.os.includes(process.platform) && Array.isArray(manifest.cpu) && manifest.cpu.includes(process.arch))) return { version: manifest.version, source: path }
+    if (explicit) throw new Error(`Cannot verify selected OpenCode package manifest ${path}: expected the official CLI or its native package for ${process.platform}/${process.arch}`)
+  }
+  if (explicit) return bareBinaryVersion(binary!)
+  const fallback = options.appData ? join(options.appData, "npm", "node_modules", "@opencode", "cli", "package.json") : undefined
+  if (fallback && existsSync(fallback)) {
+    let manifest: Record<string, unknown> | undefined
+    try { manifest = JSON.parse(readFileSync(fallback, "utf8")) } catch { /* No verified fallback. */ }
+    if (manifest?.name === "@opencode/cli" && typeof manifest.version === "string") return { version: manifest.version, source: fallback }
   }
   throw new Error(`Cannot verify an installed @opencode/cli manifest. Install OpenCode ${supportedVersion}; the plugin also checks the live host version.`)
 }
@@ -105,7 +165,7 @@ function packageMatches(entry: string, packagePath: string, directory: string): 
 
 async function install(scope: "global" | "project", options: InstallOptions): Promise<InstallResult> {
   const version = options.hostVersion === undefined ? installedVersion() : { version: options.hostVersion, source: "declared by caller; live runtime is checked by the plugin" }
-  if (version.version !== supportedVersion) throw new Error(`Ultra Open Code requires OpenCode ${supportedVersion}; found ${version.version}`)
+  assertHostVersion(version.version)
   const requestedDirectory = resolve(scope === "global" ? options.configDirectory ?? globalConfigDirectory() : options.directory ?? process.cwd())
   const directory = existsSync(requestedDirectory) ? await realpath(requestedDirectory) : requestedDirectory
   if (existsSync(directory)) {
@@ -146,7 +206,7 @@ async function install(scope: "global" | "project", options: InstallOptions): Pr
   experimental.subagent_depth = Math.max(2, experimental.subagent_depth ?? 0)
   configuration.experimental = experimental
   const output = JSON.stringify(configuration, null, 2) + "\n"
-  const result = { scope, path, packagePath, supportedVersion, versionSource: version.source }
+  const result = { scope, path, packagePath, supportedVersion: version.version, versionSource: version.source }
   if (output === original) return { ...result, changes: [] }
   // Validate everything before creating directories or replacing user files.
   await mkdir(directory, { recursive: true })
@@ -172,7 +232,7 @@ export async function installGlobal(options: Omit<InstallOptions, "directory"> =
 export async function installProject(options: Omit<InstallOptions, "configDirectory"> = {}): Promise<InstallResult> { return install("project", options) }
 
 export const installHelp = `bun scripts/install.ts [--global | --local | --project <directory>] [--config-dir <global-directory>] [--plugin <package-or-entrypoint>] [--config <ultra-options.json>]
-Defaults to global installation. Requires OpenCode 2.0.25. Preserves existing settings and an original backup when changed.
+Defaults to global installation. Requires OpenCode ${supportedVersion}. Preserves existing settings and an original backup when changed.
 Global path: OPENCODE_CONFIG_DIR, otherwise XDG_CONFIG_HOME/opencode or ~/.config/opencode.
 Optional project overrides: ultracode.json in the project directory; no project installation is required.`
 

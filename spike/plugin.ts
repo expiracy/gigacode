@@ -6,8 +6,13 @@ import { mkdirSync } from "node:fs"
 import { isAbsolute, join, relative, resolve } from "node:path"
 import { CompatibilityRpc } from "./rpc.ts"
 
-const HOST_VERSION = "2.0.25"
-const SOURCE_COMMIT = "b44eea9e204024db2b480a136ece29d790d5f593"
+const HOST_VERSION = process.env.OPENCODE_TEST_VERSION ?? "2.0.25"
+const SOURCE_REFERENCES: Record<string, string> = {
+  "2.0.25": "b44eea9e204024db2b480a136ece29d790d5f593",
+  "2.0.26": "d21b0790a6c146815f28fea604e41e922f009590",
+}
+if (!SOURCE_REFERENCES[HOST_VERSION]) throw new Error(`Unsupported compatibility candidate ${HOST_VERSION}`)
+const SOURCE_COMMIT = SOURCE_REFERENCES[HOST_VERSION]!
 const ProbeInput = Schema.Struct({
   label: Schema.optionalKey(Schema.String),
   waitMs: Schema.optionalKey(Schema.Number),
@@ -317,7 +322,7 @@ export default Plugin.define({
       async inspect() {
         const tools = await ctx.tool.list()
         return {
-          hostVersion: HOST_VERSION,
+          hostVersion: ctx.app.version,
           sourceCommit: SOURCE_COMMIT,
           sqlite: true,
           runtime: process.versions.bun ?? null,

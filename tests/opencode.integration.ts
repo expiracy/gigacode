@@ -4,7 +4,7 @@ import { cp, mkdir, readFile, writeFile } from "node:fs/promises"
 import { join, relative, resolve } from "node:path"
 import { Rpc } from "@opencode/plugin"
 import { Database } from "bun:sqlite"
-import { startHost, waitFor, type IsolatedHost } from "../spike/host.ts"
+import { EXPECTED_VERSION, startHost, waitFor, type IsolatedHost } from "../spike/host.ts"
 import type { Run } from "../src/types.ts"
 import { manifest } from "../src/workspace.ts"
 import { SQLiteStore } from "../src/store.ts"
@@ -15,8 +15,12 @@ const object = { type: "object", additionalProperties: true } as const
 const WorkflowRpc = Rpc.define({ id: "ultra.open-code", methods: {
   status: { input: object, output: object }, inspect: { input: object, output: object },
   config: { input: object, output: object }, control: { input: object, output: object }, export: { input: object, output: object },
-}, events: {} })
+}, events: { commandResult: { schema: {
+  type: "object", properties: { sessionId: { type: "string", minLength: 1 }, command: { type: "string" }, result: object, error: { type: "string", minLength: 1 } },
+  required: ["sessionId", "command"], additionalProperties: false,
+} } } })
 type Record_ = Record<string, unknown>
+type CommandFeedback = { sessionId: string; command: string; result?: Record_; error?: string }
 type Check = { name: string; durationMs: number; evidence: unknown }
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return `${error.name}: ${error.message}`
@@ -60,6 +64,11 @@ export default { ...production, async setup(ctx) {
   return async () => { await registration.dispose(); await cleanup?.() }
 } }
 `)
+  await writeFile(join(directory, "tui.ts"), 'export { default } from "../plugin/tui.ts"\n')
+  await writeFile(join(directory, "package.json"), JSON.stringify({
+    name: "ultra-open-code-integration", private: true, type: "module",
+    exports: { ".": "./index.ts", "./tui": "./tui.ts" },
+  }, null, 2) + "\n")
   return { directory, hash: (await manifest(directory)).hash, purpose: "Hold native researcher progress after child creation and before production binding during the cancellation regression only." }
 }
 
@@ -74,7 +83,7 @@ export async function runOpenCodeIntegration() {
   let testInstrumentation: Awaited<ReturnType<typeof cancellationBootstrap>> | undefined
   let stage = "host startup"
   const report = async (error?: unknown) => {
-    const result = { status: error ? "fail" : "pass", stage, version: "2.0.25", root, pluginSnapshot, testInstrumentation, checks, requests: fixture.requests, prelaunches: fixture.prelaunches, run: finalRun, ...(error ? { error: errorMessage(error) } : {}) }
+    const result = { status: error ? "fail" : "pass", stage, version: EXPECTED_VERSION, root, pluginSnapshot, testInstrumentation, checks, requests: fixture.requests, prelaunches: fixture.prelaunches, run: finalRun, ...(error ? { error: errorMessage(error) } : {}) }
     await writeFile(join(root, "integration.json"), JSON.stringify(result, null, 2) + "\n")
     return result
   }
@@ -93,6 +102,8 @@ export async function runOpenCodeIntegration() {
     const pluginDirectory = join(root, "plugin")
     await mkdir(pluginDirectory, { recursive: true })
     await cp(resolve("index.ts"), join(pluginDirectory, "index.ts"))
+    await cp(resolve("package.json"), join(pluginDirectory, "package.json"))
+    await cp(resolve("tui.ts"), join(pluginDirectory, "tui.ts"))
     await cp(resolve("src"), join(pluginDirectory, "src"), { recursive: true })
     pluginSnapshot = { directory: pluginDirectory, hash: (await manifest(pluginDirectory)).hash }
     testInstrumentation = await cancellationBootstrap(root, fixture.baseURL)
@@ -113,6 +124,73 @@ export async function runOpenCodeIntegration() {
       assert.equal((configuration.config as { models?: { roles?: { planner?: string } } } | undefined)?.models?.roles?.planner ?? (configuration.models as { roles?: { planner?: string } } | undefined)?.roles?.planner, "fixture/alternate")
       assert.equal(fixture.requests.length, 0)
       return configuration
+    })
+    await check("configured package exposes the production terminal companion", async () => {
+      const production = JSON.parse(await readFile(join(pluginSnapshot!.directory, "package.json"), "utf8"))
+      const configured = JSON.parse(await readFile(join(testInstrumentation!.directory, "package.json"), "utf8"))
+      assert.equal(production.exports["./tui"], "./tui.ts")
+      assert.equal(configured.exports["./tui"], "./tui.ts")
+      assert.equal(await readFile(join(testInstrumentation!.directory, "tui.ts"), "utf8"), 'export { default } from "../plugin/tui.ts"\n')
+      assert.ok((await readFile(join(pluginSnapshot!.directory, "tui.ts"), "utf8")).includes("@opencode/plugin/tui"))
+      assert.equal(fixture.requests.length, 0)
+      return { productionExport: production.exports["./tui"], configuredExport: configured.exports["./tui"], productionCompanion: join(pluginSnapshot!.directory, "tui.ts"), nativeRenderingVerified: false }
+    })
+    await check("native config command emits immediate RPC feedback without queued input or model calls", async () => {
+      const session = await client.session.create({ location, model: { providerID: "fixture", id: "test" } })
+      const beforeRequests = fixture.requests.length
+      const beforeInbox = await client.session.inbox.list({ sessionID: session.id })
+      const beforeContext = await client.session.context({ sessionID: session.id })
+      const received: { location?: { directory: string }; data: CommandFeedback }[] = []
+      const subscription = new AbortController()
+      const unsubscribe = rpc.events.on("commandResult", event => { received.push({ location: event.location, data: event.data as CommandFeedback }) }, { signal: subscription.signal })
+      // The Promise client shares an SSE connection between native events and
+      // RPC listeners. Wait for its connected marker instead of sleeping and
+      // racing a live-only command feedback event.
+      const readiness = client.event.subscribe({ signal: AbortSignal.any([subscription.signal, AbortSignal.timeout(5_000)]) })[Symbol.asyncIterator]()
+      try {
+        let ready = await readiness.next()
+        while (!ready.done && ready.value.type !== "server.connected") ready = await readiness.next()
+        assert.equal(ready.done, false, "Native event connection must be ready before issuing the command")
+        await client.session.command({ sessionID: session.id, name: "ultracode", text: "config" })
+        const feedback = await waitFor("native config command RPC result", async () => received.find(event => event.data.sessionId === session.id && event.data.command === "config"), value => !!value, 5_000)
+        assert(feedback)
+        assert.equal(feedback.location?.directory, host!.project)
+        assert.equal(feedback.data.error, undefined)
+        assert.equal((feedback.data.result?.config as Run["config"]).models.roles?.planner, "fixture/alternate")
+        assert.equal(feedback.data.result?.promptVersion, "ultra/2")
+        assert.deepEqual(await client.session.inbox.list({ sessionID: session.id }), beforeInbox, "Command feedback must not be queued as future model input")
+        assert.deepEqual(await client.session.context({ sessionID: session.id }), beforeContext)
+        assert.equal(fixture.requests.length, beforeRequests)
+
+        // Configuration RPC remains available to other clients without an
+        // active conversation. Terminal feedback uses the native command.
+        const configuration = await rpc.config({}, options()) as { config: Run["config"]; hostVersion: string; promptVersion: string; directory: string; state: string }
+        assert.equal(configuration.config.models.roles?.planner, "fixture/alternate")
+        assert.equal(configuration.config.checks[0]?.id, "fixture-check")
+        assert.equal(configuration.hostVersion, EXPECTED_VERSION)
+        assert.equal(configuration.promptVersion, "ultra/2")
+        assert.equal(configuration.directory, host!.project)
+        assert.equal(configuration.state, join(host!.project, ".ultracode", "state.sqlite"))
+        assert.deepEqual(await client.session.inbox.list({ sessionID: session.id }), beforeInbox)
+        assert.deepEqual(await client.session.context({ sessionID: session.id }), beforeContext)
+        assert.equal(fixture.requests.length, beforeRequests)
+
+        let rejected = false
+        try { await client.session.command({ sessionID: session.id, name: "ultracode", text: "unknown-verb" }) } catch { rejected = true }
+        const error = await waitFor("invalid native command RPC feedback", async () => received.find(event => event.data.sessionId === session.id && event.data.command === "unknown-verb"), value => !!value, 5_000)
+        assert(error)
+        assert.equal(rejected, true)
+        assert.match(error.data.error ?? "", /Unknown ultracode command|Usage:/)
+        assert.equal(error.data.result, undefined)
+        assert.equal(error.location?.directory, host!.project)
+        assert.deepEqual(await client.session.inbox.list({ sessionID: session.id }), beforeInbox)
+        assert.deepEqual(await client.session.context({ sessionID: session.id }), beforeContext)
+        assert.equal(fixture.requests.length, beforeRequests)
+        assert.equal(received.filter(event => event.data.sessionId === session.id).length, 2)
+        return { feedback: feedback.data, error: error.data, rpcConfiguration: configuration, providerRequests: 0, queuedFeedback: 0, nativeRenderingVerified: false }
+      } finally {
+        unsubscribe(); subscription.abort(); await readiness.return?.()
+      }
     })
     await check("one global installation supplies isolated project overrides and state", async () => {
       for (const directory of [host!.project, host!.otherProject]) for (const file of ["opencode.json", "opencode.jsonc"]) assert.equal(existsSync(join(directory, file)), false)

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { resolve } from "node:path"
 import { parseConfig, resolveModel } from "./config.ts"
 import { validatePlan } from "./graph.ts"
+import { parseTaskResult } from "./results.ts"
 import { defaultExecutionPlan, defaultPlanningPlan, promptVersion, renderTaskPrompt } from "./workflow.ts"
 import { NoLaunchError, SettledLaunchError, UnsettledLaunchError } from "./types.ts"
 import type { Attempt, CheckEvidence, Config, HostAdapter, Invocation, Lease, Limits, ModelOptions, ModelRef, Plan, Rule, Run, Store, Task, TaskResult, TaskSpec } from "./types.ts"
@@ -204,17 +205,10 @@ export class Engine {
   }
   submit(sessionId: string, input: unknown): void {
     const { run, task, attempt } = this.attribution(sessionId)
-    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Task result must be an object")
-    const result = input as TaskResult
-    if (typeof result.summary !== "string" || !result.summary.trim()) throw new Error("Task result summary is required")
-    if (result.needsInput !== undefined && (typeof result.needsInput !== "string" || !result.needsInput.trim())) throw new Error("A needsInput question must be nonempty text")
+    const result = parseTaskResult(input)
     if (result.assessments) for (const assessment of result.assessments) {
       const criterion = run.criteria.find(item => item.id === assessment.criterionId)
       if (!criterion || criterion.kind !== "assessment" || typeof assessment.passed !== "boolean" || typeof assessment.explanation !== "string" || !assessment.explanation.trim()) throw new Error("Invalid criterion assessment")
-    }
-    if (result.findings) for (const finding of result.findings) {
-      if (typeof finding.id !== "string" || typeof finding.description !== "string" || typeof finding.blocking !== "boolean") throw new Error("Invalid review finding")
-      if (finding.disposition && !["fixed", "rejected", "deferred"].includes(finding.disposition)) throw new Error("Unknown finding disposition")
     }
     if (result.proposal) {
       if (task.spec.stage !== "design" || !["planner", "synthesizer"].includes(task.spec.role)) throw new Error("Only bound design workers may propose an execution graph")
@@ -497,7 +491,7 @@ export class Engine {
       return this.terminal(runId, "succeeded", "Required assessments and fresh native checks passed", lease)
     }
     if (refreshed.repairRound < refreshed.config.limits.repairRounds && (failed || failedCheck || !nativeChecksCovered || blocking.length || !covered)) {
-      this.repair(runId, workspaceHash, lease); return
+      await this.repair(runId, workspaceHash, lease); return
     }
     await this.terminal(runId, "partial", "Required verification or review remains unresolved", lease)
   }
@@ -516,8 +510,14 @@ export class Engine {
       } catch (error) { this.audit(runId, "notification.pending", { id: notification.id, error: String(error) }) }
     }
   }
-  private repair(runId: string, workspaceHash: string, lease?: Lease) {
+  private async repair(runId: string, workspaceHash: string, lease?: Lease) {
     const saved = this.required(runId)
+    const ownedPaths = [...new Set(saved.tasks.filter(task => task.spec.writes).flatMap(task => task.spec.ownedPaths ?? []))]
+    if (!ownedPaths.length) {
+      this.audit(runId, "repair.not_admitted", { reason: "No admitted writer scope" })
+      await this.terminal(runId, "partial", "No admitted writer scope is available for repair", lease)
+      return
+    }
     if (saved.tasks.length + 3 > saved.config.limits.attempts || saved.tasks.reduce((total, task) => total + task.attempts.length, 0) + 3 > saved.config.limits.attempts) {
       this.change(runId, run => { this.stopClock(run); run.status = "waiting_budget"; run.errors.push("Repair graph requires additional worker attempt budget") }, lease)
       this.audit(runId, "budget.exhausted", { reason: "repair_attempts" })
@@ -526,8 +526,8 @@ export class Engine {
     this.change(runId, run => {
       const round = ++run.repairRound, implement = `repair.write.${round}`, review = `repair.review.${round}`, verify = `repair.verify.${round}`
       const tasks: TaskSpec[] = [
-        { id: implement, title: `Repair round ${round}`, role: "implementer", stage: "implementation", instructions: "Resolve recorded blocking findings and failed checks without changing acceptance criteria.", dependencies: run.tasks.map(task => task.spec.id), acceptsFailures: true, writes: true, ownedPaths: ["**"] },
-        { id: review, title: `Review repair ${round}`, role: "reviewer", stage: "review", instructions: "Independently assess the repaired candidate and submit request assessments and concrete findings.", dependencies: [implement], writes: false },
+        { id: implement, title: `Repair round ${round}`, role: "implementer", stage: "implementation", instructions: "Resolve recorded blocking findings and failed checks without changing acceptance criteria or the admitted writer scope.", dependencies: run.tasks.map(task => task.spec.id), acceptsFailures: true, writes: true, ownedPaths },
+        { id: review, title: `Review repair ${round}`, role: "reviewer", stage: "review", instructions: "Independently assess the repaired candidate against every required assessment criterion and submit concrete findings.", dependencies: [implement], writes: false },
         { id: verify, title: `Verify repair ${round}`, role: "verifier", stage: "verification", instructions: "Run every configured native check against the repaired candidate and report evidence.", dependencies: [implement], writes: false, checkIds: run.config.checks.map(check => check.id) },
       ]
       const plan = validatePlan({ revision: run.revision + 1, tasks: [...run.tasks.map(task => task.spec), ...tasks], criteria: run.criteria, rationale: `Bounded repair round ${round}` }, "execute", run.config, run.criteria, this.authorizedModels(run))

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { createFixtureProvider, type FixtureRequest } from "./fixture-provider.ts"
-import { startHost, waitFor, type IsolatedHost } from "./host.ts"
+import { EXPECTED_VERSION, startHost, waitFor, type IsolatedHost } from "./host.ts"
 import { CompatibilityRpc } from "./rpc.ts"
 import { probeWorktree } from "./worktree.ts"
 
@@ -20,7 +20,7 @@ await writeFile(join(pluginDirectory, "rpc.ts"), await readFile(resolve("spike/r
 const fixture = createFixtureProvider()
 const checks: Check[] = []
 let host: IsolatedHost | undefined
-const report = () => ({ version: "2.0.25", platform: process.platform, root, checks, fixtureRequests: fixture.requests })
+const report = () => ({ version: EXPECTED_VERSION, platform: process.platform, root, checks, fixtureRequests: fixture.requests })
 async function check(name: string, work: () => Promise<unknown>) {
   const start = Date.now()
   try {
@@ -72,7 +72,7 @@ try {
   await check("plugin registration and SQLite runtime", async () => {
     const plugins = await client.plugin.list({ location })
     const info = await rpc.inspect({}, { location, signal: AbortSignal.timeout(5_000) }) as Evidence
-    assert.equal(info.hostVersion, "2.0.25")
+    assert.equal(info.hostVersion, EXPECTED_VERSION)
     assert.equal(info.sqlite, true)
     assert.ok(info.runtime)
     assert.ok(info.tools.some((tool: Evidence) => tool.name === "ultra_probe"))
