@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { parseConfigOptions } from "../src/config.ts"
 import { assertHostVersion, supportedVersions } from "../src/compatibility.ts"
+import { ULTRA_AGENT_ID, ULTRA_PRIMARY_SYSTEM } from "../src/agents.ts"
 import type { Rule } from "../src/types.ts"
 
 export const supportedVersion = supportedVersions.join(" or ")
@@ -147,6 +148,17 @@ function agent(existing: unknown, name: string, system: string, permissions: Rul
   return { ...settings, mode: "subagent", description: settings.description ?? `Ultra Open Code ${name === "ultra-supervisor" ? "workflow supervisor" : "workflow worker"}`, system: settings.system ?? system, permissions: inherited }
 }
 
+function primaryAgent(existing: unknown): Record<string, unknown> {
+  const settings = existing === undefined ? {} : object(existing, ULTRA_AGENT_ID)
+  if (settings.mode !== undefined && settings.mode !== "primary") throw new Error(`Reserved agent ${ULTRA_AGENT_ID} must use mode primary; resolve the naming conflict before installing`)
+  if (settings.hidden !== undefined && settings.hidden !== false) throw new Error(`Reserved agent ${ULTRA_AGENT_ID} must be visible (hidden: false); resolve the naming conflict before installing`)
+  if (settings.disabled !== undefined && settings.disabled !== false) throw new Error(`Reserved agent ${ULTRA_AGENT_ID} is disabled; resolve the naming conflict before installing`)
+  if (settings.permissions !== undefined && !Array.isArray(settings.permissions)) throw new Error(`${ULTRA_AGENT_ID}.permissions must be native OpenCode 2 rules`)
+  // Native Config.Agent has no display-name field. The plugin sets Agent.Info.name
+  // through the public transform, while config retains the stable selectable ID.
+  return { ...settings, mode: "primary", hidden: false, description: settings.description ?? "Transparent design, implementation, review and verification workflows", system: settings.system ?? ULTRA_PRIMARY_SYSTEM }
+}
+
 export interface InstallResult { scope: "global" | "project"; path: string; packagePath: string; backup?: string; supportedVersion: string; versionSource: string; changes: string[] }
 export interface InstallOptions { directory?: string; configDirectory?: string; pluginPath?: string; hostVersion?: string; config?: unknown }
 
@@ -198,6 +210,7 @@ async function install(scope: "global" | "project", options: InstallOptions): Pr
   } else plugins.push({ package: packagePath, ...(persisted === undefined ? {} : { options: persisted }) })
   configuration.plugins = plugins
   const agents = configuration.agents === undefined ? {} : object(configuration.agents, "agents")
+  agents[ULTRA_AGENT_ID] = primaryAgent(agents[ULTRA_AGENT_ID])
   agents["ultra-supervisor"] = agent(agents["ultra-supervisor"], "ultra-supervisor", "Use the supplied run instructions to call ultra_execute with the exact runId and intentId. Do not edit project files or independently spawn agents.", ["edit", "write", "patch", "shell"].map(action => ({ action, resource: "*", effect: "deny" })))
   agents["ultra-worker"] = agent(agents["ultra-worker"], "ultra-worker", "Follow the supplied Ultra task instructions, respect scoped permissions, and submit a structured result using ultra_submit. Do not spawn additional agents.", [{ action: "subagent", resource: "*", effect: "deny" }])
   configuration.agents = agents
@@ -223,7 +236,7 @@ async function install(scope: "global" | "project", options: InstallOptions): Pr
   } finally {
     if (existsSync(temporary)) await unlink(temporary)
   }
-  return { ...result, ...(backup ? { backup } : {}), changes: [`Registered local Ultra plugin package in ${scope} configuration`, "Configured dedicated supervisor and worker agents without changing permission rules", "Enabled native delegation depth of at least two", "Kept all provider and model settings"] }
+  return { ...result, ...(backup ? { backup } : {}), changes: [`Registered local Ultra plugin package in ${scope} configuration`, "Configured the visible Ultra primary agent and dedicated supervisor and worker agents without changing user permission rules", "Enabled native delegation depth of at least two", "Kept all provider and model settings"] }
 }
 
 /** Global availability; project state and ultracode.json overrides stay in each project. */

@@ -41,14 +41,15 @@ export function activeWorker(binding: Binding): boolean {
   return !!task && !!attempt && run.tasks.find(item => item.spec.id === task.id)?.attempts.at(-1)?.id === attempt.id && ["running", "waiting_permission"].includes(attempt.status) && attempt.ownerEpoch === run.ownerEpoch && !["ready", "succeeded", "partial", "failed", "cancelled", "cancelling", "recovering", "paused"].includes(run.status)
 }
 export const sessionID = (value: string) => value as Session.ID
+export const invocationKey = (sessionId: string, messageId: string, callId: string) => JSON.stringify([sessionId, messageId, callId])
 export function invocation(context: ToolContext): Invocation {
   return { native: context, signal: context.signal, sessionId: context.sessionID, messageId: context.messageID, callId: context.id }
 }
 
 /** The only place the scheduler can invoke native side effects. Every call keeps a real ToolContext. */
 export class OpenCodeAdapter implements HostAdapter {
-  readonly checks = new Map<string, { sessionId: string; command: string }>()
-  readonly delegations = new Map<string, { sessionId: string; agent: string }>()
+  readonly checks = new Map<string, { sessionId: string; messageId: string; command: string }>()
+  readonly delegations = new Map<string, { sessionId: string; messageId: string; agent: string; users: number }>()
   constructor(readonly ctx: Context, readonly store: Store, readonly artifacts: ArtifactStore) {}
   binding(id: string): Binding | undefined {
     for (const run of this.store.list(this.ctx.location.project.id)) {
@@ -84,15 +85,20 @@ export class OpenCodeAdapter implements HostAdapter {
     const context = source.native as ToolContext
     let native: Awaited<ReturnType<OpenCodeAdapter["native"]>>, args: any
     try {
-      if (!context || context.sessionID !== source.sessionId || context.id !== source.callId || context.signal !== source.signal || typeof context.progress !== "function") throw new Error("Native dispatch requires a genuine invocation context")
+      if (!context || context.sessionID !== source.sessionId || context.messageID !== source.messageId || context.id !== source.callId || context.signal !== source.signal || typeof context.progress !== "function") throw new Error("Native dispatch requires a genuine invocation context")
       source.signal.throwIfAborted()
       await this.scoped(source.sessionId)
       native = await this.native("subagent")
       args = await checkedInput(native, { agent, description, prompt, background: true, model: `${model.ref.providerID}/${model.ref.id}${model.ref.variant ? `#${model.ref.variant}` : ""}` })
     } catch (error) { throw new NoLaunchError(String(error)) }
+    const key = invocationKey(context.sessionID, context.messageID, context.id)
+    const existing = this.delegations.get(key)
+    if (existing && existing.agent !== agent) throw new NoLaunchError("An active native invocation cannot change its delegation target")
     let child: string | undefined, released = false
     this.record(run, "native.dispatch", { parent: source.sessionId, callId: source.callId, agent, model, prompt })
-    this.delegations.set(context.id, { sessionId: context.sessionID, agent })
+    const claim = existing ?? { sessionId: context.sessionID, messageId: context.messageID, agent, users: 0 }
+    claim.users++
+    this.delegations.set(key, claim)
     try {
       const result = await native.execute(args, { ...context, progress: async update => {
         if (typeof update.sessionID !== "string" || (child && child !== update.sessionID)) throw new Error("Unsupported native prelaunch identity")
@@ -135,7 +141,7 @@ export class OpenCodeAdapter implements HostAdapter {
       }
       if (!child && (error as any)?._tag === "Tool.Error" && (error as any)?.message === `Subagent denied: ${agent}`) throw new NoLaunchError(`Native delegation was denied before child creation: ${agent}`)
       throw error
-    } finally { this.delegations.delete(context.id) }
+    } finally { if (--claim.users === 0 && this.delegations.get(key) === claim) this.delegations.delete(key) }
   }
   async inspect(id: string): Promise<WorkerSnapshot> {
     const session = await this.scoped(id)
@@ -148,16 +154,16 @@ export class OpenCodeAdapter implements HostAdapter {
     await this.scoped(run.parentSessionId)
     await this.ctx.session.synthetic({ sessionID: sessionID(run.parentSessionId), id: id as any, text: `ULTRA_NOTICE\n${run.id}: ${text}`, delivery: "queue", resume: false, metadata: { ultraRunId: run.id } })
   }
-  permission(binding: Binding, event: { action: string; resources: readonly string[]; effect: "allow" | "ask" | "deny"; source?: { id: string } }) {
+  permission(binding: Binding, event: { sessionID: string; action: string; resources: readonly string[]; effect: "allow" | "ask" | "deny"; source?: { id: string; messageID?: string } }) {
     if (binding.retired) return "deny"
     if (binding.attempt && !activeWorker(binding)) return "deny"
     if (event.action === "subagent") {
-      const active = event.source && this.delegations.get(event.source.id)
-      if (!active || active.sessionId !== binding.run.supervisorSessionId || !event.resources.every(agent => agent === active.agent)) return "deny"
+      const active = event.source?.messageID && this.delegations.get(invocationKey(event.sessionID, event.source.messageID, event.source.id))
+      if (!active || active.sessionId !== binding.run.supervisorSessionId || !event.resources.length || !event.resources.every(agent => agent === active.agent)) return "deny"
     }
     if (event.action === "shell") {
-      const active = event.source && this.checks.get(event.source.id)
-      if (!active || active.sessionId !== binding.attempt?.sessionId || !event.resources.every(command => command === active.command)) return "deny"
+      const active = event.source?.messageID && this.checks.get(invocationKey(event.sessionID, event.source.messageID, event.source.id))
+      if (!active || active.sessionId !== binding.attempt?.sessionId || !event.resources.length || !event.resources.every(command => command === active.command)) return "deny"
     }
     return restrictPermission(event.effect, binding.run.policy, binding.role, event.action, [...event.resources], binding.task?.ownedPaths, binding.run.directory)
   }
@@ -167,11 +173,13 @@ export class OpenCodeAdapter implements HostAdapter {
     context.signal.throwIfAborted()
     const check = run.config.checks.find(check => check.id === checkId)
     if (!check) throw new Error("Unknown configured check")
-    if (this.checks.has(context.id)) throw new Error("Check invocation is already active")
+    const key = invocationKey(context.sessionID, context.messageID, context.id)
     const native = await this.native("shell")
     const args = await checkedInput(native, { command: check.command, background: false, timeout: Math.min(check.timeoutMs ?? run.config.limits.workerMs, run.config.limits.workerMs) })
     const startedAt = Date.now(), before = await this.workspace(run.directory)
-    this.checks.set(context.id, { sessionId: context.sessionID, command: check.command })
+    context.signal.throwIfAborted()
+    if (this.checks.has(key)) throw new Error("Check invocation is already active")
+    this.checks.set(key, { sessionId: context.sessionID, messageId: context.messageID, command: check.command })
     let exit: number | null = null, output = "", outcome: CheckEvidence["outcome"] = "unknown"
     try {
       const result = await native.execute(args, context)
@@ -181,7 +189,7 @@ export class OpenCodeAdapter implements HostAdapter {
       outcome = checkOutcome(value)
       if (context.signal.aborted) outcome = "cancelled"
     } catch (error) { output = String(error); outcome = context.signal.aborted ? "cancelled" : "unknown" }
-    finally { this.checks.delete(context.id) }
+    finally { this.checks.delete(key) }
     const after = await this.workspace(run.directory)
     if (before !== after) outcome = "unknown"
     const evidence: CheckEvidence = { id: `check_${randomUUID().replaceAll("-", "")}`, attemptId: attempt.id, taskId: task.id, sessionId: context.sessionID, callId: context.id, checkId, command: check.command, criterionIds: check.criterionIds, cwd: run.directory, startedAt, finishedAt: Date.now(), exit, outcome, output: output.slice(-100_000), workspaceHash: before }

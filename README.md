@@ -15,7 +15,7 @@ bun install --frozen-lockfile --ignore-scripts
 bun run install:global
 ```
 
-Run these commands from this checkout, then restart OpenCode. The plugin becomes available in each project without another installation. The installer registers this local package in the global `opencode.json` or `opencode.jsonc`, adds `ultra-supervisor` and `ultra-worker`, and sets native delegation depth to at least two. It preserves existing providers, models, and permission settings and saves the original configuration when changed. JSONC is rewritten as formatted JSON; the backup retains comments. Repeating an unchanged installation creates no extra registrations or backups. Keep this checkout available at its installed path.
+Run these commands from this checkout, then restart OpenCode. The plugin becomes available in each project without another installation. The installer registers this local package in the global `opencode.json` or `opencode.jsonc`, adds the selectable `ultra` primary agent and dedicated `ultra-supervisor` and `ultra-worker` agents, and sets native delegation depth to at least two. It preserves existing providers, models, and permission settings and saves the original configuration when changed. JSONC is rewritten as formatted JSON; the backup retains comments. Repeating an unchanged installation creates no extra registrations or backups. Keep this checkout available at its installed path. Existing installations should run the installer again to add the new primary agent.
 
 The global directory is `OPENCODE_CONFIG_DIR` when set, otherwise `XDG_CONFIG_HOME/opencode`, or `~/.config/opencode` when XDG is unset. These are OpenCode 2.0.25's paths on Windows too. To select another global directory, use `--config-dir`; OpenCode must use the same directory through `OPENCODE_CONFIG_DIR`.
 
@@ -36,7 +36,21 @@ bun run install:project --project "C:\path\to\your-project"
 
 For a globally installed plugin, use the project override file described below. An existing project registration targeting the same plugin replaces its global native options under OpenCode's rules. To inherit global defaults, move that registration's `options` into `ultracode.json` and remove only its Ultra entry from the project's `plugins` array, preserving other plugins and native settings. Different package references for the same plugin can create duplicate IDs; use the single global registration.
 
-Select a connected model in OpenCode, then use:
+Select a connected model, choose **Ultra** beside **Build** and **Plan**, and describe your task normally:
+
+```text
+Plan resumable uploads for this API. Stop at a proposal.
+Implement the agreed upload changes and tests.
+Show the effective Ultra settings.
+What is the current workflow status?
+Pause the current workflow.
+```
+
+Ultra uses the existing graph engine through native `ultra_task` and `ultra_control` tools. General questions, configuration inspection, and clarification remain conversation; they do not automatically admit a graph based on prompt length. Planning saves a read-only proposal. Implementation requests authorise design and execution within their scope, under native permissions. Role and stage model settings continue to apply.
+
+Progress and results use normal native tool and subagent activity. Follow-up controls stay bound to their initiating conversation; repeated calls cannot launch the same intent twice. Selecting Build or Plan does not cancel a workflow. The initiating conversation retains coordinator restrictions while its run is active, including while paused; cancel or finish that run before direct project edits there. Other conversations retain their normal agent behaviour. The model selects tools from clear schemas; actual model quality and instruction following require separate evaluation.
+
+The native command interface remains available for explicit controls:
 
 ```text
 /ultracode plan Add resumable uploads to the API
@@ -69,7 +83,7 @@ Select a connected model in OpenCode, then use:
 
 Prefix every command with `/ultracode`. IDs can be shortened when unambiguous. Mutating controls must come from the run's initiating conversation and location; workers cannot issue them. Status, inspection, configuration, and other control handlers do not need a model call, although starting or continuing work admits native model execution.
 
-Automatic mode is explicit opt-in. After `on`, ordinary prompts of at least `autoThreshold` characters (default **80**) start an execution workflow when the session has no active run. This is a transparent length rule, not a hidden complexity classifier. `off` affects future prompts; cancelling an existing run is separate.
+The older automatic command mode remains explicit opt-in for other primary agents. After `on`, ordinary prompts of at least `autoThreshold` characters (default **80**) start an execution workflow when the session has no active run. Ultra mode always interprets requests through its tools, regardless of that opt-in or threshold. `off` affects future automatic prompts; cancelling an existing run is separate.
 
 ```text
 /ultracode input <run-id> Use the existing API rather than adding a new endpoint.
@@ -138,7 +152,9 @@ OpenChamber's **Settings → Plugins** page reads and edits OpenCode's standard 
 
 If the page says **No plugins yet**, check that the selected configuration profile still contains Ultra in its `plugins` array. Re-run the global installer against that profile to restore a missing registration, then refresh the Plugins page. The installer backs up changed configuration and preserves unrelated settings. Deleting the entry from OpenChamber removes the registration; **Options (JSON)** is where its settings are edited.
 
-OpenChamber 2.2.0 currently does not display Ultra's native slash-command results. `/ultracode` can appear in autocomplete and execute, but the client discards the RPC events used for feedback. `/ultracode config`, status, inspection, and other deterministic results therefore have no desktop viewer. The terminal companion is loaded only by OpenCode's terminal client. Use the plugin-options editor above for OpenChamber settings today. A supported OpenChamber client bridge is [proposed in the design](docs/design.md#change-openchamber-commands--native-command-result-presentation); installation or restarting alone cannot add that missing renderer.
+Choose **Ultra** in OpenChamber's agent picker and ask for settings, status, or project work in chat. Its normal native tool results use OpenChamber's supported session event path. If OpenChamber's **Auto** model option hides the picker, select an explicit connected model first. Immediate child status shows the supervisor; opening that child conversation exposes its workers. Custom Ultra tools use generic tool cards; this provides basic workflow feedback rather than a live graph dashboard. Configuration inspection through chat involves the selected model; edit settings through **Options (JSON)** above.
+
+OpenChamber 2.2.0 still does not display Ultra's deterministic native slash-command results. `/ultracode` can appear in autocomplete and execute, but the client discards the RPC events used for feedback. `/ultracode config`, status, inspection, and other deterministic command results therefore have no desktop viewer. The terminal companion is loaded only by OpenCode's terminal client. A supported OpenChamber client bridge is [proposed in the design](docs/design.md#change-openchamber-commands--native-command-result-presentation) for model-free command presentation; Ultra mode provides the conversational entry point independently.
 
 The editor shows that entry's explicit options. Ultra's built-in defaults, discovered checks, and `ultracode.json` overrides still apply in the runtime. A native project entry replaces the entire global entry's options; use `ultracode.json` for project overrides that inherit individual global fields. OpenChamber's plugin-options editor does not edit that override file. Save while workflows are settled, and reload OpenCode from OpenChamber to ensure the new settings apply. Saved runs retain their captured settings.
 
@@ -166,7 +182,7 @@ bun run test
 bun run test:integration
 ```
 
-The native integration suite uses the global installer with isolated configuration, homes, Git roots, databases, and a local scripted model provider, with no paid model calls. It tests global availability, overrides and state isolation across two projects, command feedback without queued model input, configuration RPC, production registration, plan and execution, role restrictions, native check provenance, export, restart, expired intents, cancellation, automatic mode, and unavailable models. Actual terminal rendering is checked separately; the [current delivery record](docs/design.md#change-client-settings--single-command-and-openchamber-configuration) records its scope. Evidence and logs remain under `.spike/integration-<timestamp>-<id>/`.
+The native integration suite uses the global installer with isolated configuration, homes, Git roots, databases, and a local scripted model provider, with no paid model calls. Its 21 checks cover global availability, overrides and state isolation across two projects, command feedback, configuration RPC, production registration, plan and execution, role restrictions, native check provenance, export, restart, intents, cancellation, automatic mode, and unavailable models. Ultra-mode checks cover ordinary configuration/status results, duplicate admission, saved-plan execution, ownership, forged child/Build calls, and selection changes before admission. The [agent-mode delivery record](docs/design.md#change-agent-mode--native-primary-workflow-entry) records both native versions, global installation, and the actual OpenChamber picker. Actual terminal rendering has its [separate delivery record](docs/design.md#change-command-feedback--visible-terminal-results-and-configuration). Evidence and logs remain under `.spike/integration-<timestamp>-<id>/`.
 
 `bun run spike` reproduces the earlier 22-probe host compatibility matrix and requires Git. Set `OPENCODE_SPIKE_BIN` if the matching executable is outside the normal Windows npm location or `PATH`.
 
@@ -192,5 +208,6 @@ bun run ultra inspect <run-id> --project "C:\path\to\worktree" --state "C:\path\
 - [Compatibility results](docs/compatibility-spike.md): reproducible host probes and version-sensitive contracts.
 - `src/engine.ts`: scheduling, recovery, budgets, and completion gates.
 - `src/opencode.ts` and `src/plugin.ts`: native execution, permission hooks, and commands.
+- `src/agents.ts` and `src/agent-control.ts`: primary-agent instructions and typed task/control contracts.
 - `src/workflow.ts`, `src/graph.ts`, and `src/config.ts`: public prompts, graph validation, and model routing.
 - `src/store.ts` and `src/artifacts.ts`: transactional history, redaction, and exports.

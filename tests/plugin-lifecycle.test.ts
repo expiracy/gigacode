@@ -38,7 +38,7 @@ function fixture(options: { failRegistration?: string; failDisposal?: string; fa
       async get({ sessionID }: any) { return { id: sessionID, projectID: "project", location: { directory }, agent: "build", permissions: [], model: { providerID: "fixture", id: "test" } } },
       async synthetic(input: unknown) { synthetics.push(input) },
     },
-    agent: { async list() { return { data: [{ id: "build", mode: "primary", permissions: [] }, { id: "ultra-supervisor" }, { id: "ultra-worker" }] } } },
+    agent: { async transform(callback: any) { callback({ update() {} }); return register("agents") }, async list() { return { data: [{ id: "build", mode: "primary", permissions: [] }, { id: "ultra-supervisor" }, { id: "ultra-worker" }] } } },
     model: { async list() { return { data: [{ providerID: "fixture", id: "test", variants: [], capabilities: { tools: true } }] } } },
     rpc: { async register(_contract: unknown, handlers: unknown) { return { ...await register("rpc", handlers), events: rpcEvents } } },
     event: { subscribe({ signal }: { signal: AbortSignal }) { return { async *[Symbol.asyncIterator]() { if (!signal.aborted) await new Promise<void>(done => signal.addEventListener("abort", () => done(), { once: true })) } } } },
@@ -100,7 +100,7 @@ describe("plugin lifecycle", () => {
   test("setup failure disposes completed registrations and closes state even if one disposal fails", async () => {
     const value = fixture({ failRegistration: "permission.evaluate", failDisposal: "tools" })
     await expect(plugin.setup(value.context as any)).rejects.toThrow("Registration failed: permission.evaluate")
-    expect(value.disposals).toEqual(["tools", "command"])
+    expect(value.disposals).toEqual(["tools", "command", "agents"])
     expect(value.close).toHaveBeenCalledTimes(1)
     expect(() => value.store!.list("project")).toThrow(/closed/i)
   })
@@ -112,7 +112,7 @@ describe("plugin lifecycle", () => {
     const first = Promise.resolve(cleanup!()), second = Promise.resolve(cleanup!())
     const results = await Promise.allSettled([first, second])
     expect(results.every(result => result.status === "rejected")).toBe(true)
-    expect(value.disposals).toEqual(["rpc", "tool.execute.after", "session.prompt", "session.model.request", "session.context", "permission.evaluate", "tools", "command"])
+    expect(value.disposals).toEqual(["rpc", "tool.execute.after", "tool.execute.before", "session.prompt", "session.model.request", "session.context", "permission.evaluate", "tools", "command", "agents"])
     expect(value.close).toHaveBeenCalledTimes(1)
     expect(() => value.store!.list("project")).toThrow(/closed/i)
   })

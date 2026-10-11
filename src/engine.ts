@@ -42,6 +42,8 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 
 export interface StartOptions {
   objective: string; mode: "plan" | "execute"; parentSessionId: string; capturedModel: ModelRef; policy: Rule[]; modelOptions?: ModelOptions
+  admission?: Run["admission"]
+  beforeAdmission?: () => Promise<void>
 }
 
 /** Deterministic policy. Host side effects occur only through the permission-preserving adapter. */
@@ -142,6 +144,7 @@ export class Engine {
     const now = Date.now()
     const run: Run = {
       id: id("run"), projectId: this.projectId, directory: this.directory, parentSessionId: options.parentSessionId,
+      ...(options.admission ? { admission: structuredClone(options.admission) } : {}),
       intentId: id("intent"), intentExpiresAt: now + 300_000, objective: options.objective, mode: options.mode,
       status: "starting", phase: "planning", revision: planning.revision, plans: [planning],
       tasks: planning.tasks.map(spec => ({ spec, status: "pending", attempts: [] })),
@@ -154,15 +157,25 @@ export class Engine {
     // Resolve every initial selection before admitting work; availability is never guessed or silently changed.
     const catalog = await this.host.models()
     for (const task of run.tasks) resolveModel(task.spec, run, catalog)
-    this.project(runs => {
+    await options.beforeAdmission?.()
+    const admittedId = this.project(runs => {
+      if (options.admission) {
+        const existing = runs.find(saved => saved.parentSessionId === run.parentSessionId && saved.admission?.messageId === options.admission!.messageId && saved.admission.callId === options.admission!.callId)
+        if (existing) {
+          if (existing.admission!.requestHash !== options.admission.requestHash) throw new Error("Agent admission replay changed its request")
+          return existing.id
+        }
+        if (runs.some(saved => saved.parentSessionId === run.parentSessionId && (!terminalRuns.has(saved.status) || busy(saved)))) throw new Error("This conversation already has an active workflow; inspect or control the existing run")
+      }
       if (runs.filter(saved => !terminalRuns.has(saved.status)).length >= this.config.limits.runs) throw new Error("Active run capacity is exhausted")
       if (options.mode === "execute" && !this.config.parallelWrites && runs.some(saved => saved.mode === "execute" && (!terminalRuns.has(saved.status) || busy(saved)))) {
         throw new Error("Another execution run owns the project writer reservation")
       }
       runs.push(run)
+      return run.id
     })
-    this.audit(run.id, "run.admitted", { mode: run.mode, objective: run.objective, intentId: run.intentId })
-    return this.required(run.id)
+    if (admittedId === run.id) this.audit(run.id, "run.admitted", { mode: run.mode, objective: run.objective, intentId: run.intentId })
+    return this.required(admittedId)
   }
 
   consumeStartIntent(runId: string, intentId: string, parentSessionId: string): void {

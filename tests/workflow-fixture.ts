@@ -1,15 +1,23 @@
 import type { Criterion, Plan, TaskResult } from "../src/types.ts"
 
 type ToolCall = { name: string; arguments: Record<string, unknown> }
+export interface PrimaryScript {
+  /** Match only the latest human prompt, never a worker's inherited objective. */
+  prompt: string
+  toolCalls: ToolCall[]
+  text?: string
+}
 export interface WorkflowRequest {
   id: number
   model: string
-  marker: "start" | "supervisor" | "task" | "ordinary"
+  marker: "start" | "supervisor" | "task" | "primary" | "ordinary"
   runId?: string
   taskId?: string
   role?: string
   stage?: string
   calls: string[]
+  tools: string[]
+  primaryScriptId?: string
   error?: string
   state: "pending" | "held" | "completed" | "aborted" | "failed"
   hold?: string
@@ -18,6 +26,7 @@ export interface WorkflowFixture {
   baseURL: string
   requests: WorkflowRequest[]
   prelaunches: WorkflowPrelaunch[]
+  scriptPrimary(script: PrimaryScript): string
   holdNext(marker: WorkflowRequest["marker"], role?: string): string
   holdPrelaunch(role: string): string
   release(key: string): void
@@ -75,6 +84,7 @@ function proposal(required: Criterion[], machineChecks = true): Plan {
 /** Loopback protocol fixture: it emits real tool calls without using a paid model. */
 export function createWorkflowFixture(): WorkflowFixture {
   const requests: WorkflowRequest[] = []
+  const primaryScripts: (PrimaryScript & { id: string })[] = []
   const holds: { key: string; marker: WorkflowRequest["marker"]; role?: string; matched: boolean; released: boolean; resolve?: () => void }[] = []
   const prelaunches: WorkflowPrelaunch[] = []
   const prelaunchWaiters = new Map<string, () => void>()
@@ -98,7 +108,7 @@ export function createWorkflowFixture(): WorkflowFixture {
       if (request.method !== "POST" || url.pathname !== "/v1/chat/completions") return Response.json({ error: { message: "Unknown fixture route" } }, { status: 404 })
       let record: WorkflowRequest | undefined
       try {
-        const body = await request.json() as { model: string; stream: boolean; messages: Record<string, unknown>[] }
+        const body = await request.json() as { model: string; stream: boolean; messages: Record<string, unknown>[]; tools?: { function?: { name?: string } }[] }
         const lastUser = body.messages.findLastIndex(message => message.role === "user")
         const prompt = text(body.messages[lastUser]?.content)
         const completedCalls = body.messages.slice(lastUser + 1).flatMap(message => {
@@ -108,9 +118,10 @@ export function createWorkflowFixture(): WorkflowFixture {
         const start = /^ULTRA_START_INTENT\s+([^\r\n]+)/m.exec(prompt)
         const supervisor = /^ULTRA_SUPERVISOR\s+([^\r\n]+)/m.exec(prompt)
         const worker = /^ULTRA_TASK_META\s+([^\r\n]+)/m.exec(prompt)
-        record = { id: requests.length + 1, model: body.model, marker: start ? "start" : supervisor ? "supervisor" : worker ? "task" : "ordinary", calls: [], state: "pending" }
+        record = { id: requests.length + 1, model: body.model, marker: start ? "start" : supervisor ? "supervisor" : worker ? "task" : "ordinary", calls: [], tools: (body.tools ?? []).flatMap(tool => typeof tool.function?.name === "string" ? [tool.function.name] : []), state: "pending" }
         requests.push(record)
         let calls: ToolCall[] = []
+        let responseText = "Workflow fixture turn complete."
         if (start || supervisor) {
           const meta = JSON.parse((start ?? supervisor)![1]!) as { runId: string; intentId: string }
           record.runId = meta.runId
@@ -139,6 +150,19 @@ export function createWorkflowFixture(): WorkflowFixture {
             if (meta.role === "reviewer") result.findings = []
             calls = [{ name: "ultra_submit", arguments: { result } }]
           }
+        } else {
+          // Auxiliary title generation carries the same prompt but no tools.
+          // Deliberate unavailable-tool scripts still exercise a real model
+          // request when it advertises other native tools.
+          const script = record.tools.length ? primaryScripts.find(value => prompt.includes(value.prompt)) : undefined
+          if (script) {
+            record.marker = "primary"
+            record.primaryScriptId = script.id
+            responseText = script.text ?? responseText
+            // A tool result continuation completes the scripted primary turn;
+            // duplicate calls must be explicit in the first response.
+            if (completedCalls.length === 0) calls = script.toolCalls
+          }
         }
         record.calls = calls.map(call => call.name)
         const requestId = record.id
@@ -152,7 +176,7 @@ export function createWorkflowFixture(): WorkflowFixture {
         if (!body.stream) {
           await wait()
           activeRecord.state = "completed"
-          return Response.json({ id, object: "chat.completion", created, model: body.model, choices: [{ index: 0, message: { role: "assistant", content: calls.length ? null : "Workflow fixture turn complete.", ...(calls.length ? { tool_calls: toolCalls } : {}) }, finish_reason: calls.length ? "tool_calls" : "stop" }], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } })
+          return Response.json({ id, object: "chat.completion", created, model: body.model, choices: [{ index: 0, message: { role: "assistant", content: calls.length ? null : responseText, ...(calls.length ? { tool_calls: toolCalls } : {}) }, finish_reason: calls.length ? "tool_calls" : "stop" }], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } })
         }
         let cancelled = false
         const stream = new ReadableStream<Uint8Array>({
@@ -166,7 +190,7 @@ export function createWorkflowFixture(): WorkflowFixture {
               try {
                 await wait()
                 if (cancelled) { try { controller.close() } catch { /* already disconnected */ }; return }
-                if (!calls.length) chunk({ content: "Workflow fixture turn complete." })
+                if (!calls.length) chunk({ content: responseText })
                 for (const [index, call] of toolCalls.entries()) {
                   chunk({ tool_calls: [{ index, id: call.id, type: "function", function: { name: call.function.name, arguments: "" } }] })
                   for (let offset = 0; offset < call.function.arguments.length; offset += 11) chunk({ tool_calls: [{ index, function: { arguments: call.function.arguments.slice(offset, offset + 11) } }] })
@@ -193,6 +217,13 @@ export function createWorkflowFixture(): WorkflowFixture {
   })
   return {
     baseURL: `http://127.0.0.1:${server.port}/v1`, requests, prelaunches,
+    scriptPrimary(script) {
+      if (!script.prompt.trim()) throw new Error("Primary fixture prompt must not be empty")
+      if (primaryScripts.some(value => value.prompt === script.prompt)) throw new Error("Duplicate primary fixture prompt")
+      const id = `primary-${primaryScripts.length + 1}`
+      primaryScripts.push({ ...structuredClone(script), id })
+      return id
+    },
     holdNext(marker, role) { const key = crypto.randomUUID(); holds.push({ key, marker, role, matched: false, released: false }); return key },
     holdPrelaunch(role) { const key = crypto.randomUUID(); prelaunches.push({ key, role, state: "armed" }); return key },
     release(key) {

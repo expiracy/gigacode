@@ -2,12 +2,16 @@ import { Plugin } from "@opencode/plugin"
 import { Schema } from "effect"
 import { mkdir, realpath } from "node:fs/promises"
 import { join, resolve } from "node:path"
-import { Engine } from "./engine.ts"
+import { createHash } from "node:crypto"
+import { Engine, type StartOptions } from "./engine.ts"
 import { SQLiteStore, sanitizeEventData } from "./store.ts"
 import { ArtifactStore } from "./artifacts.ts"
 import { loadProjectConfig, resolveModel } from "./config.ts"
-import { parseCommand } from "./commands.ts"
-import { OpenCodeAdapter, invocation, sessionID, visibleTools } from "./opencode.ts"
+import { parseCommand, type UltraCommand } from "./commands.ts"
+import { ULTRA_AGENT_ID, ULTRA_AGENT_NAME } from "./agents.ts"
+import { agentControlSchema, agentTaskSchema, controlCommand, primaryPermissionAllowed, primaryToolAllowed } from "./agent-control.ts"
+import { Error as NativeToolError, type ToolContext } from "@opencode/plugin/promise/tool"
+import { OpenCodeAdapter, invocation, invocationKey, sessionID, visibleTools } from "./opencode.ts"
 import { UltraRpc, type CommandResult } from "./rpc.ts"
 import type { RpcRegistration } from "@opencode/plugin/promise/rpc"
 import { assertPlainPath } from "./workspace.ts"
@@ -19,6 +23,8 @@ import type { Run, TaskSpec } from "./types.ts"
 
 const supervisorSpec: TaskSpec = { id: "supervisor", title: "Coordinate workflow", role: "supervisor", stage: "design", instructions: "", writes: false, dependencies: [] }
 const terminal = new Set(["ready", "succeeded", "partial", "failed", "cancelled"])
+const busy = (run: Run) => run.tasks.some(task => task.attempts.some(attempt => ["reserved", "running", "waiting_permission", "cancelling", "ambiguous"].includes(attempt.status)))
+const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
 const intentText = (run: Run) => `ULTRA_START_INTENT\n${JSON.stringify({ runId: run.id, intentId: run.intentId })}\nThis workflow was explicitly authorized in this initiating conversation. Call ultra_start({runId:${JSON.stringify(run.id)},intentId:${JSON.stringify(run.intentId)}}) once to launch its native supervisor. Do not implement this task while the workflow is active. The durable tools own orchestration and will report status.`
 
 export default Plugin.define({
@@ -39,7 +45,11 @@ export default Plugin.define({
     const stop = new AbortController()
     const invocations = new Set<Promise<unknown>>()
     let observer: Promise<void> | undefined
-    const cleanup = resourceCleanup({ stop, invocations, registrations, observer: () => observer, close: () => store.close() })
+    const retiringSessions = new Set<string>()
+    const retiringWorkers = new Set<string>()
+    let captureRetiring = () => {}
+    const cleanupResources = resourceCleanup({ stop, invocations, registrations, observer: () => observer, close: () => store.close() })
+    const cleanup = () => { if (!stop.signal.aborted) captureRetiring(); return cleanupResources() }
     try {
       const artifacts = new ArtifactStore(join(root, "artifacts"))
       const adapter = new OpenCodeAdapter(ctx, store, artifacts)
@@ -66,7 +76,21 @@ export default Plugin.define({
         if (taskId && !run.tasks.some(task => task.spec.id === taskId)) throw new Error("Unknown run task")
         return { run: taskId ? { ...run, tasks: run.tasks.filter(task => task.spec.id === taskId) } : run, events: store.events(run.projectId, run.id).filter(event => !taskId || !event.taskId || event.taskId === taskId), replay: { complete: false, source: "durable plugin observations and native snapshots", gap: "OpenCode CLI does not retain native event payload history" } }
       }
-      const start = async (objective: string, mode: "plan" | "execute", id: string) => {
+      const parentRuns = (id: string) => engine.list().filter(run => run.parentSessionId === id && resolve(run.directory) === directory)
+      const guarded = (id: string) => parentRuns(id).some(run => !terminal.has(run.status) || busy(run))
+      captureRetiring = () => {
+        for (const run of engine.list()) {
+          if (!terminal.has(run.status) || busy(run)) retiringSessions.add(run.parentSessionId)
+          for (const id of [run.supervisorSessionId, ...(run.supervisorHistory ?? []), ...run.tasks.flatMap(task => task.attempts.map(attempt => attempt.sessionId))]) if (id) { retiringSessions.add(id); retiringWorkers.add(id) }
+        }
+      }
+      const primaryCaller = async (context: ToolContext, requireUltra = false) => {
+        const caller = await adapter.scoped(context.sessionID)
+        if (adapter.binding(context.sessionID) || caller.parentID) throw new Error("Workflow tools require an initiating primary conversation")
+        if (requireUltra ? context.agent !== ULTRA_AGENT_ID || caller.agent !== ULTRA_AGENT_ID : context.agent !== ULTRA_AGENT_ID && caller.agent !== ULTRA_AGENT_ID && !parentRuns(context.sessionID).length) throw new Error("Select Ultra mode before using workflow tools")
+        return caller
+      }
+      const start = async (objective: string, mode: "plan" | "execute", id: string, admission?: StartOptions["admission"], source?: ToolContext) => {
         const session = await adapter.scoped(id)
         if (adapter.binding(id) || session.parentID) throw new Error("Start is only available in an initiating primary conversation")
         const agents = (await ctx.agent.list()).data
@@ -82,7 +106,20 @@ export default Plugin.define({
         const capturedModel = { providerID: inherited.providerID, id: inherited.id, ...(variant ? { variant } : {}) }
         // Validate the supervisor model before reserving capacity as well as each worker model in Engine.start.
         resolveModel(supervisorSpec, { capturedModel, modelOptions: {}, config }, catalog)
-        return engine.start({ objective, mode, parentSessionId: id, capturedModel, policy: [...primary.permissions, ...(session.permissions ?? [])] })
+        const beforeAdmission = source ? async () => {
+          const currentPrimary = (await ctx.agent.list()).data.find(agent => agent.id === ULTRA_AGENT_ID)
+          const current = await primaryCaller(source, true)
+          if (JSON.stringify(current.model) !== JSON.stringify(session.model) || JSON.stringify(current.permissions) !== JSON.stringify(session.permissions) || JSON.stringify(currentPrimary?.permissions) !== JSON.stringify(primary.permissions) || JSON.stringify(currentPrimary?.model) !== JSON.stringify(primary.model)) throw new Error("The initiating model or permissions changed during admission; submit the task again")
+          source.signal.throwIfAborted()
+        } : undefined
+        return engine.start({ objective, mode, parentSessionId: id, capturedModel, policy: [...primary.permissions, ...(session.permissions ?? [])], ...(admission ? { admission } : {}), ...(beforeAdmission ? { beforeAdmission } : {}) })
+      }
+      const launch = async (run: Run, context: ToolContext) => {
+        engine.consumeStartIntent(run.id, run.intentId, context.sessionID)
+        try {
+          const model = resolveModel(supervisorSpec, run, await adapter.models())
+          return await adapter.supervisor(run, invocation(context), model, async id => engine.bindSupervisor(run.id, run.intentId, id))
+        } catch (error) { await engine.launchFailed(run.id, error); throw error }
       }
       const enqueue = async (run: Run) => {
         try {
@@ -90,8 +127,7 @@ export default Plugin.define({
         } catch (error) { await engine.launchFailed(run.id, error); throw error }
         adapter.record(run, "intent.enqueued", { intentId: run.intentId, parentSessionId: run.parentSessionId })
       }
-      const controlRaw = async (text: string, id: string) => {
-        const command = parseCommand(text) // No model request or state change for malformed input.
+      const controlRaw = async (command: UltraCommand, id: string, source?: ToolContext) => {
         const caller = await adapter.scoped(id)
         if (adapter.binding(id)) throw new Error("Workflow workers cannot issue user control commands")
         switch (command.type) {
@@ -117,14 +153,17 @@ export default Plugin.define({
             else if (command.type === "input") saved = await engine.provideInput(run.id, command.answer)
             else if (command.type === "budget") saved = engine.setBudget(run.id, command.limits)
             else saved = await engine[command.type](run.id)
-            if (["resume", "retry", "run", "input"].includes(command.type) && saved.status === "starting") await enqueue(saved)
-            return { run: summary(saved) }
+            if (["resume", "retry", "run", "input"].includes(command.type) && saved.status === "starting") {
+              if (source) await launch(saved, source)
+              else await enqueue(saved)
+            }
+            return { run: summary(engine.get(saved.id)!) }
           }
         }
       }
       const control = (text: string, id: string) => track(async () => {
         const command = parseCommand(text)
-        return ["status", "inspect", "config", "export"].includes(command.type) ? controlRaw(text, id) : engine.withOwnership(stop.signal, () => controlRaw(text, id))
+        return ["status", "inspect", "config", "export"].includes(command.type) ? controlRaw(command, id) : engine.withOwnership(stop.signal, () => controlRaw(command, id))
       })
       let rpcRegistration: RpcRegistration<typeof UltraRpc> | undefined
       const feedback = async (value: CommandResult) => {
@@ -136,6 +175,7 @@ export default Plugin.define({
           try { store.event(ctx.location.project.id, { kind: "command.feedback.failed", data: { sessionId: value.sessionId, command: value.command, error: String(error) } }) } catch {}
         }
       }
+      registrations.push(await ctx.agent.transform(editor => editor.update(ULTRA_AGENT_ID, agent => { agent.name = ULTRA_AGENT_NAME as unknown as typeof agent.name })))
       registrations.push(await ctx.command.transform(editor => editor.add({ name: "ultracode", description: "Transparent design, implementation, review and verification workflow", async execute(input) { return track(async () => {
         let result: Record<string, unknown>
         try { result = await control(input.prompt.text, input.sessionID) }
@@ -152,15 +192,53 @@ export default Plugin.define({
           const native = { ...context, signal: AbortSignal.any([context.signal, stop.signal]) }
           return engine.withOwnership(native.signal, () => tool.execute(input, native))
         }) })
+        editor.add({ name: "ultra_task", description: "Start one authorized project task in Ultra mode. objective preserves the user's request and constraints. mode plan saves a read-only proposal; execute authorizes design and implementation. For questions, settings, and an existing run, use ultra_control instead. Never start a second workflow while one is active.", input: agentTaskSchema, output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
+          await primaryCaller(context, true)
+          const admission = { messageId: context.messageID, callId: context.id, requestHash: fingerprint(input) }
+          const existing = parentRuns(context.sessionID).find(run => run.admission?.messageId === admission.messageId && run.admission.callId === admission.callId)
+          if (existing && existing.admission!.requestHash !== admission.requestHash) throw new Error("Agent admission replay changed its request")
+          if (existing) return { content: `Existing Ultra workflow: ${JSON.stringify(sanitizeEventData(summary(existing)))}`, output: { run: summary(existing), replay: true } }
+          const run = await start(input.objective, input.mode, context.sessionID, admission, context)
+          // Creation and its receipt commit together; consumed or uncertain intents are never dispatched again.
+          const pending = engine.get(run.id)!
+          if (pending.intentExpiresAt > Date.now() && !pending.supervisorSessionId && pending.status === "starting") await launch(pending, context)
+          const saved = engine.get(run.id)!
+          return { content: `Ultra workflow started: ${JSON.stringify(sanitizeEventData(summary(saved)))}`, output: { run: summary(saved), ...(saved.supervisorSessionId ? { sessionId: saved.supervisorSessionId } : {}) } }
+        } })
+        editor.add({ name: "ultra_control", description: "Read or control this initiating conversation's workflows. config takes no other fields; status optionally takes runId; inspect requires runId and optionally taskId. pause/resume/cancel/export require runId. run requires runId and the exact saved revision. retry requires runId and taskId; input requires runId and the user's answer; budget requires runId and explicitly authorized limits. Read current status before changing it. Resume, retry, run and input may launch native work. Never invent authorization, answers or revisions.", input: agentControlSchema, output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
+          await primaryCaller(context)
+          const command = controlCommand(input)
+          if ("id" in command && command.id) {
+            const run = required(command.id)
+            if (run.parentSessionId !== context.sessionID || resolve(run.directory) !== directory) throw new Error("Controls must come from the run's initiating session and location")
+          }
+          const read = ["config", "status", "inspect", "export"].includes(command.type)
+          let receiptId: string | undefined
+          if (!read) {
+            receiptId = `control_${fingerprint([context.sessionID, context.messageID, context.id])}`
+            const events = store.events(ctx.location.project.id)
+            const receipt = events.find(event => event.id === receiptId)
+            const requestHash = fingerprint(input)
+            if (receipt) {
+              if ((receipt.data as { requestHash: string }).requestHash !== requestHash) throw new Error("Control replay changed its request")
+              const result = events.find(event => event.id === `${receiptId}_result`)
+              if (result) return { content: JSON.stringify(result.data), output: result.data }
+              throw new Error("This control was already attempted; inspect current status before issuing a new explicitly authorized control")
+            }
+            // Persist before side effects. An interrupted outcome is inspected, never repeated on replay.
+            if (!store.event(ctx.location.project.id, { id: receiptId, kind: "agent.control.admitted", ...("id" in command ? { runId: required(command.id!).id } : {}), data: { sessionId: context.sessionID, messageId: context.messageID, callId: context.id, requestHash, action: command.type } })) throw new Error("Control invocation was already admitted")
+          }
+          const result = command.type === "status" && !command.id ? { runs: parentRuns(context.sessionID).map(summary) } : await controlRaw(command, context.sessionID, context)
+          const output = sanitizeEventData(result)
+          if (receiptId) store.event(ctx.location.project.id, { id: `${receiptId}_result`, kind: "agent.control.result", ...("id" in command ? { runId: required(command.id!).id } : {}), data: output })
+          return { content: JSON.stringify(output), output }
+        } })
         editor.add({ name: "ultra_start", description: "Consume an authorized Ultracode start intent and launch its native supervisor.", input: Schema.Struct({ runId: Schema.String, intentId: Schema.String }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           const run = required(input.runId)
           await adapter.scoped(context.sessionID)
-          engine.consumeStartIntent(run.id, input.intentId, context.sessionID)
-          try {
-            const model = resolveModel(supervisorSpec, run, await adapter.models())
-            const child = await adapter.supervisor(run, invocation(context), model, async id => engine.bindSupervisor(run.id, input.intentId, id))
-            return { content: `Ultracode ${run.id} launched. Use /ultracode status ${run.id} to inspect it.`, output: { runId: run.id, ...child } }
-          } catch (error) { await engine.launchFailed(run.id, error); throw error }
+          if (input.intentId !== run.intentId) throw new Error("Start intent does not match the saved run")
+          const child = await launch(run, context)
+          return { content: `Ultracode ${run.id} launched. Use ultra_control status or /ultracode status ${run.id} to inspect it.`, output: { runId: run.id, ...child } }
         } })
         editor.add({ name: "ultra_execute", description: "Drive and reconcile the bound run graph from its native supervisor. Await completion; do not call twice concurrently.", input: Schema.Struct({ runId: Schema.String, intentId: Schema.optionalKey(Schema.String) }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           const run = required(input.runId)
@@ -194,19 +272,49 @@ export default Plugin.define({
         } })
       }))
       registrations.push(await ctx.permission.hook("evaluate", event => {
+        if (stop.signal.aborted) { if (event.agent === ULTRA_AGENT_ID || retiringSessions.has(event.sessionID)) event.effect = "deny"; return }
         const binding = adapter.binding(event.sessionID)
-        if (!binding) return
+        if (!binding) {
+          return track(async () => {
+            const caller = await adapter.scoped(event.sessionID)
+            if (caller.parentID || (event.agent !== ULTRA_AGENT_ID && caller.agent !== ULTRA_AGENT_ID && !guarded(event.sessionID))) return
+            if (stop.signal.aborted) { event.effect = "deny"; return }
+            if (event.action === "subagent") {
+              const delegation = event.source && adapter.delegations.get(invocationKey(event.sessionID, event.source.messageID, event.source.id))
+              if (!delegation || delegation.sessionId !== event.sessionID || delegation.messageId !== event.source?.messageID || delegation.agent !== "ultra-supervisor" || !event.resources.length || !event.resources.every(agent => agent === delegation.agent)) event.effect = "deny"
+            } else if (!primaryPermissionAllowed(event.action)) event.effect = "deny"
+            // Native asks and denies are preserved for genuine dispatch and reads.
+          })
+        }
         if (stop.signal.aborted) { event.effect = "deny"; return }
         const previous = event.effect
         event.effect = adapter.permission(binding, event)
         adapter.record(binding.run, "permission.evaluate", { sessionId: event.sessionID, action: event.action, resources: event.resources, source: event.source, previous, effect: event.effect })
       }))
       registrations.push(await ctx.session.hook("context", event => {
+        if (stop.signal.aborted) {
+          if (retiringWorkers.has(event.sessionID)) stop.signal.throwIfAborted()
+          if (event.agent === ULTRA_AGENT_ID || retiringSessions.has(event.sessionID)) event.tools = {}
+          else for (const name of ["ultra_task", "ultra_control", "ultra_execute", "ultra_submit", "ultra_check"]) delete event.tools[name]
+          return
+        }
         const binding = adapter.binding(event.sessionID)
         if (!binding) {
           // These tools are internal capabilities, made visible only to their bound sessions.
           for (const name of ["ultra_execute", "ultra_submit", "ultra_check"]) delete event.tools[name]
-          return
+          return track(async () => {
+            const caller = await adapter.scoped(event.sessionID)
+            const active = guarded(event.sessionID)
+            if (!caller.parentID && (event.agent === ULTRA_AGENT_ID || caller.agent === ULTRA_AGENT_ID || active)) {
+              if (stop.signal.aborted) { event.tools = {}; return }
+              const intent = parentRuns(event.sessionID).some(run => run.status === "starting" && run.intentExpiresAt > Date.now() && !run.supervisorSessionId)
+              event.tools = Object.fromEntries(Object.entries(event.tools).filter(([name]) => primaryToolAllowed(name) && (name !== "ultra_task" || (event.agent === ULTRA_AGENT_ID && caller.agent === ULTRA_AGENT_ID && !active)) && (name !== "ultra_start" || intent)))
+              if (event.system) event.system.push({ type: "text", text: `Ultra workflow coordinator. Use ultra_control to read actual status or control existing work. ${JSON.stringify(sanitizeEventData({ runs: parentRuns(event.sessionID).filter(run => !terminal.has(run.status) || busy(run)).map(summary) }))}\n${active ? "An active workflow owns project work. Do not start another graph. Switching agents does not cancel workers." : "There is no active workflow in this conversation. Use ultra_task for a new authorized project task."} Do not edit, run shell commands, or delegate directly. Config and general questions do not authorize a new workflow.` })
+            } else {
+              delete event.tools.ultra_task
+              if (caller.parentID || !parentRuns(event.sessionID).length) delete event.tools.ultra_control
+            }
+          })
         }
         return track(async () => {
           if (binding.retired) { event.tools = {}; return }
@@ -216,6 +324,7 @@ export default Plugin.define({
         })
       }))
       registrations.push(await ctx.session.hook("model.request", event => {
+        if (stop.signal.aborted) { if (event.agent === ULTRA_AGENT_ID || retiringSessions.has(event.sessionID)) stop.signal.throwIfAborted(); return }
         const binding = adapter.binding(event.sessionID)
         if (!binding) return
         stop.signal.throwIfAborted()
@@ -223,13 +332,28 @@ export default Plugin.define({
         adapter.record(binding.run, "model.request", { sessionId: event.sessionID, model: event.model, kind: event.kind, role: binding.role })
       }))
       registrations.push(await ctx.session.hook("prompt", event => {
+        if (stop.signal.aborted) { if (retiringSessions.has(event.sessionID) || auto.get(event.sessionID)) stop.signal.throwIfAborted(); return }
         if (adapter.binding(event.sessionID)) { stop.signal.throwIfAborted(); return }
         if (!auto.get(event.sessionID) || event.prompt.text.length < config.autoThreshold || /^(?:ULTRA_|<subagent|\/ultracode)/.test(event.prompt.text.trim())) return
         return track(async () => {
+          if ((await adapter.scoped(event.sessionID)).agent === ULTRA_AGENT_ID) return // Ultra interprets requests through typed tools, without a length classifier.
           if (engine.list().some(run => run.parentSessionId === event.sessionID && !terminal.has(run.status))) return
           const run = await start(event.prompt.text, "execute", event.sessionID)
           event.prompt.text = intentText(run)
           event.metadata = { ...event.metadata, ultraRunId: run.id, ultraIntent: run.intentId }
+        })
+      }))
+      registrations.push(await ctx.tool.hook("execute.before", event => {
+        if (stop.signal.aborted) {
+          if (event.agent === ULTRA_AGENT_ID || retiringSessions.has(event.sessionID)) throw new NativeToolError({ message: "Plugin is reloading or shutting down" })
+          return
+        }
+        if (adapter.binding(event.sessionID)) return
+        return track(async () => {
+          const caller = await adapter.scoped(event.sessionID)
+          if (caller.parentID || (event.agent !== ULTRA_AGENT_ID && caller.agent !== ULTRA_AGENT_ID && !guarded(event.sessionID))) return
+          if (stop.signal.aborted) throw new NativeToolError({ message: "Plugin is reloading or shutting down" })
+          if (!primaryToolAllowed(event.tool)) throw new NativeToolError({ message: "The workflow coordinator uses workflow and read-only tools; settle or cancel active work before direct project changes" })
         })
       }))
       registrations.push(await ctx.tool.hook("execute.after", event => {

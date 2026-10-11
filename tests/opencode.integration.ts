@@ -22,6 +22,11 @@ const WorkflowRpc = Rpc.define({ id: "ultra.open-code", methods: {
 type Record_ = Record<string, unknown>
 type CommandFeedback = { sessionId: string; command: string; result?: Record_; error?: string }
 type Check = { name: string; durationMs: number; evidence: unknown }
+type NativeContext = Awaited<ReturnType<IsolatedHost["client"]["session"]["context"]>>
+type NativeTool = Extract<Extract<NativeContext[number], { type: "assistant" }>["content"][number], { type: "tool" }>
+function nativeTools(context: NativeContext, name: string): NativeTool[] {
+  return context.flatMap(message => message.type === "assistant" ? message.content.filter((content): content is NativeTool => content.type === "tool" && content.name === name) : [])
+}
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return `${error.name}: ${error.message}`
   if (error && typeof error === "object") {
@@ -124,6 +129,22 @@ export async function runOpenCodeIntegration() {
       assert.equal((configuration.config as { models?: { roles?: { planner?: string } } } | undefined)?.models?.roles?.planner ?? (configuration.models as { roles?: { planner?: string } } | undefined)?.roles?.planner, "fixture/alternate")
       assert.equal(fixture.requests.length, 0)
       return configuration
+    })
+    await check("Ultra is a visible native primary agent beside Build and Plan", async () => {
+      const agents = (await client.agent.list({ location })).data
+      const ultra = agents.find(agent => agent.id === "ultra")
+      assert(ultra, "Global installation must expose the native Ultra agent")
+      assert.equal(ultra.name, "Ultra")
+      assert.equal(ultra.mode, "primary")
+      assert.equal(ultra.hidden, false)
+      assert.ok(agents.some(agent => agent.id === "build" && agent.mode === "primary"))
+      assert.ok(agents.some(agent => agent.id === "plan" && agent.mode === "primary"))
+      for (const id of ["ultra-supervisor", "ultra-worker"]) {
+        const internal = agents.find(agent => agent.id === id)
+        assert.equal(internal?.mode, "subagent")
+      }
+      assert.equal(fixture.requests.length, 0)
+      return { agents: agents.filter(agent => ["build", "plan", "ultra", "ultra-supervisor", "ultra-worker"].includes(agent.id)).map(agent => ({ id: agent.id, name: agent.name, mode: agent.mode, hidden: agent.hidden })), modelRequests: 0 }
     })
     await check("configured package exposes the production terminal companion", async () => {
       const production = JSON.parse(await readFile(join(pluginSnapshot!.directory, "package.json"), "utf8"))
@@ -470,6 +491,173 @@ export async function runOpenCodeIntegration() {
       assert.ok(fixture.requests.slice(before).every(request => request.marker === "ordinary"))
       return { newRuns: 0, ordinaryRequests: fixture.requests.length - before }
     })
+    // These are ordinary model tool calls in a selected native primary agent.
+    // Custom RPC is used only by the test observer to inspect durable state.
+    const ultraParent = await client.session.create({ location, agent: "ultra", model: { providerID: "fixture", id: "test" } })
+    const modeFeedback: CommandFeedback[] = []
+    const modeSubscription = new AbortController()
+    const modeUnsubscribe = rpc.events.on("commandResult", event => { modeFeedback.push(event.data as CommandFeedback) }, { signal: modeSubscription.signal })
+    const modeReadiness = client.event.subscribe({ signal: AbortSignal.any([modeSubscription.signal, AbortSignal.timeout(5_000)]) })[Symbol.asyncIterator]()
+    const askPrimary = async (id: typeof ultraParent.id, text: string, toolCalls: { name: string; arguments: Record<string, unknown> }[] = []) => {
+      if (toolCalls.length) fixture.scriptPrimary({ prompt: text, toolCalls })
+      await client.session.prompt({ sessionID: id, text })
+      await client.session.wait({ sessionID: id }, { signal: AbortSignal.timeout(15_000) })
+      return client.session.context({ sessionID: id })
+    }
+    let modeRun: Run | undefined
+    try {
+      let readyEvent = await modeReadiness.next()
+      while (!readyEvent.done && readyEvent.value.type !== "server.connected") readyEvent = await modeReadiness.next()
+      assert.equal(readyEvent.done, false)
+      await check("Ultra config status and conversation use normal tools without admitting a graph", async () => {
+        const before = runs(await rpc.status({}, options())).length
+        const requestOffset = fixture.requests.length
+        const context = await askPrimary(ultraParent.id, "Show the Ultra configuration and current workflow status.", [
+          { name: "ultra_control", arguments: { action: "config" } },
+          { name: "ultra_control", arguments: { action: "status" } },
+        ])
+        const controls = nativeTools(context, "ultra_control")
+        assert.equal(controls.length, 2)
+        assert.ok(controls.every(call => call.state.status === "completed"), JSON.stringify(controls))
+        assert.ok(JSON.stringify(controls).includes("fixture/alternate"), "Effective settings must be ordinary native tool content")
+        const primary = fixture.requests.slice(requestOffset).find(request => request.marker === "primary")
+        assert(primary)
+        assert(primary.tools.includes("ultra_task"))
+        assert(primary.tools.includes("ultra_control"))
+        assert.ok(!primary.tools.some(name => ["write", "edit", "patch", "shell", "subagent", "ultra_start", "ultra_execute", "ultra_submit", "ultra_check"].includes(name)))
+        await askPrimary(ultraParent.id, "Explain the recorded configuration without starting project work.")
+        assert.equal(runs(await rpc.status({}, options())).length, before)
+        assert.equal(nativeTools(await client.session.context({ sessionID: ultraParent.id }), "ultra_task").length, 0)
+        assert.equal(modeFeedback.length, 0, "Model tool feedback must not depend on command RPC events")
+        assert.ok(!JSON.stringify(await client.session.inbox.list({ sessionID: ultraParent.id })).includes("ULTRA_CONTROL_RESULT"))
+        return { sessionId: ultraParent.id, controls: controls.map(call => ({ name: call.name, state: call.state })), newRuns: 0, customCommandEvents: 0, primaryTools: primary.tools }
+      })
+      await check("ordinary Ultra planning admits one native graph and rejects duplicate task calls", async () => {
+        const objective = "Plan the isolated Ultra agent workflow and preserve protected.txt."
+        const before = runs(await rpc.status({}, options())).length
+        const beforeFile = await readFile(join(host!.project, "implemented.txt"), "utf8")
+        const hold = fixture.holdNext("task", "explorer")
+        let context: NativeContext
+        try {
+          context = await askPrimary(ultraParent.id, objective, [
+            { name: "ultra_task", arguments: { objective, mode: "plan" } },
+            { name: "ultra_task", arguments: { objective, mode: "plan" } },
+          ])
+          const admitted = runs(await rpc.status({}, options())).filter(run => run.objective === objective)
+          assert.equal(admitted.length, 1)
+          modeRun = admitted[0]!
+          assert.equal(runs(await rpc.status({}, options())).length, before + 1)
+          assert.equal(modeRun.parentSessionId, ultraParent.id)
+          assert.equal(modeRun.mode, "plan")
+          assert.ok(modeRun.supervisorSessionId)
+          assert.ok(modeRun.admission?.messageId && modeRun.admission.callId && modeRun.admission.requestHash)
+          const calls = nativeTools(context, "ultra_task")
+          assert.equal(calls.length, 2)
+          assert.equal(calls.filter(call => call.state.status === "completed").length, 1, JSON.stringify(calls))
+          const duplicate = calls.find(call => call.state.status === "error")
+          assert(duplicate)
+          assert.match(JSON.stringify(duplicate.state), /active workflow|not available[^\n]*ultra_task/)
+          assert.ok(JSON.stringify(calls.find(call => call.state.status === "completed")!.state).includes(modeRun.id), "Launch must have ordinary native tool content with the admitted run ID")
+          const supervisor = await client.session.get({ sessionID: modeRun.supervisorSessionId as any })
+          assert.equal(supervisor.parentID, ultraParent.id)
+          assert.equal(supervisor.agent, "ultra-supervisor")
+          assert.ok(!JSON.stringify(context).includes("ULTRA_START_INTENT"), "A model tool already has a genuine invocation; it must not enqueue a launch intent")
+          assert.ok(!JSON.stringify(await client.session.inbox.list({ sessionID: ultraParent.id })).includes("ULTRA_START_INTENT"))
+          assert.equal(modeFeedback.length, 0)
+          await waitFor("Ultra graph remains active during a follow-up", async () => fixture.requests.find(request => request.hold === hold), request => request?.state === "held", 10_000)
+          context = await askPrimary(ultraParent.id, "Continue observing the existing Ultra plan without duplicating its admission.", [{ name: "ultra_task", arguments: { objective, mode: "plan" } }])
+          const followup = nativeTools(context, "ultra_task").at(-1)
+          assert.equal(followup?.state.status, "error")
+          assert.match(JSON.stringify(followup?.state), /active workflow|not available[^\n]*ultra_task/)
+          assert.equal(runs(await rpc.status({}, options())).filter(run => run.objective === objective).length, 1)
+          assert.equal(runs(await rpc.status({}, options())).length, before + 1)
+        } finally { fixture.release(hold) }
+        const saved = await waitFor("ordinary Ultra plan ready", async () => runs(await rpc.status({ runId: modeRun!.id }, options()))[0], run => !!run && ["ready", "failed", "partial", "cancelled"].includes(run.status), 60_000)
+        assert.equal(saved?.status, "ready", JSON.stringify(saved?.errors))
+        modeRun = saved!
+        assert.ok(modeRun.proposal?.revision)
+        assert.equal(await readFile(join(host!.project, "implemented.txt"), "utf8"), beforeFile)
+        assert.equal(await readFile(join(host!.project, "protected.txt"), "utf8"), "original\n")
+        assert.ok(modeRun.tasks.filter(task => !["discovery", "design"].includes(task.spec.stage)).every(task => task.attempts.length === 0), "Planning must leave implementation and later task attempts untouched")
+        await client.session.wait({ sessionID: modeRun.supervisorSessionId as any }, { signal: AbortSignal.timeout(15_000) })
+        await client.session.wait({ sessionID: ultraParent.id }, { signal: AbortSignal.timeout(15_000) })
+        return { runId: modeRun.id, status: modeRun.status, mode: modeRun.mode, admission: modeRun.admission, supervisorSessionId: modeRun.supervisorSessionId, taskResults: nativeTools(context!, "ultra_task").map(call => call.state), startIntents: 0, customCommandEvents: 0 }
+      })
+      await check("Ultra controls retain run ownership across mode switches and execute the saved graph", async () => {
+        assert(modeRun?.proposal)
+        const before = runs(await rpc.status({}, options())).length
+        const stranger = await client.session.create({ location, agent: "ultra", model: { providerID: "fixture", id: "test" } })
+        const wrongCaller = await askPrimary(stranger.id, "Attempt control of another initiating conversation's graph.", [{ name: "ultra_control", arguments: { action: "pause", runId: modeRun.id } }])
+        const rejected = nativeTools(wrongCaller, "ultra_control").at(-1)
+        assert.equal(rejected?.state.status, "error", JSON.stringify(rejected))
+        assert.equal(runs(await rpc.status({ runId: modeRun.id }, options()))[0]?.status, "ready")
+        await client.session.switchAgent({ sessionID: ultraParent.id, agent: "build" })
+        const inspected = await askPrimary(ultraParent.id, "Inspect the Ultra graph after switching the initiating conversation to Build.", [{ name: "ultra_control", arguments: { action: "inspect", runId: modeRun.id } }])
+        const control = nativeTools(inspected, "ultra_control").at(-1)
+        assert.equal(control?.state.status, "completed", JSON.stringify(control))
+        assert.ok(JSON.stringify(control?.state).includes(modeRun.id))
+        const request = fixture.requests.findLast(value => value.marker === "primary")!
+        assert.ok(request.tools.includes("ultra_control"))
+        assert.ok(!request.tools.includes("ultra_task"))
+        const launch = await askPrimary(ultraParent.id, "Execute the exact saved Ultra plan in this initiating conversation.", [{ name: "ultra_control", arguments: { action: "run", runId: modeRun.id, revision: modeRun.proposal.revision } }])
+        assert.equal(nativeTools(launch, "ultra_control").at(-1)?.state.status, "completed")
+        const saved = await waitFor("ordinary Ultra saved graph succeeds", async () => runs(await rpc.status({ runId: modeRun!.id }, options()))[0], run => !!run && ["succeeded", "partial", "failed", "cancelled"].includes(run.status), 60_000)
+        assert.equal(saved?.status, "succeeded", JSON.stringify(saved?.errors))
+        modeRun = saved!
+        assert.equal(modeRun.mode, "execute")
+        assert.equal(runs(await rpc.status({}, options())).length, before)
+        assert.equal(await readFile(join(host!.project, "implemented.txt"), "utf8"), "native implementation verified\n")
+        assert.equal(await readFile(join(host!.project, "protected.txt"), "utf8"), "original\n")
+        assert.ok(modeRun.tasks.find(task => task.spec.id === "native.verify")?.attempts.some(attempt => attempt.checks.some(check => check.checkId === "fixture-check" && check.outcome === "passed")))
+        const history = await rpc.inspect({ runId: modeRun.id }, options()) as { events: { kind: string; data: Record<string, any> }[] }
+        for (const event of history.events.filter(event => event.kind === "context.observed")) assert.ok(!event.data.tools.some((name: string) => ["ultra_task", "ultra_control", "ultra_start"].includes(name)))
+        assert.equal(modeFeedback.length, 0)
+        await client.session.wait({ sessionID: modeRun.supervisorSessionId as any }, { signal: AbortSignal.timeout(15_000) })
+        await client.session.wait({ sessionID: ultraParent.id }, { signal: AbortSignal.timeout(15_000) })
+        return { runId: modeRun.id, status: modeRun.status, mode: modeRun.mode, sameGraph: true, foreignControl: rejected?.state, ownerAgent: (await client.session.get({ sessionID: ultraParent.id })).agent, customCommandEvents: 0 }
+      })
+      await check("ordinary Build and child conversations cannot forge Ultra task admission", async () => {
+        const before = runs(await rpc.status({}, options())).length
+        const build = await client.session.create({ location, agent: "build", model: { providerID: "fixture", id: "test" } })
+        const buildContext = await askPrimary(build.id, "Forge an Ultra task from an ordinary Build conversation.", [{ name: "ultra_task", arguments: { objective: "This Build request must not admit a graph.", mode: "plan" } }])
+        assert.equal(nativeTools(buildContext, "ultra_task").at(-1)?.state.status, "error")
+        const buildRequest = fixture.requests.findLast(value => value.marker === "primary")!
+        assert.ok(!buildRequest.tools.includes("ultra_task"))
+        const child = await client.session.create({ location, parentID: ultraParent.id, agent: "ultra", model: { providerID: "fixture", id: "test" } })
+        const childContext = await askPrimary(child.id, "Forge Ultra control from a child conversation.", [{ name: "ultra_control", arguments: { action: "config" } }])
+        assert.equal(nativeTools(childContext, "ultra_control").at(-1)?.state.status, "error")
+        const childRequest = fixture.requests.findLast(value => value.marker === "primary")!
+        assert.ok(!childRequest.tools.some(name => ["ultra_task", "ultra_control"].includes(name)))
+        assert.equal(runs(await rpc.status({}, options())).length, before)
+        assert.equal(modeFeedback.length, 0)
+        return { buildSessionId: build.id, childSessionId: child.id, buildResult: nativeTools(buildContext, "ultra_task").at(-1)?.state, childResult: nativeTools(childContext, "ultra_control").at(-1)?.state, admittedRuns: 0 }
+      })
+      await check("Ultra task admission rechecks a mode switch after model request", async () => {
+        const session = await client.session.create({ location, agent: "ultra", model: { providerID: "fixture", id: "test" } })
+        const objective = "A held Ultra request must not launch after the conversation switches to Build."
+        fixture.scriptPrimary({ prompt: objective, toolCalls: [{ name: "ultra_task", arguments: { objective, mode: "plan" } }] })
+        const hold = fixture.holdNext("primary")
+        const before = runs(await rpc.status({}, options())).length
+        try {
+          await client.session.prompt({ sessionID: session.id, text: objective })
+          const requested = await waitFor("held Ultra primary tool response", async () => fixture.requests.find(request => request.hold === hold), request => request?.state === "held", 10_000)
+          assert(requested)
+          assert.ok(requested.tools.includes("ultra_task"))
+          await client.session.switchAgent({ sessionID: session.id, agent: "build" })
+        } finally { fixture.release(hold) }
+        await client.session.wait({ sessionID: session.id }, { signal: AbortSignal.timeout(15_000) })
+        const context = await client.session.context({ sessionID: session.id })
+        const tool = nativeTools(context, "ultra_task").at(-1)
+        assert.equal(tool?.state.status, "error", JSON.stringify(tool))
+        assert.equal((await client.session.get({ sessionID: session.id })).agent, "build")
+        assert.equal(runs(await rpc.status({}, options())).length, before)
+        assert.ok(!runs(await rpc.status({}, options())).some(run => run.objective === objective))
+        assert.equal(modeFeedback.length, 0)
+        return { sessionId: session.id, tool: tool?.state, admittedRuns: 0, finalAgent: "build" }
+      })
+    } finally {
+      modeUnsubscribe(); modeSubscription.abort(); await modeReadiness.return?.()
+    }
     await check("unavailable configured model rejects native admission without fallback", async () => {
       const secondary = await startHost({ root: join(root, "unknown-model"), fixtureURL: fixture.baseURL, pluginDirectory, installGlobal: true, pluginOptions: { models: { default: "fixture/missing" } } })
       try {

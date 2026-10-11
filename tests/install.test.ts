@@ -2,6 +2,8 @@ import { describe, expect, spyOn, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises"
 import { join, relative, resolve } from "node:path"
+import { ConfigAgent } from "@opencode/schema/config/agent"
+import { Schema } from "effect"
 import * as installer from "../scripts/install.ts"
 
 async function fixture() {
@@ -103,6 +105,61 @@ describe("installed host discovery", () => {
 })
 
 describe("global installer", () => {
+  test("installs a visible native Ultra primary agent without widening permission defaults", async () => {
+    const { plugin, configDirectory } = await fixture()
+    const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
+    const native = JSON.parse(await readFile(installed.path, "utf8"))
+    expect(native.agents.ultra).toMatchObject({ mode: "primary", hidden: false })
+    expect(native.agents.ultra.description).toEqual(expect.any(String))
+    expect(native.agents.ultra.system).toEqual(expect.any(String))
+    expect(native.agents.ultra.permissions).toBeUndefined()
+    expect(native.default_agent).toBeUndefined()
+    expect(native.agents.ultra.name).toBeUndefined()
+    const decoded = Schema.decodeUnknownSync(ConfigAgent.Info)(native.agents.ultra)
+    expect(decoded.mode).toBe("primary")
+    expect(decoded.hidden).toBe(false)
+  })
+
+  test("preserves Ultra primary model, ordered policy and user instructions across idempotent installs", async () => {
+    const { plugin, configDirectory } = await fixture()
+    await mkdir(configDirectory)
+    const ultra = {
+      mode: "primary", hidden: false, model: "provider/model#deep", system: "User's orchestration preferences", description: "User's Ultra description",
+      request: { settings: { temperature: 0.2 }, headers: { "x-local-routing": "project" } }, color: "#468ace", steps: 12,
+      permissions: [{ action: "shell", resource: "*", effect: "ask" }, { action: "edit", resource: "private/**", effect: "deny" }],
+    }
+    const original = JSON.stringify({ default_agent: "plan", permissions: [{ action: "read", resource: "*.env", effect: "deny" }], agents: { ultra, build: { model: "provider/build" } } })
+    const path = join(configDirectory, "opencode.json")
+    await writeFile(path, original)
+    const first = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
+    const native = JSON.parse(await readFile(path, "utf8"))
+    expect(native.agents.ultra).toEqual(ultra)
+    expect(native.agents.build).toEqual({ model: "provider/build" })
+    expect(native.permissions).toEqual([{ action: "read", resource: "*.env", effect: "deny" }])
+    expect(native.default_agent).toBe("plan")
+    expect(await readFile(first.backup!, "utf8")).toBe(original)
+    const contents = await readFile(path, "utf8")
+    const files = await readdir(configDirectory)
+    const second = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
+    expect(second.changes).toEqual([])
+    expect(second.backup).toBeUndefined()
+    expect(await readFile(path, "utf8")).toBe(contents)
+    expect(await readdir(configDirectory)).toEqual(files)
+  })
+
+  test.each([
+    { mode: "subagent" }, { mode: "all" }, { hidden: true }, { disabled: true }, { permissions: { shell: "ask" } },
+  ])("rejects a conflicting Ultra primary definition without replacing user configuration: %j", async ultra => {
+    const { plugin, configDirectory } = await fixture()
+    await mkdir(configDirectory)
+    const path = join(configDirectory, "opencode.json")
+    const original = JSON.stringify({ agents: { ultra } })
+    await writeFile(path, original)
+    await expect(installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })).rejects.toThrow("ultra")
+    expect(await readFile(path, "utf8")).toBe(original)
+    expect(await readdir(configDirectory)).toEqual(["opencode.json"])
+  })
+
   test("accepts the exact 2.0.26 host version", async () => {
     const { plugin, configDirectory } = await fixture()
     const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.26" })

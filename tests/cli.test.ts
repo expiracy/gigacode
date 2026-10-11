@@ -188,6 +188,8 @@ describe("project installer and local CLI", () => {
     expect(result.permissions).toEqual(native.permissions)
     expect(result.plugins).toEqual([{ package: "another-plugin", options: { active: true } }, { package: plugin }])
     expect(result.experimental).toEqual({ anotherFlag: true, subagent_depth: 2 })
+    expect(result.agents.ultra).toMatchObject({ mode: "primary", hidden: false })
+    expect(result.agents.ultra.permissions).toBeUndefined()
     expect(result.agents["ultra-supervisor"].mode).toBe("subagent")
     expect(result.agents["ultra-worker"].permissions).toContainEqual({ action: "subagent", resource: "*", effect: "deny" })
     expect(await readFile(installed.backup!, "utf8")).toBe(JSON.stringify(native))

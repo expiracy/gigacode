@@ -25,6 +25,7 @@ export interface Run {
   projectId: string
   directory: string
   parentSessionId: string
+  admission?: { messageId: string; callId: string; requestHash: string }
   supervisorSessionId?: string
   supervisorHistory?: string[]
   supervisorAttempt?: number

@@ -46,6 +46,28 @@ test("run admission is atomic and exact intent identity is required", async () =
   expect(engine.get(first.id)?.supervisorSessionId).toBe("supervisor")
 })
 
+test("agent admission persists a replay receipt with the run and deduplicates concurrent calls", async () => {
+  const options = { objective: "Inspect behavior", mode: "plan" as const, parentSessionId: "parent", capturedModel: { providerID: "fixture", id: "test" }, policy: [], admission: { messageId: "message", callId: "call", requestHash: "request" } }
+  const [first, replay] = await Promise.all([engine.start(options), engine.start(options)])
+  expect(replay.id).toBe(first.id)
+  expect(store.list("project")).toHaveLength(1)
+  expect(store.get(first.id)!.admission).toEqual(options.admission)
+  expect(store.events("project").filter(event => event.kind === "run.admitted")).toHaveLength(1)
+  store.mutate(first.id, run => { run.status = "ready" })
+  const restored = new Engine(store, host, "project", path, config)
+  expect((await restored.start(options)).id).toBe(first.id)
+  expect(store.list("project")).toHaveLength(1)
+  await expect(restored.start({ ...options, objective: "Changed request", admission: { ...options.admission, requestHash: "different" } })).rejects.toThrow(/replay|changed/i)
+})
+
+test("an agent task cannot create a second graph in an initiating conversation with active work", async () => {
+  const options = { objective: "Inspect behavior", mode: "plan" as const, parentSessionId: "parent", capturedModel: { providerID: "fixture", id: "test" }, policy: [], admission: { messageId: "message", callId: "first", requestHash: "request" } }
+  await engine.start(options)
+  await expect(engine.start({ ...options, admission: { ...options.admission, callId: "second" } })).rejects.toThrow(/existing|active|conversation/i)
+  expect(store.list("project")).toHaveLength(1)
+  expect((await engine.start({ ...options, parentSessionId: "other" })).parentSessionId).toBe("other")
+})
+
 test("attempt is durable before native launch and a candidate waits for actual settlement", async () => {
   const run = await start(); install(run, [task("one")])
   host.beforeBind = (_run, attempt) => expect(store.get(run.id)!.tasks[0]!.attempts[0]!.id).toBe(attempt.id)
