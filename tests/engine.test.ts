@@ -33,8 +33,250 @@ function install(run: Run, specs: TaskSpec[], phase: Run["phase"] = "planning") 
   store.mutate(run.id, value => {
     value.supervisorSessionId = "supervisor"; value.status = phase === "planning" ? "planning" : "running"; value.phase = phase
     value.tasks = specs.map(spec => ({ spec, status: "pending", attempts: [] }))
+    value.plans[value.plans.length - 1] = { ...value.plans.at(-1)!, tasks: structuredClone(specs) }
   })
 }
+
+const requestOptions = (mode: "plan" | "execute" = "plan") => ({ objective: "Inspect behavior", mode, parentSessionId: "parent", capturedModel: { providerID: "fixture", id: "test" }, policy: [] })
+const directTasks = (): TaskSpec[] => [
+  { ...task("small-fix", true), ownedPaths: ["src/feature.ts"] },
+  { ...task("independent-review", false, ["small-fix"]), role: "reviewer", stage: "review" },
+  { ...task("native-tests", false, ["small-fix"]), role: "verifier", stage: "verification", checkIds: ["test"] },
+]
+
+test("one requested read-only worker obtains a ready plan without adding compulsory agents", async () => {
+  const workflow = { rationale: "One worker can inspect and explain this local behavior", tasks: [task("inspect-feature")] }
+  const run = await engine.start({ ...requestOptions(), workflow })
+  expect(run.tasks.map(item => item.spec)).toEqual(workflow.tasks)
+  expect(run.plans[0]!.rationale).toBe(workflow.rationale)
+  engine.consumeStartIntent(run.id, run.intentId, "parent"); engine.bindSupervisor(run.id, run.intentId, "supervisor")
+  await engine.tick(run.id, invocation()); await settleWave(run.id)
+  expect(engine.get(run.id)!.status).toBe("ready")
+  expect(host.launches.map(item => item.task.id)).toEqual(["inspect-feature"])
+  expect(host.launches.every(item => !item.task.writes)).toBe(true)
+  expect(host.launches[0]!.attempt.prompt).toContain("every required assessment criterion")
+})
+
+test("a small direct execution uses only its writer, independent reviewer and native verifier", async () => {
+  const workflow = { rationale: "The initiating agent already located the fix", tasks: directTasks() }
+  const run = await engine.start({ ...requestOptions("execute"), workflow })
+  expect(run.phase).toBe("execution")
+  expect(run.plans).toHaveLength(1)
+  expect(run.tasks.map(item => item.spec)).toEqual(workflow.tasks)
+  expect(run.criteria).toEqual([
+    { id: "request", description: "Inspect behavior", required: true, kind: "assessment" },
+    { id: "verification", description: "Configured check evidence establishes verification.", required: true, kind: "check" },
+  ])
+  engine.consumeStartIntent(run.id, run.intentId, "parent"); engine.bindSupervisor(run.id, run.intentId, "supervisor")
+  await engine.tick(run.id, invocation()); await settleWave(run.id)
+  expect(engine.get(run.id)!.status).toBe("running")
+  expect(host.launches.map(item => item.task.id)).toEqual(["small-fix", "independent-review", "native-tests"])
+  await settleWave(run.id)
+  const saved = engine.get(run.id)!
+  expect(saved.status).toBe("succeeded")
+  expect(saved.tasks.find(item => item.spec.id === "native-tests")!.attempts[0]!.checks[0]).toMatchObject({ outcome: "passed", exit: 0, workspaceHash: saved.candidateHash })
+  expect(saved.candidateHash).toBeDefined()
+  expect(saved.tasks.find(item => item.spec.id === "independent-review")!.attempts[0]!.workspaceHash).toBe(saved.candidateHash!)
+  expect(host.launches).toHaveLength(3)
+})
+
+test("preserves an explicitly requested independent discovery DAG", async () => {
+  const workflow = { rationale: "Independent API and storage inspections feed the design", tasks: [
+    task("api"), { ...task("storage"), instructions: "Inspect storage contracts" },
+    { ...task("design-from-evidence", false, ["api", "storage"]), role: "planner" as const, stage: "design" as const },
+  ] }
+  const run = await engine.start({ ...requestOptions(), workflow })
+  expect(run.tasks.map(item => item.spec)).toEqual(workflow.tasks)
+  engine.consumeStartIntent(run.id, run.intentId, "parent"); engine.bindSupervisor(run.id, run.intentId, "supervisor")
+  await engine.tick(run.id, invocation())
+  expect(host.launches.map(item => item.task.id)).toEqual(["api", "storage"])
+  await settleWave(run.id)
+  expect(host.launches.map(item => item.task.id)).toEqual(["api", "storage", "design-from-evidence"])
+  await settleWave(run.id)
+  expect(engine.get(run.id)!.status).toBe("ready")
+})
+
+test("rejects unsafe requested graphs before admission or native launch", async () => {
+  const unsafe = [
+    { ...requestOptions(), workflow: { rationale: "Forbidden design write", tasks: [task("write", true)] } },
+    { ...requestOptions(), workflow: { rationale: "Forbidden design verification", tasks: [{ ...task("verify"), role: "verifier", stage: "verification", checkIds: ["test"] }] } },
+    { ...requestOptions(), workflow: { rationale: "No work", tasks: [] } },
+    { ...requestOptions(), workflow: { rationale: "Over the attempt budget", tasks: Array.from({ length: config.limits.attempts + 1 }, (_, index) => task(`inspect-${index}`)) } },
+    { ...requestOptions(), workflow: { rationale: "Broken dependency", tasks: [task("inspect", false, ["missing"])] } },
+    { ...requestOptions(), workflow: { rationale: "Model not authorized", tasks: [{ ...task("inspect"), model: "unapproved/model" }] } },
+    { ...requestOptions(), workflow: { rationale: "No model criterion authority", tasks: [task("inspect")], criteria: [{ id: "request", description: "Weaker request", required: false, kind: "assessment" }] } },
+    { ...requestOptions("execute"), workflow: { rationale: "Missing independent proof", tasks: [task("write", true)] } },
+    { ...requestOptions("execute"), workflow: { rationale: "No final native checks", tasks: directTasks().filter(item => item.role !== "verifier") } },
+    { ...requestOptions(), workflow: { rationale: "Unavailable configured model", tasks: [{ ...task("inspect"), model: "fixture/test#missing" }] }, modelOptions: { default: "fixture/test#missing" } },
+  ]
+  for (const options of unsafe) {
+    await expect(engine.start(options as Parameters<Engine["start"]>[0])).rejects.toThrow()
+    expect(engine.list()).toHaveLength(0)
+    expect(host.launches).toHaveLength(0)
+  }
+})
+
+test("captures requested graph, exact criteria, settings and model selections across caller mutation and recovery", async () => {
+  const customConfig = structuredClone(config)
+  const customEngine = new Engine(store, host, "project", path, customConfig)
+  const workflow = { rationale: "Scope the discovered fix", tasks: directTasks() }
+  workflow.tasks[0]!.model = "fixture/test#high"
+  const options = { ...requestOptions("execute"), workflow, policy: [{ action: "shell", resource: "*", effect: "deny" as const }], modelOptions: { roles: { implementer: "fixture/test#high" } } }
+  const run = await customEngine.start(options)
+  const saved = structuredClone(run)
+  options.objective = "Different easier request"; options.workflow.rationale = "Changed"; options.workflow.tasks[0]!.ownedPaths = ["**"]
+  options.modelOptions.roles.implementer = "different/model"; options.policy[0]!.resource = "different"
+  customConfig.checks[0]!.command = "different check"; customConfig.limits.workers = 1
+  expect(customEngine.get(run.id)).toEqual(saved)
+  const restored = new Engine(store, host, "project", path, customConfig)
+  await restored.recover(run.id)
+  expect(restored.get(run.id)!.plans).toEqual(saved.plans)
+  expect(restored.get(run.id)!.criteria).toEqual(saved.criteria)
+  expect(restored.get(run.id)!.config).toEqual(saved.config)
+  expect(restored.get(run.id)!.modelOptions).toEqual(saved.modelOptions)
+  expect(restored.get(run.id)!.policy).toEqual(saved.policy)
+  restored.consumeStartIntent(run.id, run.intentId, "parent"); restored.bindSupervisor(run.id, run.intentId, "supervisor")
+  await restored.tick(run.id, invocation())
+  expect(host.launches[0]!.attempt.model.ref).toEqual({ providerID: "fixture", id: "test", variant: "high" })
+  expect(host.launches[0]!.task.ownedPaths).toEqual(["src/feature.ts"])
+})
+
+test("an adaptive graph replay retains one run and rejects changed request fingerprints", async () => {
+  const options = { ...requestOptions(), workflow: { rationale: "Inspect one feature", tasks: [task("inspect-feature")] }, admission: { messageId: "message", callId: "call", requestHash: "first-workflow" } }
+  const run = await engine.start(options)
+  expect((await engine.start(options)).id).toBe(run.id)
+  await expect(engine.start({ ...options, workflow: { ...options.workflow, rationale: "Different work" }, admission: { ...options.admission, requestHash: "changed-workflow" } })).rejects.toThrow(/replay|changed/i)
+  expect(engine.list()).toHaveLength(1)
+  expect(engine.get(run.id)!.plans[0]!.rationale).toBe("Inspect one feature")
+})
+
+test("admission snapshots the request before asynchronous workspace inspection", async () => {
+  let entered!: () => void, release!: () => void
+  const inspecting = new Promise<void>(resolve => { entered = resolve }), continueInspection = new Promise<void>(resolve => { release = resolve })
+  host.workspace = async () => { entered(); await continueInspection; return host.hash }
+  const options = { ...requestOptions("execute"), workflow: { rationale: "One already inspected change", tasks: directTasks() } }
+  const pending = engine.start(options)
+  await inspecting
+  options.objective = "Different request"; options.mode = "plan"; options.parentSessionId = "different-parent"; options.workflow.tasks[0]!.ownedPaths = ["**"]
+  release()
+  const saved = await pending
+  expect(saved.objective).toBe("Inspect behavior")
+  expect(saved.mode).toBe("execute")
+  expect(saved.parentSessionId).toBe("parent")
+  expect(saved.phase).toBe("execution")
+  expect(saved.criteria[0]!.description).toBe(saved.objective)
+  expect(saved.tasks[0]!.spec.ownedPaths).toEqual(["src/feature.ts"])
+})
+
+test.each(["missing-check", "failed-review"] as const)("a minimal direct workflow cannot claim success without actual independent evidence (%s)", async proof => {
+  const local = new Engine(store, host, "project", path, { ...config, limits: { ...config.limits, repairRounds: 0 } })
+  const run = await local.start({ ...requestOptions("execute"), workflow: { rationale: "One known fix with independent proof", tasks: directTasks() } })
+  local.consumeStartIntent(run.id, run.intentId, "parent"); local.bindSupervisor(run.id, run.intentId, "supervisor")
+  await local.tick(run.id, invocation())
+  const writer = host.launches[0]!
+  local.submit(writer.sessionId, { summary: "Implemented the fix" }); host.hash = "workspace:small-fix"; host.settle(writer.sessionId)
+  await local.tick(run.id, invocation())
+  for (const launch of host.launches.slice(1)) {
+    if (launch.task.role === "verifier" && proof !== "missing-check") {
+      const check = config.checks[0]!, at = Date.now()
+      local.evidence(launch.sessionId, { id: "actual-native-check", attemptId: launch.attempt.id, taskId: launch.task.id, sessionId: launch.sessionId, callId: "native-call", checkId: check.id, command: check.command, criterionIds: check.criterionIds, cwd: path, startedAt: at, finishedAt: at, exit: 0, outcome: "passed", output: "passed", workspaceHash: host.hash })
+    }
+    local.submit(launch.sessionId, { summary: "Assessed the change; unrecorded check claims are not proof", assessments: [{ criterionId: "request", passed: launch.task.role !== "reviewer" || proof !== "failed-review", explanation: "Inspected the current candidate" }] })
+    host.settle(launch.sessionId)
+  }
+  await local.tick(run.id, invocation())
+  expect(local.get(run.id)!.status).toBe("partial")
+  expect(host.launches).toHaveLength(3)
+})
+
+test.each([false, true])("same-hash baseline proof requires an actual check in the final verifier (recorded=%s)", async finalCheck => {
+  const local = new Engine(store, host, "project", path, { ...config, limits: { ...config.limits, repairRounds: 0 } })
+  const workflow = { rationale: "Baseline evidence precedes a scoped implementation and independent final proof", tasks: [
+    { ...task("write-tests", true), ownedPaths: ["tests/**"] },
+    { ...task("baseline", false, ["write-tests"]), role: "verifier" as const, stage: "verification" as const, checkIds: ["test"] },
+    { ...task("write-code", true, ["baseline"]), ownedPaths: ["src/**"] },
+    { ...task("final-review", false, ["write-code"]), role: "reviewer" as const, stage: "review" as const },
+    { ...task("final-check", false, ["write-code"]), role: "verifier" as const, stage: "verification" as const, checkIds: ["test"] },
+  ] }
+  const run = await local.start({ ...requestOptions("execute"), workflow })
+  local.consumeStartIntent(run.id, run.intentId, "parent"); local.bindSupervisor(run.id, run.intentId, "supervisor")
+  await local.tick(run.id, invocation())
+  let completed = 0
+  for (let wave = 0; wave < 4; wave++) {
+    const active = host.launches.slice(completed); completed = host.launches.length
+    for (const launch of active) {
+      // The implementation is a no-op, so baseline and final candidate deliberately have the same hash.
+      if (launch.task.id === "write-tests") host.hash = "workspace:unchanged-after-baseline"
+      if (launch.task.id === "baseline" || launch.task.id === "final-check" && finalCheck) {
+        const check = config.checks[0]!, at = Date.now()
+        local.evidence(launch.sessionId, { id: `native-${launch.task.id}`, attemptId: launch.attempt.id, taskId: launch.task.id, sessionId: launch.sessionId, callId: `check-${launch.task.id}`, checkId: check.id, command: check.command, criterionIds: check.criterionIds, cwd: path, startedAt: at, finishedAt: at, exit: 0, outcome: "passed", output: "actual passing native check", workspaceHash: host.hash })
+      }
+      local.submit(launch.sessionId, { summary: launch.task.id === "final-check" && !finalCheck ? "No final check was executed" : "Completed scoped work", ...(!launch.task.writes ? { assessments: [{ criterionId: "request", passed: true, explanation: "Inspected the candidate" }] } : {}) })
+      host.settle(launch.sessionId)
+    }
+    await local.tick(run.id, invocation())
+  }
+  const saved = local.get(run.id)!
+  expect(saved.status).toBe(finalCheck ? "succeeded" : "partial")
+  expect(saved.tasks.find(item => item.spec.id === "baseline")!.attempts[0]!.checks[0]).toMatchObject({ outcome: "passed", workspaceHash: saved.candidateHash })
+  expect(saved.tasks.find(item => item.spec.id === "final-check")!.attempts[0]!.checks).toHaveLength(finalCheck ? 1 : 0)
+  expect(host.launches.map(launch => launch.task.id)).toEqual(workflow.tasks.map(spec => spec.id))
+})
+
+test.each([false, true])("a no-op repair needs its own final native check (recorded=%s)", async repairCheck => {
+  const local = new Engine(store, host, "project", path, { ...config, limits: { ...config.limits, repairRounds: 1 } })
+  const run = await local.start({ ...requestOptions("execute"), workflow: { rationale: "One scoped fix and independent final proof", tasks: directTasks() } })
+  local.consumeStartIntent(run.id, run.intentId, "parent"); local.bindSupervisor(run.id, run.intentId, "supervisor")
+  await local.tick(run.id, invocation())
+  let completed = 0
+  for (let wave = 0; wave < 5; wave++) {
+    const active = host.launches.slice(completed); completed = host.launches.length
+    for (const launch of active) {
+      if (launch.task.id === "small-fix") host.hash = "workspace:unchanged-during-repair"
+      if (launch.task.role === "verifier" && (!launch.task.id.startsWith("repair.") || repairCheck)) {
+        const check = config.checks[0]!, at = Date.now()
+        local.evidence(launch.sessionId, { id: `native-${launch.task.id}`, attemptId: launch.attempt.id, taskId: launch.task.id, sessionId: launch.sessionId, callId: `check-${launch.task.id}`, checkId: check.id, command: check.command, criterionIds: check.criterionIds, cwd: path, startedAt: at, finishedAt: at, exit: 0, outcome: "passed", output: "actual passing native check", workspaceHash: host.hash })
+      }
+      local.submit(launch.sessionId, { summary: "Scoped candidate inspection", ...(!launch.task.writes ? { assessments: [{ criterionId: "request", passed: true, explanation: "Inspected the candidate" }] } : {}), ...(launch.task.id === "independent-review" ? { findings: [{ id: "requires-repair", description: "A separate review issue needs another attempt", blocking: true }] } : {}) })
+      host.settle(launch.sessionId)
+    }
+    await local.tick(run.id, invocation())
+  }
+  const saved = local.get(run.id)!
+  expect(saved.repairRound).toBe(1)
+  expect(saved.status).toBe(repairCheck ? "succeeded" : "partial")
+  expect(saved.tasks.find(item => item.spec.id === "native-tests")!.attempts[0]!.checks).toHaveLength(1)
+  expect(saved.tasks.find(item => item.spec.id === "repair.verify.1")!.attempts[0]!.checks).toHaveLength(repairCheck ? 1 : 0)
+  expect(host.launches).toHaveLength(6)
+})
+
+test.each(["unresolved", "unproved", "resolved"] as const)("read-only execution blockers require evidence-backed disposition (%s)", async resolution => {
+  const local = new Engine(store, host, "project", path, { ...config, limits: { ...config.limits, repairRounds: 0 } })
+  const tasks = [task("external-contract"), ...directTasks()]
+  tasks[1]!.dependencies = ["external-contract"]
+  const run = await local.start({ ...requestOptions("execute"), workflow: { rationale: "Inspect an external contract before the scoped fix", tasks } })
+  local.consumeStartIntent(run.id, run.intentId, "parent"); local.bindSupervisor(run.id, run.intentId, "supervisor")
+  await local.tick(run.id, invocation())
+  let completed = 0
+  for (let wave = 0; wave < 3; wave++) {
+    const active = host.launches.slice(completed); completed = host.launches.length
+    for (const launch of active) {
+      if (launch.task.writes) host.hash = "workspace:changed-by-implementation"
+      if (launch.task.role === "verifier") {
+        const check = config.checks[0]!, at = Date.now()
+        local.evidence(launch.sessionId, { id: "actual-final-proof", attemptId: launch.attempt.id, taskId: launch.task.id, sessionId: launch.sessionId, callId: "native-check", checkId: check.id, command: check.command, criterionIds: check.criterionIds, cwd: path, startedAt: at, finishedAt: at, exit: 0, outcome: "passed", output: "actual passing check", workspaceHash: host.hash })
+      }
+      local.submit(launch.sessionId, { summary: "Inspected scoped task evidence", ...(!launch.task.writes ? { assessments: [{ criterionId: "request", passed: true, explanation: "Inspected the requested behavior" }] } : {}), ...(launch.task.id === "external-contract" ? { findings: [{ id: "contract-gap", description: "The external interface contract has an unresolved required restriction", blocking: true, ...(resolution !== "unresolved" ? { disposition: "rejected" as const } : {}), ...(resolution === "resolved" ? { evidence: "Inspected the exact documented interface and found this restriction absent" } : {}) }] } : {}) })
+      host.settle(launch.sessionId)
+    }
+    await local.tick(run.id, invocation())
+  }
+  const saved = local.get(run.id)!
+  expect(saved.status).toBe(resolution === "resolved" ? "succeeded" : "partial")
+  expect(saved.tasks[0]!.attempts[0]!.workspaceHash).not.toBe(saved.candidateHash!)
+  expect(saved.tasks[0]!.attempts[0]!.result!.findings![0]!.description).toContain("external interface")
+  expect(host.launches).toHaveLength(4)
+})
 
 test("run admission is atomic and exact intent identity is required", async () => {
   const first = await start(); await start()
@@ -843,7 +1085,13 @@ test("retrying a failed implementation reruns blocked review and native verifica
 })
 
 test("retrying planning discovery reruns design, critique, and reconciliation descendants", async () => {
-  const run = await start()
+  const workflow = { rationale: "Independent source evidence and critique justify this task's larger design graph", tasks: [
+    task("explore"), { ...task("research"), role: "researcher" as const, instructions: "Establish the external source contracts" },
+    { ...task("design", false, ["explore", "research"]), role: "planner" as const, stage: "design" as const },
+    { ...task("critique", false, ["design"]), role: "reviewer" as const, stage: "design" as const },
+    { ...task("reconcile", false, ["design", "critique"]), role: "synthesizer" as const, stage: "design" as const, acceptsFailures: true },
+  ] }
+  const run = await engine.start({ ...requestOptions(), workflow })
   engine.consumeStartIntent(run.id, run.intentId, "parent"); engine.bindSupervisor(run.id, run.intentId, "supervisor")
   await engine.tick(run.id, invocation())
   const explore = host.launches.find(item => item.task.id === "explore")!, research = host.launches.find(item => item.task.id === "research")!

@@ -3,6 +3,7 @@ import { ULTRA_AGENT_ID, ULTRA_AGENT_NAME, ULTRA_PRIMARY_SYSTEM } from "../src/a
 import { LEGACY_PRIMARY_SYSTEM } from "./legacy-primary-system.ts"
 import { promptVersion } from "../src/workflow.ts"
 import { agentModeFixture } from "./agent-mode-fixture.ts"
+import type { Workflow } from "../src/types.ts"
 
 type Fixture = Awaited<ReturnType<typeof agentModeFixture>>
 function tool(value: Fixture, name: "ultra_task" | "ultra_control") {
@@ -88,7 +89,8 @@ describe("Ultra primary agent", () => {
       expect(first.content).toBeTruthy()
       const progress = JSON.parse(first.content)
       expect(progress.run).toMatchObject({ id: first.output.run.id, objective: input.objective, mode: "plan" })
-      expect(progress.tasks.find((task: any) => task.id === "explore")).toMatchObject({ title: "Inspect project and constraints", instructions: expect.stringContaining(input.objective) })
+      expect(progress.tasks).toHaveLength(1)
+      expect(progress.tasks[0]).toMatchObject({ role: "planner", instructions: expect.stringContaining(input.objective) })
       expect(JSON.parse(replay.content)).toEqual(progress)
       expect(replay.output).toMatchObject({ run: first.output.run, replay: true })
       expect(value.runs()).toHaveLength(1)
@@ -99,6 +101,57 @@ describe("Ultra primary agent", () => {
       expect(value.progress).toEqual([expect.objectContaining({ sessionID: "child_1", runId: run.id, ultraPrelaunchBound: true })])
       expect(value.sessions.get("child_1").permissions.slice(0, value.policy.length)).toEqual(value.policy)
       expect(value.synthetics).toEqual([])
+    } finally { await value.close() }
+  })
+
+  test("the primary supplies a small execution graph without starting a planning team", async () => {
+    const value = await agentModeFixture({ checks: [{ id: "tests", command: "bun test", criterionIds: ["tests"] }] })
+    const workflow: Workflow = { rationale: "The relevant file is already inspected; one scoped change needs review and a test run.", tasks: [
+      { id: "fix", title: "Fix duration validation", role: "implementer", stage: "implementation", instructions: "Change only src/duration.ts to reject the inspected malformed input.", dependencies: [], writes: true, ownedPaths: ["src/duration.ts"] },
+      { id: "review", title: "Review duration validation", role: "reviewer", stage: "review", instructions: "Inspect the change and assess the request against the resulting code.", dependencies: ["fix"], writes: false },
+      { id: "verify", title: "Test duration validation", role: "verifier", stage: "verification", instructions: "Run the configured tests on the final candidate.", dependencies: ["fix"], writes: false, checkIds: ["tests"] },
+    ] }
+    try {
+      const input = { objective: "Reject malformed duration input", mode: "execute", workflow }
+      const context = value.toolContext()
+      const result = await tool(value, "ultra_task").execute(input, context)
+      const saved = value.runs()[0]!
+      expect(result.output.run).toMatchObject({ phase: "execution", mode: "execute" })
+      expect(saved.plans[0]!.rationale).toBe(workflow.rationale)
+      expect(saved.tasks.map(task => task.spec)).toEqual(workflow.tasks)
+      expect(saved.criteria).toEqual([
+        { id: "request", description: input.objective, required: true, kind: "assessment" },
+        { id: "tests", description: "Configured check evidence establishes tests.", required: true, kind: "check" },
+      ])
+      expect(value.dispatches).toHaveLength(1)
+      expect((await tool(value, "ultra_task").execute(input, context)).output.replay).toBe(true)
+      await expect(tool(value, "ultra_task").execute({ ...input, workflow: { ...workflow, rationale: "Changed graph rationale" } }, context)).rejects.toThrow("replay changed")
+      expect(value.dispatches).toHaveLength(1)
+    } finally { await value.close() }
+  })
+
+  test("unsafe primary graphs fail before any native child is dispatched", async () => {
+    const value = await agentModeFixture()
+    try {
+      await expect(tool(value, "ultra_task").execute({ objective: "Fix duration validation", mode: "execute", workflow: {
+        rationale: "A small change", tasks: [{ id: "fix", title: "Fix duration", role: "implementer", stage: "implementation", instructions: "Change the parser.", dependencies: [], writes: true, ownedPaths: ["src/duration.ts"] }],
+      } }, value.toolContext())).rejects.toThrow("review")
+      expect(value.runs()).toEqual([])
+      expect(value.dispatches).toEqual([])
+    } finally { await value.close() }
+  })
+
+  test("model context guides proportionate delegation and exposes configured check IDs", async () => {
+    const value = await agentModeFixture({ checks: [{ id: "tests", command: "bun test", criterionIds: ["tests"] }] })
+    try {
+      const context = { sessionID: "parent", agent: "ultra", tools: offeredTools(), system: [] as { type: string; text: string }[] }
+      await value.hooks.get("session.context")(context)
+      const text = context.system.map(part => part.text).join("\n")
+      expect(text).toContain("smallest useful")
+      expect(text).toContain("without spawning")
+      expect(text).toContain("workflow")
+      expect(text).toContain('"id":"tests"')
+      expect(text).toContain("independent review")
     } finally { await value.close() }
   })
 

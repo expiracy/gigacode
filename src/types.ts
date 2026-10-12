@@ -15,6 +15,8 @@ export interface Config { models: ModelOptions; limits: Limits; checks: CheckSpe
 export interface Criterion { id: string; description: string; required: boolean; kind: "check" | "assessment" }
 export interface TaskSpec { id: string; title: string; role: Role; stage: Stage; instructions: string; dependencies: string[]; writes: boolean; ownedPaths?: string[]; acceptsFailures?: boolean; model?: string; checkIds?: string[]; comparison?: string }
 export interface Plan { revision: number; tasks: TaskSpec[]; criteria: Criterion[]; rationale: string }
+/** A model proposes useful work; the engine supplies immutable criteria and revision. */
+export interface Workflow { rationale: string; tasks: TaskSpec[] }
 export interface Finding { id: string; description: string; blocking: boolean; disposition?: "fixed" | "rejected" | "deferred"; evidence?: string }
 export interface TaskResult { summary: string; proposal?: Plan; findings?: Finding[]; assessments?: { criterionId: string; passed: boolean; explanation: string }[]; artifacts?: string[]; needsInput?: string; [key: string]: unknown }
 export interface CheckEvidence { id: string; attemptId: string; taskId: string; sessionId: string; callId: string; checkId: string; command: string; criterionIds: string[]; cwd: string; startedAt: number; finishedAt: number; exit: number | null; outcome: "passed" | "failed" | "cancelled" | "unknown"; output: string; workspaceHash: string }

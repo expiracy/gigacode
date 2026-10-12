@@ -5,13 +5,13 @@ import { join, relative, resolve } from "node:path"
 import { Rpc } from "@opencode/plugin"
 import { Database } from "bun:sqlite"
 import { EXPECTED_VERSION, startHost, waitFor, type IsolatedHost } from "../spike/host.ts"
-import type { Run } from "../src/types.ts"
+import type { Run, Workflow } from "../src/types.ts"
 import { promptVersion } from "../src/workflow.ts"
 import { ULTRA_PRIMARY_SYSTEM } from "../src/agents.ts"
 import { LEGACY_PRIMARY_SYSTEM } from "./legacy-primary-system.ts"
 import { manifest } from "../src/workspace.ts"
 import { SQLiteStore } from "../src/store.ts"
-import { createWorkflowFixture } from "./workflow-fixture.ts"
+import { createWorkflowFixture, fixtureExecutionWorkflow, fixturePlanningWorkflow } from "./workflow-fixture.ts"
 
 const object = { type: "object", additionalProperties: true } as const
 // This client contract is independent of the implementation under test.
@@ -133,6 +133,12 @@ export async function runOpenCodeIntegration() {
     const rpc = client.rpc(WorkflowRpc)
     const options = () => ({ location, signal: AbortSignal.timeout(5_000) })
     const parent = await client.session.create({ location, model: { providerID: "fixture", id: "test" } })
+    const askPrimary = async (id: typeof parent.id, text: string, toolCalls: { name: string; arguments: Record<string, unknown> }[] = []) => {
+      if (toolCalls.length) fixture.scriptPrimary({ prompt: text, toolCalls })
+      await client.session.prompt({ sessionID: id, text })
+      await client.session.wait({ sessionID: id }, { signal: AbortSignal.timeout(15_000) })
+      return client.session.context({ sessionID: id })
+    }
     await client.session.prompt({ sessionID: parent.id, text: "ACTIVATE_ULTRA_WORKFLOW", resume: false })
     await check("native production plugin registration", async () => {
       const configuration = await rpc.config({}, options()) as Record_
@@ -236,7 +242,7 @@ export async function runOpenCodeIntegration() {
       }, null, 2) + "\n")
       const otherLocation = { directory: host!.otherProject }
       const otherOptions = () => ({ location: otherLocation, signal: AbortSignal.timeout(5_000) })
-      const otherParent = await client.session.create({ location: otherLocation, model: { providerID: "fixture", id: "test" } })
+      const otherParent = await client.session.create({ location: otherLocation, agent: "ultra", model: { providerID: "fixture", id: "test" } })
       await client.session.prompt({ sessionID: otherParent.id, text: "ACTIVATE_GLOBAL_OTHER_PROJECT", resume: false })
       const primaryConfig = await rpc.config({}, options()) as { config: Run["config"]; state: string }
       const otherConfig = await rpc.config({}, otherOptions()) as { config: Run["config"]; state: string }
@@ -257,12 +263,23 @@ export async function runOpenCodeIntegration() {
       assert.notEqual(primaryConfig.state, otherConfig.state)
       assert.deepEqual(runs(await rpc.status({}, otherOptions())), [])
       assert.deepEqual(runs(await rpc.status({}, options())), [])
-      await client.session.command({ sessionID: otherParent.id, name: "ultracode", text: "plan GLOBAL_INSTALL_PROJECT_NO_CHECKS: Design a fixture in the second project using its optional overrides." })
-      const admitted = await waitFor("other project global command admission", async () => runs(await rpc.status({}, otherOptions())), values => values.length === 1, 10_000)
+      const objective = "GLOBAL_INSTALL_PROJECT_NO_CHECKS: Design a fixture in the second project using its optional overrides."
+      const workflow: Workflow = {
+        rationale: "This settings regression explicitly requests a designer and independent critic using their separate model and prompt overrides.",
+        tasks: [
+          { id: "design", title: "Design fixture", role: "planner", stage: "design", instructions: objective, dependencies: [], writes: false },
+          { id: "critique", title: "Critique the design", role: "reviewer", stage: "design", instructions: "Independently inspect the proposed fixture design against the request", dependencies: ["design"], writes: false },
+        ],
+      }
+      const context = await askPrimary(otherParent.id, objective, [{ name: "ultra_task", arguments: { objective, mode: "plan", workflow } }])
+      assert.equal(nativeTools(context, "ultra_task").at(-1)?.state.status, "completed")
+      const admitted = await waitFor("other project global primary admission", async () => runs(await rpc.status({}, otherOptions())), values => values.length === 1, 10_000)
       const otherRunId = admitted[0]!.id
       const saved = await waitFor("other project plan settles with overrides", async () => runs(await rpc.status({ runId: otherRunId }, otherOptions()))[0], run => !!run && ["ready", "partial", "failed", "cancelled"].includes(run.status), 60_000)
       assert(saved)
       assert.equal(saved.status, "ready", saved.errors.join("; "))
+      assert.deepEqual(saved.plans[0]!.tasks, workflow.tasks)
+      assert.deepEqual(saved.tasks.map(task => task.spec), workflow.tasks)
       const planner = saved.tasks.find(task => task.spec.role === "planner")!.attempts.at(-1)!
       const reviewer = saved.tasks.find(task => task.spec.role === "reviewer")!.attempts.at(-1)!
       assert.equal(planner.model.ref.id, "test")
@@ -314,6 +331,8 @@ export async function runOpenCodeIntegration() {
     await check("plan saves a concrete proposal without project writes", async () => {
       assert.equal(ready.mode, "plan")
       assert.equal(ready.status, "ready", ready.errors.join("; "))
+      assert.equal(ready.tasks.length, 1, "A legacy plan command should use one planner instead of the former fixed five workers")
+      assert.equal(ready.tasks[0]!.spec.role, "planner")
       assert.ok(ready.proposal?.tasks.some(task => task.writes))
       assert.equal(existsSync(join(host!.project, "implemented.txt")), false)
       assert.equal(await readFile(join(host!.project, "protected.txt"), "utf8"), "original\n")
@@ -422,7 +441,14 @@ export async function runOpenCodeIntegration() {
     await check("initiating cancellation interrupts a held native worker", async () => {
       const hold = fixture.holdNext("task", "explorer")
       const prelaunch = fixture.holdPrelaunch("researcher")
-      const admitted = runs(await rpc.control({ text: "plan Cancel a native worker while its model stream is held.", sessionId: parent.id }, options()))[0]!
+      const objective = "Cancel a native worker while its model stream is held."
+      const workflow = fixturePlanningWorkflow(objective)
+      const initiating = await client.session.create({ location, agent: "ultra", model: { providerID: "fixture", id: "test" } })
+      const context = await askPrimary(initiating.id, objective, [{ name: "ultra_task", arguments: { objective, mode: "plan", workflow } }])
+      assert.equal(nativeTools(context, "ultra_task").at(-1)?.state.status, "completed")
+      const admitted = runs(await rpc.status({}, options())).find(run => run.objective === objective)!
+      assert(admitted)
+      assert.deepEqual(admitted.tasks.map(task => task.spec), workflow.tasks)
       await waitFor("held native explorer", async () => fixture.requests, values => values.some(value => value.hold === hold && value.state === "held"), 10_000)
       const child = await waitFor("held native researcher prelaunch", async () => fixture.prelaunches.find(value => value.key === prelaunch), value => value?.state === "held" && !!value.sessionId, 10_000)
       assert(child?.sessionId && child.attemptId)
@@ -433,7 +459,7 @@ export async function runOpenCodeIntegration() {
       assert.equal(reservation.status, "reserved")
       assert.equal(reservation.sessionId, undefined)
       try {
-        const cancelling = runs(await rpc.control({ text: `cancel ${admitted.id}`, sessionId: parent.id }, options()))[0]!
+        const cancelling = runs(await rpc.control({ text: `cancel ${admitted.id}`, sessionId: initiating.id }, options()))[0]!
         assert.equal(cancelling.status, "cancelling")
       } finally { fixture.release(prelaunch) }
       const cancelled = await waitFor("native cancellation settles", async () => runs(await rpc.status({ runId: admitted.id }, options()))[0], value => value?.status === "cancelled", 10_000)
@@ -469,13 +495,26 @@ export async function runOpenCodeIntegration() {
     await check("automatic mode opt-in persists and dispatches an ordinary long prompt", async () => {
       const current = runs(await rpc.status({}, options()))
       for (const saved of current) if (saved.supervisorSessionId) await client.session.wait({ sessionID: saved.supervisorSessionId }, { signal: AbortSignal.timeout(10_000) })
-      await client.session.wait({ sessionID: parent.id }, { signal: AbortSignal.timeout(10_000) })
-      const before = fixture.requests.length
+      for (const id of new Set([parent.id, ...current.map(saved => saved.parentSessionId)])) await client.session.wait({ sessionID: id as any }, { signal: AbortSignal.timeout(10_000) })
+      const beforeContext = await client.session.context({ sessionID: parent.id })
+      const beforeInbox = await client.session.inbox.list({ sessionID: parent.id })
+      const beforeRunIds = current.map(run => run.id).sort()
       await client.session.command({ sessionID: parent.id, name: "ultracode", text: "on" })
-      assert.equal(fixture.requests.length, before)
+      // Other initiating conversations may receive a late native background
+      // completion. Prove this command's behavior in its own conversation.
+      assert.deepEqual(await client.session.context({ sessionID: parent.id }), beforeContext)
+      assert.deepEqual(await client.session.inbox.list({ sessionID: parent.id }), beforeInbox)
+      assert.deepEqual(runs(await rpc.status({}, options())).map(run => run.id).sort(), beforeRunIds)
       await host!.restart()
-      await client.session.prompt({ sessionID: parent.id, text: "ACTIVATE_AUTO_PERSISTENCE", resume: false })
-      assert.equal(fixture.requests.length, before)
+      const beforeActivation = await client.session.context({ sessionID: parent.id })
+      const activation = await client.session.prompt({ sessionID: parent.id, text: "ACTIVATE_AUTO_PERSISTENCE", resume: false })
+      const activated = await client.session.context({ sessionID: parent.id })
+      assert.deepEqual(activated, beforeActivation, "A resume=false input is queued in the inbox without executing a model turn")
+      const queuedActivation = (await client.session.inbox.list({ sessionID: parent.id })).find(item => item.id === activation.id)
+      assert(queuedActivation && queuedActivation.type === "user")
+      assert.equal(queuedActivation.sessionID, parent.id)
+      assert.equal(queuedActivation.payload.text, "ACTIVATE_AUTO_PERSISTENCE")
+      assert.deepEqual(runs(await rpc.status({}, options())).map(run => run.id).sort(), beforeRunIds)
       const objective = "Automatic mode should coordinate implementation, independent review, and native verification of this isolated fixture while preserving protected.txt."
       await client.session.prompt({ sessionID: parent.id, text: objective })
       const admitted = await waitFor("automatic ordinary prompt admission", async () => runs(await rpc.status({}, options())), values => values.some(value => value.objective === objective), 10_000)
@@ -492,14 +531,19 @@ export async function runOpenCodeIntegration() {
       return { runId: automaticId, status: saved.status, mode: saved.mode, restoredOptIn: true }
     })
     await check("automatic mode opt-out preserves ordinary native conversation", async () => {
+      await client.session.wait({ sessionID: parent.id }, { signal: AbortSignal.timeout(10_000) })
       const before = fixture.requests.length
+      const beforeContext = await client.session.context({ sessionID: parent.id })
+      const beforeInbox = await client.session.inbox.list({ sessionID: parent.id })
       await client.session.command({ sessionID: parent.id, name: "ultracode", text: "off" })
-      assert.equal(fixture.requests.length, before)
+      assert.deepEqual(await client.session.context({ sessionID: parent.id }), beforeContext)
+      assert.deepEqual(await client.session.inbox.list({ sessionID: parent.id }), beforeInbox)
       const count = runs(await rpc.status({}, options())).length
       await client.session.prompt({ sessionID: parent.id, text: "Automatic mode is off. This deliberately long ordinary prompt should receive a normal primary conversation response without admitting another workflow." })
       await client.session.wait({ sessionID: parent.id }, { signal: AbortSignal.timeout(10_000) })
       assert.equal(runs(await rpc.status({}, options())).length, count)
       assert.ok(fixture.requests.slice(before).every(request => request.marker === "ordinary"))
+      assert.ok(fixture.requests.slice(before).some(request => request.tools.includes("subagent") && !request.tools.includes("ultra_execute")), "The explicit follow-up should reach the ordinary primary, rather than only a background supervisor completion")
       return { newRuns: 0, ordinaryRequests: fixture.requests.length - before }
     })
     // These are ordinary model tool calls in a selected native primary agent.
@@ -509,12 +553,6 @@ export async function runOpenCodeIntegration() {
     const modeSubscription = new AbortController()
     const modeUnsubscribe = rpc.events.on("commandResult", event => { modeFeedback.push(event.data as CommandFeedback) }, { signal: modeSubscription.signal })
     const modeReadiness = client.event.subscribe({ signal: AbortSignal.any([modeSubscription.signal, AbortSignal.timeout(5_000)]) })[Symbol.asyncIterator]()
-    const askPrimary = async (id: typeof ultraParent.id, text: string, toolCalls: { name: string; arguments: Record<string, unknown> }[] = []) => {
-      if (toolCalls.length) fixture.scriptPrimary({ prompt: text, toolCalls })
-      await client.session.prompt({ sessionID: id, text })
-      await client.session.wait({ sessionID: id }, { signal: AbortSignal.timeout(15_000) })
-      return client.session.context({ sessionID: id })
-    }
     let modeRun: Run | undefined
     try {
       let readyEvent = await modeReadiness.next()
@@ -547,14 +585,15 @@ export async function runOpenCodeIntegration() {
       })
       await check("ordinary Ultra planning admits one native graph and rejects duplicate task calls", async () => {
         const objective = "Plan the isolated Ultra agent workflow and preserve protected.txt."
+        const workflow = fixturePlanningWorkflow(objective)
         const before = runs(await rpc.status({}, options())).length
         const beforeFile = await readFile(join(host!.project, "implemented.txt"), "utf8")
         const hold = fixture.holdNext("task", "explorer")
         let context: NativeContext
         try {
           context = await askPrimary(ultraParent.id, objective, [
-            { name: "ultra_task", arguments: { objective, mode: "plan" } },
-            { name: "ultra_task", arguments: { objective, mode: "plan" } },
+            { name: "ultra_task", arguments: { objective, mode: "plan", workflow } },
+            { name: "ultra_task", arguments: { objective, mode: "plan", workflow } },
           ])
           const admitted = runs(await rpc.status({}, options())).filter(run => run.objective === objective)
           assert.equal(admitted.length, 1)
@@ -562,6 +601,8 @@ export async function runOpenCodeIntegration() {
           assert.equal(runs(await rpc.status({}, options())).length, before + 1)
           assert.equal(modeRun.parentSessionId, ultraParent.id)
           assert.equal(modeRun.mode, "plan")
+          assert.deepEqual(modeRun.plans[0]!.tasks, workflow.tasks)
+          assert.deepEqual(modeRun.tasks.map(task => task.spec), workflow.tasks)
           assert.ok(modeRun.supervisorSessionId)
           assert.ok(modeRun.admission?.messageId && modeRun.admission.callId && modeRun.admission.requestHash)
           const calls = nativeTools(context, "ultra_task")
@@ -593,7 +634,7 @@ export async function runOpenCodeIntegration() {
           const progress = JSON.parse(progressCall.state.content.map(part => part.type === "text" ? part.text : "").join(""))
           assert.equal(progress.run.objective, objective)
           assert.ok(progress.tasks.some((task: any) => task.instructions?.includes(objective)))
-          context = await askPrimary(ultraParent.id, "Continue observing the existing Ultra plan without duplicating its admission.", [{ name: "ultra_task", arguments: { objective, mode: "plan" } }])
+          context = await askPrimary(ultraParent.id, "Continue observing the existing Ultra plan without duplicating its admission.", [{ name: "ultra_task", arguments: { objective, mode: "plan", workflow } }])
           const followup = nativeTools(context, "ultra_task").at(-1)
           assert.equal(followup?.state.status, "error")
           assert.match(JSON.stringify(followup?.state), /active workflow|not available[^\n]*ultra_task/)
@@ -603,6 +644,7 @@ export async function runOpenCodeIntegration() {
         const saved = await waitFor("ordinary Ultra plan ready", async () => runs(await rpc.status({ runId: modeRun!.id }, options()))[0], run => !!run && ["ready", "failed", "partial", "cancelled"].includes(run.status), 60_000)
         assert.equal(saved?.status, "ready", JSON.stringify(saved?.errors))
         modeRun = saved!
+        assert.deepEqual(modeRun.tasks.map(task => task.spec), workflow.tasks, "Selected specialists must survive native execution without extra template workers")
         assert.ok(modeRun.proposal?.revision)
         assert.equal(await readFile(join(host!.project, "implemented.txt"), "utf8"), beforeFile)
         assert.equal(await readFile(join(host!.project, "protected.txt"), "utf8"), "original\n")
@@ -673,6 +715,55 @@ export async function runOpenCodeIntegration() {
         await client.session.wait({ sessionID: modeRun.supervisorSessionId as any }, { signal: AbortSignal.timeout(15_000) })
         await client.session.wait({ sessionID: ultraParent.id }, { signal: AbortSignal.timeout(15_000) })
         return { runId: modeRun.id, status: modeRun.status, mode: modeRun.mode, sameGraph: true, foreignControl: rejected?.state, ownerAgent: (await client.session.get({ sessionID: ultraParent.id })).agent, customCommandEvents: 0 }
+      })
+      await check("a small Ultra implementation runs exactly its three selected workers without a planning phase", async () => {
+        const session = await client.session.create({ location, agent: "ultra", model: { providerID: "fixture", id: "test" } })
+        const objective = "Make the known isolated fixture change with only implementation, independent review and configured verification."
+        const workflow = fixtureExecutionWorkflow()
+        const before = runs(await rpc.status({}, options())).length
+        const context = await askPrimary(session.id, objective, [{ name: "ultra_task", arguments: { objective, mode: "execute", workflow } }])
+        const admission = nativeTools(context, "ultra_task").at(-1)
+        assert.equal(admission?.state.status, "completed", JSON.stringify(admission))
+        const initial = runs(await rpc.status({}, options())).find(run => run.objective === objective)
+        assert(initial)
+        assert.equal(initial.phase, "execution", "A complete selected graph must bypass the default planning phase")
+        assert.deepEqual(initial.plans[0]!.tasks, workflow.tasks)
+        const saved = await waitFor("direct small implementation succeeds", async () => runs(await rpc.status({ runId: initial.id }, options()))[0], run => !!run && ["succeeded", "partial", "failed", "cancelled"].includes(run.status), 60_000)
+        assert(saved)
+        assert.equal(saved.status, "succeeded", JSON.stringify(saved.errors))
+        assert.equal(saved.mode, "execute")
+        assert.equal(saved.phase, "execution")
+        assert.equal(saved.plans.length, 1, "The exact selected graph must not grow a mandatory planning or reporting graph")
+        assert.deepEqual(saved.tasks.map(task => task.spec), workflow.tasks)
+        assert.equal(saved.tasks.length, 3)
+        assert.deepEqual(saved.tasks.map(task => task.spec.role), ["implementer", "reviewer", "verifier"])
+        const attempts = saved.tasks.flatMap(task => task.attempts)
+        assert.equal(attempts.length, 3)
+        assert.equal(new Set(attempts.map(attempt => attempt.sessionId)).size, 3)
+        assert.ok(saved.tasks.every(task => task.status === "succeeded" && task.acceptedAttemptId))
+        assert.ok(!fixture.requests.some(request => request.runId === saved.id && ["discovery", "design", "reporting"].includes(request.stage ?? "")))
+        const nativeChecks = attempts.flatMap(attempt => attempt.checks)
+        const evidence = nativeChecks.find(check => check.checkId === "fixture-check")
+        assert(evidence)
+        assert.equal(evidence.outcome, "passed")
+        assert.equal(evidence.exit, 0)
+        assert.equal(evidence.workspaceHash, saved.candidateHash ?? saved.workspaceHash)
+        assert.ok(evidence.output.includes("fixtureverified"))
+        assert.ok(saved.criteria.some(criterion => criterion.id === "request" && criterion.required && criterion.description === objective))
+        assert.ok(saved.criteria.some(criterion => criterion.id === "verification" && criterion.required && criterion.kind === "check"))
+        for (const attempt of attempts) {
+          assert(attempt.sessionId)
+          const child = await client.session.get({ sessionID: attempt.sessionId as any })
+          assert.equal(child.parentID, saved.supervisorSessionId)
+          assert.equal(child.agent, "ultra-worker")
+        }
+        assert.equal(await readFile(join(host!.project, "implemented.txt"), "utf8"), "native implementation verified\n")
+        assert.equal(await readFile(join(host!.project, "protected.txt"), "utf8"), "original\n")
+        assert.equal(runs(await rpc.status({}, options())).length, before + 1)
+        assert.equal(modeFeedback.length, 0)
+        await client.session.wait({ sessionID: saved.supervisorSessionId as any }, { signal: AbortSignal.timeout(15_000) })
+        await client.session.wait({ sessionID: session.id }, { signal: AbortSignal.timeout(15_000) })
+        return { runId: saved.id, status: saved.status, phase: saved.phase, selectedTasks: workflow.tasks, workerSessions: attempts.map(attempt => attempt.sessionId), nativeCheck: evidence, planningWorkers: 0, customCommandEvents: 0 }
       })
       await check("ordinary Build and child conversations cannot forge Ultra task admission", async () => {
         const before = runs(await rpc.status({}, options())).length

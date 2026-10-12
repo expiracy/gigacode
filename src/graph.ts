@@ -92,10 +92,43 @@ export function validatePlan(input: unknown, mode: "plan" | "execute", config: C
   for (const task of tasks) visit(task)
   const work = new Map<string, TaskSpec>()
   for (const task of tasks) {
-    const signature = JSON.stringify([task.role, task.stage, task.instructions, [...task.dependencies].sort(), task.writes, task.ownedPaths])
+    const signature = JSON.stringify([task.role, task.stage, task.instructions, [...task.dependencies].sort(), task.writes, task.ownedPaths, [...(task.checkIds ?? [])].sort()])
     const previous = work.get(signature)
     if (previous && !task.comparison && !previous.comparison) throw new Error(`Tasks ${previous.id} and ${task.id} duplicate work without a comparison purpose`)
     work.set(signature, task)
   }
   return { revision: source.revision as number, tasks, criteria, rationale: nonempty(source.rationale, "Plan rationale") }
+}
+
+/** Require independent review and final native check coverage for a structurally validated execution graph. */
+export function validateExecutionCoverage(plan: Plan, config: Config): void {
+  const writers = plan.tasks.filter(task => task.writes)
+  if (!writers.length) throw new Error("Execution requires at least one scoped implementation writer")
+  const byID = new Map(plan.tasks.map(task => [task.id, task]))
+  const dependencies = new Map<string, Set<string>>()
+  const followsEveryWriter = (task: TaskSpec) => {
+    let ancestors = dependencies.get(task.id)
+    if (!ancestors) {
+      ancestors = new Set<string>()
+      const pending = [...task.dependencies]
+      while (pending.length) {
+        const id = pending.pop()!
+        if (ancestors.has(id)) continue
+        ancestors.add(id)
+        pending.push(...byID.get(id)!.dependencies)
+      }
+      dependencies.set(task.id, ancestors)
+    }
+    return writers.every(writer => ancestors.has(writer.id))
+  }
+  if (!plan.tasks.some(task => task.role === "reviewer" && task.stage === "review" && followsEveryWriter(task))) {
+    throw new Error("Execution requires independent review after every writer")
+  }
+  // Match the completion gate: required criterion coverage and explicit assignments both require native evidence.
+  const requiredChecks = config.checks.filter(check => check.criterionIds.some(id => plan.criteria.some(criterion => criterion.id === id && criterion.required)) || plan.tasks.some(task => task.checkIds?.includes(check.id)))
+  for (const check of requiredChecks) {
+    if (!plan.tasks.some(task => task.role === "verifier" && task.stage === "verification" && task.checkIds?.includes(check.id) && followsEveryWriter(task))) {
+      throw new Error(`Execution check ${check.id} requires a verifier after every writer`)
+    }
+  }
 }

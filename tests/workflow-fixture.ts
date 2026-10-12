@@ -1,4 +1,4 @@
-import type { Criterion, Plan, TaskResult } from "../src/types.ts"
+import type { Criterion, Plan, TaskResult, Workflow } from "../src/types.ts"
 
 type ToolCall = { name: string; arguments: Record<string, unknown> }
 export interface PrimaryScript {
@@ -67,18 +67,35 @@ function criteria(prompt: string): Criterion[] {
   }
   throw new Error("Native worker criteria JSON was incomplete")
 }
-function proposal(required: Criterion[], machineChecks = true): Plan {
-  const verification = { id: "verification", description: "The configured native verification command passes.", required: true, kind: "check" as const }
+/** Explicit test graph; production task selection never inspects fixture objectives. */
+export function fixturePlanningWorkflow(objective: string): Workflow {
   return {
-    revision: 2,
-    rationale: "Write one fixture file, independently review it, run a native check, and report the accepted evidence.",
-    criteria: [...required, ...(!machineChecks || required.some(value => value.id === verification.id) ? [] : [verification])],
+    rationale: "This regression needs independent project and external-contract branches before design.",
+    tasks: [
+      { id: "explore", title: "Inspect project and constraints", role: "explorer", stage: "discovery", instructions: `Inspect relevant code and existing tests for: ${objective}`, dependencies: [], writes: false },
+      { id: "research", title: "Research uncertain external contracts", role: "researcher", stage: "discovery", instructions: `Establish relevant external API contracts for: ${objective}`, dependencies: [], writes: false },
+      { id: "design", title: "Design the requested behavior", role: "planner", stage: "design", instructions: `Use the independent findings to propose the design for: ${objective}`, dependencies: ["explore", "research"], writes: false },
+    ],
+  }
+}
+
+export function fixtureExecutionWorkflow(machineChecks = true): Workflow {
+  return {
+    rationale: "The fixture has one known file change, requiring only implementation, independent review and native verification.",
     tasks: [
       { id: "native.implement", title: "Implement fixture", role: "implementer", stage: "implementation", instructions: "Write implemented.txt containing native implementation verified followed by a newline.", dependencies: [], writes: true, ownedPaths: ["implemented.txt"] },
       { id: "native.review", title: "Review fixture", role: "reviewer", stage: "review", instructions: "Read the fixture candidate and independently assess the required criteria.", dependencies: ["native.implement"], writes: false },
       { id: "native.verify", title: "Verify fixture", role: "verifier", stage: "verification", instructions: machineChecks ? "Execute fixture-check through ultra_check and report the actual result." : "Report that machine checks are disabled and assess available read-only evidence.", dependencies: ["native.implement"], writes: false, checkIds: machineChecks ? ["fixture-check"] : [] },
-      { id: "native.report", title: "Report fixture", role: "synthesizer", stage: "reporting", instructions: "Report the reviewed fixture and captured native check evidence.", dependencies: ["native.review", "native.verify"], writes: false },
     ],
+  }
+}
+
+function proposal(required: Criterion[], machineChecks = true): Plan {
+  const verification = { id: "verification", description: "The configured native verification command passes.", required: true, kind: "check" as const }
+  return {
+    revision: 2,
+    criteria: [...required, ...(!machineChecks || required.some(value => value.id === verification.id) ? [] : [verification])],
+    ...fixtureExecutionWorkflow(machineChecks),
   }
 }
 

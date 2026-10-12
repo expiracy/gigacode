@@ -4,7 +4,7 @@ An independent, transparent implementation of thorough multi-agent workflows for
 
 OpenCode is the compatibility target. Other clients, including OpenChamber, use the same native agents, tools, sessions, permissions, and plugin configuration.
 
-The v1 runtime is implemented: discovery, design, independent critique, implementation, review, native verification, bounded repair, and evidence-backed reporting. A persistent task graph controls asynchronous native agents while the initiating conversation stays available.
+The v1 runtime supports task-specific discovery, design, critique, implementation, review, native verification, bounded repair, and evidence-backed reporting. Ultra selects the smallest useful task graph; a persistent engine controls asynchronous native agents while the initiating conversation stays available.
 
 Prompts, graph revisions, model selections, native session bindings, attempts, observed context, tool activity, checks, and recovery decisions are inspectable. Model assessments and actual command evidence remain separate.
 
@@ -49,6 +49,8 @@ Pause the current workflow.
 ```
 
 Ultra uses the existing graph engine through native `ultra_task` and `ultra_control` tools. General questions, configuration inspection, and clarification remain conversation; they do not automatically admit a graph based on prompt length. Planning saves a read-only proposal. Implementation requests authorise design and execution within their scope, under native permissions. Role and stage model settings continue to apply.
+
+Agent use adapts to the request. Simple explanations and lookups can use read tools without workers. A focused design can use one planning worker. When Ultra has enough context for a small implementation, it supplies a scoped writer, independent reviewer and configured verifier directly, skipping a planning team. Larger tasks can add useful specialists and dependencies. Research, critique, reconciliation and reporting workers are optional. The model chooses the graph through a typed `workflow: { rationale, tasks }` field; there is no keyword complexity classifier or extra routing model. The engine preserves the request and check criteria and rejects unsafe graphs before dispatch. Omitted graphs, including legacy command starts, begin with one combined planner.
 
 Ultra's replies explain concrete code findings, design decisions, behavior changes, and test evidence. Starting a task supplies its objective and bounded task purposes, so the opening can explain the intended investigation or changes. Background completion brings results back to the conversation; the guidance avoids repeated status polling. Completed work supplies accepted technical summaries rather than only task counts and file paths. Detailed scheduling information remains available through inspection when needed. The exact older bundled primary prompt upgrades when a model request is assembled; custom prompts remain intact. Rerunning the installer persists the new default in native configuration.
 

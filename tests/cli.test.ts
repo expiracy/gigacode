@@ -228,7 +228,7 @@ describe("project installer and local CLI", () => {
     expect(JSON.parse(validated.output).config.models.roles.planner).toBe("provider/model#deep")
     const rendered = await executeLocalCommand(["render", "Inspect queue ordering"], { directory })
     expect(rendered.exitCode).toBe(0)
-    expect(JSON.parse(rendered.output).tasks.map((task: any) => task.id)).toContain("critique")
+    expect(JSON.parse(rendered.output).tasks.map((task: any) => task.role)).toEqual(["planner"])
     const status = await executeLocalCommand(["status"], { directory })
     expect(status.exitCode).toBe(0)
     expect(JSON.parse(status.output).runs).toEqual([])

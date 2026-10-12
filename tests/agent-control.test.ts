@@ -28,6 +28,18 @@ test("typed controls share native command validation and preserve multiline answ
   ] as any[]) expect(() => controlCommand(input)).toThrow()
 })
 
+test("task tools reuse typed graph fields without handing the model acceptance criteria", () => {
+  const decode = Schema.decodeUnknownSync(agentTaskSchema, { onExcessProperty: "error" })
+  const task = { id: "inspect", title: "Inspect the parser", role: "planner" as const, stage: "design" as const, instructions: "Read the parser and propose the smallest useful change.", dependencies: [], writes: false }
+  const input = { objective: "Design a parser fix", mode: "plan" as const, workflow: { rationale: "One bounded investigation", tasks: [task] } }
+  expect(decode(input)).toEqual(input)
+  expect(decode({ objective: "Design a parser fix", mode: "plan" })).toEqual({ objective: "Design a parser fix", mode: "plan" })
+  for (const workflow of [
+    { rationale: "One worker", tasks: [] }, { rationale: "One worker", tasks: [{ ...task, role: "router" }] },
+    { ...input.workflow, criteria: [] }, { ...input.workflow, revision: 99 },
+  ]) expect(() => decode({ ...input, workflow })).toThrow()
+})
+
 function inspectedRun(checkCount = 2): Run {
   const checks: CheckEvidence[] = Array.from({ length: checkCount }, (_, index) => ({
     id: `evidence_${index}`, checkId: index ? "green" : "red", criterionIds: ["tests"],

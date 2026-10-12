@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto"
 import { resolve } from "node:path"
-import { parseConfig, resolveModel } from "./config.ts"
-import { validatePlan } from "./graph.ts"
+import { parseConfig, resolveModel, strictRecord } from "./config.ts"
+import { validateExecutionCoverage, validatePlan } from "./graph.ts"
 import { parseTaskResult } from "./results.ts"
 import { defaultExecutionPlan, defaultPlanningPlan, promptVersion, renderTaskPrompt } from "./workflow.ts"
 import { NoLaunchError, SettledLaunchError, UnsettledLaunchError } from "./types.ts"
-import type { Attempt, CheckEvidence, Config, HostAdapter, Invocation, Lease, Limits, ModelOptions, ModelRef, Plan, Rule, Run, Store, Task, TaskResult, TaskSpec } from "./types.ts"
+import type { Attempt, CheckEvidence, Config, HostAdapter, Invocation, Lease, Limits, ModelOptions, ModelRef, Plan, Rule, Run, Store, Task, TaskResult, TaskSpec, Workflow } from "./types.ts"
 
 const terminalRuns = new Set<Run["status"]>(["ready", "succeeded", "partial", "failed", "cancelled"])
 const activeAttempts = new Set<Attempt["status"]>(["reserved", "running", "waiting_permission", "cancelling", "ambiguous"])
@@ -42,6 +42,7 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 
 export interface StartOptions {
   objective: string; mode: "plan" | "execute"; parentSessionId: string; capturedModel: ModelRef; policy: Rule[]; modelOptions?: ModelOptions
+  workflow?: Workflow
   admission?: Run["admission"]
   beforeAdmission?: () => Promise<void>
 }
@@ -138,19 +139,24 @@ export class Engine {
 
   async start(options: StartOptions): Promise<Run> {
     if (!options.objective.trim() || !options.parentSessionId) throw new Error("Objective and initiating session are required")
+    const { objective, mode, parentSessionId } = options, admission = structuredClone(options.admission)
+    const capturedModel = structuredClone(options.capturedModel), modelOptions = structuredClone(options.modelOptions ?? {})
+    const config = structuredClone(this.config), policy = structuredClone(options.policy)
+    const planning = defaultPlanningPlan(objective)
+    const execution = defaultExecutionPlan(objective, planning.criteria, config.checks)
+    const workflow = options.workflow === undefined ? undefined : strictRecord(options.workflow, ["rationale", "tasks"], "workflow")
+    const initial = workflow ? validatePlan({ revision: 1, criteria: execution.criteria, rationale: workflow.rationale, tasks: workflow.tasks }, mode, config, execution.criteria, this.authorizedModels({ capturedModel, modelOptions })) : validatePlan(planning, "plan", config, planning.criteria)
+    if (workflow && mode === "execute") validateExecutionCoverage(initial, config)
     const workspaceHash = await this.host.workspace(this.directory)
-    const planning = defaultPlanningPlan(options.objective)
-    const execution = defaultExecutionPlan(options.objective, planning.criteria, this.config.checks)
     const now = Date.now()
     const run: Run = {
-      id: id("run"), projectId: this.projectId, directory: this.directory, parentSessionId: options.parentSessionId,
-      ...(options.admission ? { admission: structuredClone(options.admission) } : {}),
-      intentId: id("intent"), intentExpiresAt: now + 300_000, objective: options.objective, mode: options.mode,
-      status: "starting", phase: "planning", revision: planning.revision, plans: [planning],
-      tasks: planning.tasks.map(spec => ({ spec, status: "pending", attempts: [] })),
-      criteria: structuredClone(options.mode === "plan" ? planning.criteria : execution.criteria),
-      capturedModel: structuredClone(options.capturedModel), modelOptions: structuredClone(options.modelOptions ?? {}),
-      config: structuredClone(this.config), policy: structuredClone(options.policy), workspaceHash,
+      id: id("run"), projectId: this.projectId, directory: this.directory, parentSessionId,
+      ...(admission ? { admission } : {}),
+      intentId: id("intent"), intentExpiresAt: now + 300_000, objective, mode,
+      status: "starting", phase: workflow && mode === "execute" ? "execution" : "planning", revision: initial.revision, plans: [initial],
+      tasks: initial.tasks.map(spec => ({ spec, status: "pending", attempts: [] })),
+      criteria: structuredClone(workflow || mode === "execute" ? execution.criteria : planning.criteria),
+      capturedModel, modelOptions, config, policy, workspaceHash,
       createdAt: now, updatedAt: now, activeMs: 0, repairRound: 0, continuation: 0, ownerEpoch: 0, generation: 0,
       errors: [], notifications: [],
     }
@@ -159,16 +165,16 @@ export class Engine {
     for (const task of run.tasks) resolveModel(task.spec, run, catalog)
     await options.beforeAdmission?.()
     const admittedId = this.project(runs => {
-      if (options.admission) {
-        const existing = runs.find(saved => saved.parentSessionId === run.parentSessionId && saved.admission?.messageId === options.admission!.messageId && saved.admission.callId === options.admission!.callId)
+      if (admission) {
+        const existing = runs.find(saved => saved.parentSessionId === run.parentSessionId && saved.admission?.messageId === admission.messageId && saved.admission.callId === admission.callId)
         if (existing) {
-          if (existing.admission!.requestHash !== options.admission.requestHash) throw new Error("Agent admission replay changed its request")
+          if (existing.admission!.requestHash !== admission.requestHash) throw new Error("Agent admission replay changed its request")
           return existing.id
         }
         if (runs.some(saved => saved.parentSessionId === run.parentSessionId && (!terminalRuns.has(saved.status) || busy(saved)))) throw new Error("This conversation already has an active workflow; inspect or control the existing run")
       }
-      if (runs.filter(saved => !terminalRuns.has(saved.status)).length >= this.config.limits.runs) throw new Error("Active run capacity is exhausted")
-      if (options.mode === "execute" && !this.config.parallelWrites && runs.some(saved => saved.mode === "execute" && (!terminalRuns.has(saved.status) || busy(saved)))) {
+      if (runs.filter(saved => !terminalRuns.has(saved.status)).length >= config.limits.runs) throw new Error("Active run capacity is exhausted")
+      if (mode === "execute" && !config.parallelWrites && runs.some(saved => saved.mode === "execute" && (!terminalRuns.has(saved.status) || busy(saved)))) {
         throw new Error("Another execution run owns the project writer reservation")
       }
       runs.push(run)
@@ -508,17 +514,31 @@ export class Engine {
       }
       return
     }
-    const currentReviews = results.filter(item => item.task.spec.role === "reviewer" && item.task.spec.stage === "review" && item.attempt.workspaceHash === workspaceHash && (refreshed.repairRound === 0 || item.task.spec.id === `repair.review.${refreshed.repairRound}`))
-    const blocking = currentReviews.flatMap(item => item.attempt.result?.findings ?? []).filter(unresolved)
+    const plan = refreshed.plans.at(-1)!
+    // A repair revision appends its graph to history; only that revision's new tasks provide final proof.
+    const historicalIds = new Set(refreshed.repairRound > 0 ? refreshed.plans.at(-2)?.tasks.map(task => task.id) : [])
+    const currentSpecs = plan.tasks.filter(task => !historicalIds.has(task.id))
+    const currentIds = new Set(currentSpecs.map(task => task.id)), writers = currentSpecs.filter(task => task.writes).map(task => task.id)
+    const currentResults = results.filter(item => currentIds.has(item.task.spec.id))
+    const byId = new Map(refreshed.tasks.map(task => [task.spec.id, task.spec]))
+    const afterWriters = (task: TaskSpec) => {
+      const ancestors = new Set<string>()
+      const visit = (id: string) => { if (ancestors.has(id)) return; ancestors.add(id); for (const dependency of byId.get(id)?.dependencies ?? []) visit(dependency) }
+      for (const dependency of task.dependencies) visit(dependency)
+      return writers.every(id => ancestors.has(id))
+    }
+    const currentReviews = currentResults.filter(item => item.task.spec.role === "reviewer" && item.task.spec.stage === "review" && item.attempt.workspaceHash === workspaceHash && afterWriters(item.task.spec))
+    // Contract findings can remain relevant after a writer changes files; a hash change does not resolve them.
+    const blocking = currentResults.filter(item => !item.task.spec.writes).flatMap(item => item.attempt.result?.findings ?? []).filter(unresolved)
     const candidateHash = refreshed.candidateHash ?? refreshed.workspaceHash
-    const freshChecks = results.flatMap(item => item.attempt.checks).filter(check => check.workspaceHash === candidateHash && candidateHash === workspaceHash)
+    const freshChecks = currentResults.filter(item => item.task.spec.role === "verifier" && item.task.spec.stage === "verification" && afterWriters(item.task.spec)).flatMap(item => item.attempt.checks.filter(check => item.task.spec.checkIds?.includes(check.checkId))).filter(check => check.workspaceHash === candidateHash && candidateHash === workspaceHash)
     const lastChecks = new Map<string, CheckEvidence>()
     for (const check of freshChecks.toSorted((left, right) => left.finishedAt - right.finishedAt)) lastChecks.set(check.checkId, check)
     const checks = [...lastChecks.values()].filter(check => check.outcome === "passed" && check.exit === 0)
     const failedCheck = [...lastChecks.values()].some(check => check.outcome !== "passed" || check.exit !== 0)
     const requiredChecks = refreshed.config.checks.filter(check => check.criterionIds.some(id => refreshed.criteria.some(criterion => criterion.id === id && criterion.required)) || refreshed.tasks.some(task => task.spec.checkIds?.includes(check.id)))
     const nativeChecksCovered = requiredChecks.length > 0 && requiredChecks.every(check => lastChecks.get(check.id)?.outcome === "passed" && lastChecks.get(check.id)?.exit === 0)
-    const assessments = results.filter(item => !item.task.spec.writes && item.attempt.workspaceHash === workspaceHash).flatMap(item => item.attempt.result?.assessments ?? [])
+    const assessments = currentResults.filter(item => !item.task.spec.writes && item.attempt.workspaceHash === workspaceHash).flatMap(item => item.attempt.result?.assessments ?? [])
     const covered = refreshed.criteria.filter(item => item.required).every(criterion => criterion.kind === "check" ? checks.some(check => check.criterionIds.includes(criterion.id)) : assessments.some(item => item.criterionId === criterion.id && item.passed) && !assessments.some(item => item.criterionId === criterion.id && !item.passed))
     if (!requiredChecks.length && !failed && currentReviews.length > 0 && !blocking.length && covered) {
       return this.terminal(runId, "partial", "No configured native checks establish completion; the reviewed candidate is retained without unnecessary repair", lease)
@@ -760,7 +780,7 @@ export class Engine {
     })
     this.audit(runId, "task.retry", { taskId }); return this.required(runId)
   }
-  private authorizedModels(run: Run): string[] {
+  private authorizedModels(run: Pick<Run, "capturedModel" | "modelOptions">): string[] {
     const captured = `${run.capturedModel.providerID}/${run.capturedModel.id}${run.capturedModel.variant ? `#${run.capturedModel.variant}` : ""}`
     return [captured, run.modelOptions.default, ...Object.values(run.modelOptions.roles ?? {}), ...Object.values(run.modelOptions.stages ?? {})].filter((value): value is string => typeof value === "string")
   }

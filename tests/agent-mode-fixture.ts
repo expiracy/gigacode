@@ -5,10 +5,10 @@ import { tmpdir } from "node:os"
 import { basename, isAbsolute, join, relative } from "node:path"
 import plugin from "../src/plugin.ts"
 import { ULTRA_AGENT_ID, ULTRA_PRIMARY_SYSTEM } from "../src/agents.ts"
-import type { Run } from "../src/types.ts"
+import type { Config, Run } from "../src/types.ts"
 
 /** A public-plugin fixture: actual engine/store, native prelaunch progress, no provider calls. */
-export async function agentModeFixture(options: { system?: string } = {}) {
+export async function agentModeFixture(options: { system?: string; checks?: Config["checks"] } = {}) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "ultra-agent-mode-")))
   const policy = [
     { action: "read", resource: "*", effect: "allow" },
@@ -55,7 +55,7 @@ export async function agentModeFixture(options: { system?: string } = {}) {
   const context = {
     app: { version: "2.0.25" },
     location: { directory, project: { id: "project", directory } },
-    options: { checks: [] },
+    options: { checks: options.checks ?? [] },
     agent: {
       async list() { return { data: structuredClone([...agents.values()]) } },
       async transform(callback: any) {

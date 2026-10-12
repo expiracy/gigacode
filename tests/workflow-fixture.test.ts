@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { createWorkflowFixture, type WorkflowFixture } from "./workflow-fixture.ts"
+import { createWorkflowFixture, fixtureExecutionWorkflow, fixturePlanningWorkflow, type WorkflowFixture } from "./workflow-fixture.ts"
+import { parseConfig } from "../src/config.ts"
+import { validateExecutionCoverage, validatePlan } from "../src/graph.ts"
 
 const fixtures: WorkflowFixture[] = []
 afterEach(async () => { await Promise.all(fixtures.splice(0).map(fixture => fixture.stop())) })
@@ -17,6 +19,34 @@ async function send(value: WorkflowFixture, messages: Record<string, unknown>[],
 }
 
 describe("native workflow primary scripts", () => {
+  test("preserves a model-selected branching planning graph in the native tool call", async () => {
+    const value = fixture()
+    const objective = "Investigate project behavior and uncertain API contracts before proposing a design."
+    const workflow = fixturePlanningWorkflow(objective)
+    const original = structuredClone(workflow)
+    value.scriptPrimary({ prompt: objective, toolCalls: [{ name: "ultra_task", arguments: { objective, mode: "plan", workflow } }] })
+    workflow.tasks[0]!.instructions = "Changed after the script was registered"
+    const response = await send(value, [{ role: "user", content: objective }])
+    const call = (await response.json() as any).choices[0].message.tool_calls[0].function
+    expect(JSON.parse(call.arguments)).toEqual({ objective, mode: "plan", workflow: original })
+    const validated = validatePlan({ revision: 1, criteria: [{ id: "request", description: objective, required: true, kind: "assessment" }], ...original }, "plan", parseConfig({}))
+    expect(validated.tasks.map(task => task.role)).toEqual(["explorer", "researcher", "planner"])
+    expect(validated.tasks.find(task => task.role === "planner")!.dependencies).toEqual(["explore", "research"])
+  })
+
+  test("the direct implementation fixture needs exactly three workers and actual configured verification", () => {
+    const config = parseConfig({ checks: [{ id: "fixture-check", command: "echo fixtureverified", criterionIds: ["verification"] }] })
+    const workflow = fixtureExecutionWorkflow()
+    const validated = validatePlan({ revision: 1, criteria: [
+      { id: "request", description: "Implement the isolated fixture", required: true, kind: "assessment" },
+      { id: "verification", description: "A native command establishes verification", required: true, kind: "check" },
+    ], ...workflow }, "execute", config)
+    expect(validated.tasks.map(task => task.role)).toEqual(["implementer", "reviewer", "verifier"])
+    expect(() => validateExecutionCoverage(validated, config)).not.toThrow()
+    expect(validated.tasks.every(task => !["discovery", "design", "reporting"].includes(task.stage))).toBe(true)
+    expect(fixtureExecutionWorkflow(false).tasks.find(task => task.role === "verifier")!.checkIds).toEqual([])
+  })
+
   test("scripts an ordinary task prompt once per model tool turn and records available tools", async () => {
     const value = fixture()
     const objective = "Plan the native Ultra mode fixture."

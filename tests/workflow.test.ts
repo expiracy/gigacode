@@ -2,29 +2,28 @@ import { describe, expect, test } from "bun:test"
 import { defaultExecutionPlan, defaultPlanningPlan, promptVersion, renderTaskPrompt } from "../src/workflow.ts"
 import { validatePlan } from "../src/graph.ts"
 import { parseConfig } from "../src/config.ts"
-import type { Attempt, Run, TaskResult } from "../src/types.ts"
+import type { Attempt, Run, TaskResult, TaskSpec } from "../src/types.ts"
 
 describe("default workflows and transparent prompts", () => {
-  test("plans through independent discovery, critique, and reconciliation with no writes", () => {
+  test("uses one combined planner by default without compulsory specialist workers", () => {
     const plan = defaultPlanningPlan("Support cancellation")
-    expect(plan.tasks.map(task => task.id)).toEqual(["explore", "research", "design", "critique", "reconcile"])
-    expect(plan.tasks.find(task => task.id === "design")?.dependencies).toEqual(["explore", "research"])
-    expect(plan.tasks.find(task => task.id === "critique")?.dependencies).toEqual(["design"])
+    expect(plan.tasks.map(task => task.id)).toEqual(["design"])
+    expect(plan.tasks[0]!.dependencies).toEqual([])
+    expect(plan.tasks[0]!.instructions).toContain("Inspect")
     expect(plan.tasks.every(task => !task.writes)).toBe(true)
     expect(plan.criteria).toEqual([{ id: "request", description: "Support cancellation", required: true, kind: "assessment" }])
     expect(() => validatePlan(plan, "plan", parseConfig({}))).not.toThrow()
   })
 
-  test("runs independent review and checks after implementation, then reconciles and reports", () => {
+  test("keeps implementation, independent review and native checks without extra reporting workers", () => {
     const criteria = [{ id: "tests", description: "Relevant tests pass", required: true, kind: "check" as const }]
     const checks = [{ id: "unit", command: "bun test", criterionIds: ["tests"] }]
     const plan = defaultExecutionPlan("Fix cancellation", criteria, checks)
-    expect(plan.tasks.map(task => task.id)).toEqual(["implement", "review", "verify", "execute-reconcile", "report"])
+    expect(plan.tasks.map(task => task.id)).toEqual(["implement", "review", "verify"])
     expect(plan.tasks.find(task => task.id === "review")?.dependencies).toEqual(["implement"])
     expect(plan.tasks.find(task => task.id === "verify")?.dependencies).toEqual(["implement"])
     expect(plan.tasks.find(task => task.id === "verify")?.checkIds).toEqual(["unit"])
     expect(plan.tasks.filter(task => task.writes).map(task => task.id)).toEqual(["implement"])
-    expect(plan.tasks.find(task => task.id === "execute-reconcile")?.acceptsFailures).toBe(true)
     expect(() => validatePlan(plan, "execute", parseConfig({ checks }))).not.toThrow()
   })
 
@@ -48,8 +47,30 @@ describe("default workflows and transparent prompts", () => {
     expect(rendered).toContain("ultra_submit({result:")
   })
 
+  test("gives a sole discovery worker assessment guidance without claiming implementation proof", () => {
+    const task: TaskSpec = { id: "inspect-api", title: "Inspect the API", role: "explorer", stage: "discovery", instructions: "Explain the current public interface", dependencies: [], writes: false }
+    const run = { id: "run-1", objective: "Explain the public API", directory: process.cwd(), revision: 1, mode: "plan", phase: "planning", criteria: [{ id: "request", description: "Explain the public API", required: true, kind: "assessment" }], config: parseConfig({}) } as Run
+    const attempt = { id: "inspect-attempt", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "inherit", ref: { providerID: "provider", id: "model" }, origin: "captured" } } as Attempt
+    const rendered = renderTaskPrompt(run, task, attempt, [])
+    expect(rendered).toContain("every required assessment criterion")
+    expect(rendered).toContain('"criterionId":"request"')
+    expect(rendered).toContain("do not claim implementation checks passed during planning")
+    expect(rendered).not.toContain("Leave requirement assessments to design")
+  })
+
+  test("asks proposal workers to justify task-specific work while retaining TDD and independent proof", () => {
+    const task = defaultPlanningPlan("Fix one small bug").tasks[0]!
+    const run = { id: "run-1", objective: "Fix one small bug", directory: process.cwd(), revision: 1, mode: "execute", phase: "planning", criteria: [], config: parseConfig({}) } as unknown as Run
+    const attempt = { id: "attempt-1", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "inherit", ref: { providerID: "provider", id: "model" }, origin: "captured" } } as Attempt
+    const rendered = renderTaskPrompt(run, task, attempt, [])
+    expect(rendered).toContain("smallest graph")
+    expect(rendered).toContain("each additional worker")
+    expect(rendered).toContain("independent review and configured verification after implementation")
+    expect(rendered).toContain("Expected RED is a failed native check")
+  })
+
   test("includes recorded user clarifications for fresh tasks and descendants", () => {
-    const task = defaultPlanningPlan("Fix queue ordering").tasks.find(task => task.id === "critique")!
+    const task: TaskSpec = { ...defaultPlanningPlan("Fix queue ordering").tasks[0]!, id: "critique", role: "reviewer", instructions: "Inspect tie-breaking behavior independently" }
     const run = { id: "run-1", objective: "Fix queue ordering", directory: process.cwd(), revision: 1, mode: "plan", criteria: [], config: parseConfig({}), clarifications: [{ taskId: "design", question: "Which order should equal priorities use?", answer: "Preserve insertion order.", at: 123 }] } as unknown as Run
     const attempt = { id: "attempt-2", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "provider/model", ref: { providerID: "provider", id: "model" }, origin: "captured" } } as Attempt
     const rendered = renderTaskPrompt(run, task, attempt, [])
@@ -107,7 +128,7 @@ describe("default workflows and transparent prompts", () => {
       id: "run-1", objective: "Fix queue ordering", directory: process.cwd(), revision: 2, mode: "execute", phase: "execution", criteria: planning.criteria, config: parseConfig({}),
       tasks: [
         { spec: planning.tasks.find(task => task.id === "design")!, acceptedAttemptId: "design-attempt", attempts: [{ id: "design-attempt", result: design }] },
-        { spec: planning.tasks.find(task => task.id === "critique")!, acceptedAttemptId: "critique-attempt", attempts: [{ id: "critique-attempt", result: critique }] },
+        { spec: { ...planning.tasks[0]!, id: "critique", role: "reviewer", instructions: "Independently critique the design" }, acceptedAttemptId: "critique-attempt", attempts: [{ id: "critique-attempt", result: critique }] },
       ],
     } as Run
     const attempt = { id: "review-attempt", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "inherit", ref: { providerID: "provider", id: "model" }, origin: "captured" } } as Attempt

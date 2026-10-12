@@ -1,11 +1,18 @@
 import { Schema } from "effect"
 import { parseCommand, type UltraCommand } from "./commands.ts"
 import { sanitizeEventData } from "./store.ts"
+import { taskSchema } from "./results.ts"
 import type { Attempt, CheckEvidence, Run, Task } from "./types.ts"
 
 const text = Schema.String.check(Schema.isMinLength(1))
 const positive = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
-export const agentTaskSchema = Schema.Struct({ objective: text, mode: Schema.Literals(["plan", "execute"]) })
+export const agentTaskSchema = Schema.Struct({
+  objective: text, mode: Schema.Literals(["plan", "execute"]),
+  workflow: Schema.optionalKey(Schema.Struct({
+    rationale: Schema.String.check(Schema.isPattern(/\S/)),
+    tasks: Schema.Array(taskSchema).check(Schema.isMinLength(1)),
+  }).annotate({ description: "The smallest useful task graph for this request. The engine supplies immutable acceptance criteria. Omit for a single planning worker; in execute mode a supplied graph starts implementation directly." })),
+})
 
 // A single object schema works with providers that reject a union at the tool's root.
 // Action-specific requirements use the same validator as native control commands.

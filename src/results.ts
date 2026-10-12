@@ -8,7 +8,7 @@ const ids = Schema.Array(identifier)
 const criterionSchema = Schema.Struct({
   id: identifier, description: text, required: Schema.Boolean, kind: Schema.Literals(["check", "assessment"]),
 })
-const taskSchema = Schema.Struct({
+export const taskSchema = Schema.Struct({
   id: identifier, title: text, role: Schema.Literals(roles), stage: Schema.Literals(stages), instructions: text,
   dependencies: ids.annotate({ description: "IDs of tasks that must finish before this task starts." }),
   writes: Schema.Boolean,
