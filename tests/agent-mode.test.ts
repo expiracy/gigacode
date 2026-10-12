@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { ULTRA_AGENT_ID, ULTRA_AGENT_NAME } from "../src/agents.ts"
+import { ULTRA_AGENT_ID, ULTRA_AGENT_NAME, ULTRA_PRIMARY_SYSTEM } from "../src/agents.ts"
+import { LEGACY_PRIMARY_SYSTEM } from "./legacy-primary-system.ts"
 import { promptVersion } from "../src/workflow.ts"
 import { agentModeFixture } from "./agent-mode-fixture.ts"
 
@@ -17,6 +18,30 @@ const offeredTools = () => Object.fromEntries([
 ].map(name => [name, { name }]))
 
 describe("Ultra primary agent", () => {
+  test("updates the previous default in model context after native config precedence while preserving customization", async () => {
+    const bundled = await agentModeFixture({ system: LEGACY_PRIMARY_SYSTEM })
+    try {
+      const agent = bundled.agents.get(ULTRA_AGENT_ID)
+      expect(agent.system).toBe(LEGACY_PRIMARY_SYSTEM)
+      const context = { sessionID: "parent", agent: "ultra", tools: offeredTools(), system: [{ type: "text", text: LEGACY_PRIMARY_SYSTEM }, { type: "text", text: "Preserve project-specific instructions." }] }
+      await bundled.hooks.get("session.context")(context)
+      expect(context.system[0]!.text).toBe(ULTRA_PRIMARY_SYSTEM)
+      expect(context.system[1]!.text).toBe("Preserve project-specific instructions.")
+      expect(agent.system).toBe(LEGACY_PRIMARY_SYSTEM)
+      expect(agent.permissions).toEqual(bundled.policy)
+      expect(agent.model).toEqual({ providerID: "fixture", id: "test" })
+    } finally { await bundled.close() }
+    const customized = LEGACY_PRIMARY_SYSTEM + "\nPrefer detailed explanations of the code."
+    const custom = await agentModeFixture({ system: customized })
+    try {
+      const context = { sessionID: "parent", agent: "ultra", tools: offeredTools(), system: [{ type: "text", text: customized }] }
+      await custom.hooks.get("session.context")(context)
+      expect(context.system[0]!.text).toBe(customized)
+      expect(custom.agents.get(ULTRA_AGENT_ID).system).toBe(customized)
+    }
+    finally { await custom.close() }
+  })
+
   test("uses the native visible agent name without replacing the user's model or policies", async () => {
     const value = await agentModeFixture()
     try {

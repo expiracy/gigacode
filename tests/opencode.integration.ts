@@ -7,6 +7,8 @@ import { Database } from "bun:sqlite"
 import { EXPECTED_VERSION, startHost, waitFor, type IsolatedHost } from "../spike/host.ts"
 import type { Run } from "../src/types.ts"
 import { promptVersion } from "../src/workflow.ts"
+import { ULTRA_PRIMARY_SYSTEM } from "../src/agents.ts"
+import { LEGACY_PRIMARY_SYSTEM } from "./legacy-primary-system.ts"
 import { manifest } from "../src/workspace.ts"
 import { SQLiteStore } from "../src/store.ts"
 import { createWorkflowFixture } from "./workflow-fixture.ts"
@@ -119,6 +121,13 @@ export async function runOpenCodeIntegration() {
       limits: { workers: 2, repairRounds: 0, workerMs: 15_000, runMs: 60_000 },
       prompts: { planner: "GLOBAL_PLANNER_INSTRUCTIONS", reviewer: "GLOBAL_REVIEWER_INSTRUCTIONS" },
     } })
+    // Exercise an existing installation. Native config overrides agent transforms,
+    // so the legacy default must be upgraded in the actual model context.
+    const installedPath = join(host.root, "config", "opencode.json")
+    const installed = JSON.parse(await readFile(installedPath, "utf8"))
+    installed.agents.ultra.system = LEGACY_PRIMARY_SYSTEM
+    await writeFile(installedPath, JSON.stringify(installed, null, 2))
+    await host.restart()
     const client = host.client
     const location = { directory: host.project }
     const rpc = client.rpc(WorkflowRpc)
@@ -138,6 +147,7 @@ export async function runOpenCodeIntegration() {
       assert.equal(ultra.name, "Ultra")
       assert.equal(ultra.mode, "primary")
       assert.equal(ultra.hidden, false)
+      assert.equal(ultra.system, LEGACY_PRIMARY_SYSTEM, "Native configuration retains the old value until the installer is rerun")
       assert.ok(agents.some(agent => agent.id === "build" && agent.mode === "primary"))
       assert.ok(agents.some(agent => agent.id === "plan" && agent.mode === "primary"))
       for (const id of ["ultra-supervisor", "ultra-worker"]) {
@@ -523,6 +533,8 @@ export async function runOpenCodeIntegration() {
         assert.ok(JSON.stringify(controls).includes("fixture/alternate"), "Effective settings must be ordinary native tool content")
         const primary = fixture.requests.slice(requestOffset).find(request => request.marker === "primary")
         assert(primary)
+        assert.ok(primary.system?.includes(ULTRA_PRIMARY_SYSTEM), "An existing installed default must become the coding prompt in the real native model request")
+        assert.ok(!primary.system?.includes(LEGACY_PRIMARY_SYSTEM), "The exact old default must not reach the model alongside its replacement")
         assert(primary.tools.includes("ultra_task"))
         assert(primary.tools.includes("ultra_control"))
         assert.ok(!primary.tools.some(name => ["write", "edit", "patch", "shell", "subagent", "ultra_start", "ultra_execute", "ultra_submit", "ultra_check"].includes(name)))
@@ -600,6 +612,10 @@ export async function runOpenCodeIntegration() {
         const inspectionText = control.state.content.map(part => part.type === "text" ? part.text : "").join("")
         const inspectionView = JSON.parse(inspectionText)
         assert.equal(inspectionView.run.id, modeRun.id)
+        assert.equal(inspectionView.run.proposalRevision, modeRun.proposal.revision, "A plan answer needs the exact saved proposal revision")
+        const acceptedDesign = modeRun.tasks.findLast(task => task.spec.stage === "design" && task.acceptedAttemptId)!
+        const designResult = acceptedDesign.attempts.find(attempt => attempt.id === acceptedDesign.acceptedAttemptId)!.result!
+        assert.equal(inspectionView.tasks.find((task: any) => task.id === acceptedDesign.spec.id)?.attempts[0]?.resultSummary, designResult.summary, "Whole-run planning inspection must carry the actual accepted technical conclusion")
         assert.equal(inspectionView.events, undefined, "Model content must omit the full native audit stream")
         assert.ok(!inspectionText.includes('"prompt"'), "Model inspection must not repeat captured worker prompts")
         const request = fixture.requests.findLast(value => value.marker === "primary")!
@@ -628,6 +644,15 @@ export async function runOpenCodeIntegration() {
         assert.ok(!proofText.includes('"prompt"') && !proofText.includes('"events"'))
         const fullProof = await rpc.inspect({ runId: modeRun.id, taskId: "native.verify" }, options()) as { run: Run; events: unknown[] }
         assert.ok(fullProof.run.tasks[0]!.attempts[0]!.prompt.length > 0 && fullProof.events.length > 0, "Full audit inspection must remain available through RPC")
+        await client.session.wait({ sessionID: modeRun.supervisorSessionId as any }, { signal: AbortSignal.timeout(15_000) })
+        const supervisorResult = nativeTools(await client.session.context({ sessionID: modeRun.supervisorSessionId as any }), "ultra_execute").at(-1)
+        assert(supervisorResult?.state.status === "completed", JSON.stringify(supervisorResult))
+        const handoff = JSON.parse(supervisorResult.state.content.map(part => part.type === "text" ? part.text : "").join(""))
+        assert.equal(handoff.run.status, "succeeded")
+        const acceptedWriter = modeRun.tasks.find(task => task.spec.writes && task.acceptedAttemptId)!
+        const writerResult = acceptedWriter.attempts.find(attempt => attempt.id === acceptedWriter.acceptedAttemptId)!.result!
+        assert.equal(handoff.tasks.find((task: any) => task.id === acceptedWriter.spec.id)?.attempts[0]?.resultSummary, writerResult.summary, "Completion handoff must explain the implementation rather than only status and export paths")
+        assert.deepEqual(handoff.tasks.flatMap((task: any) => task.attempts.flatMap((attempt: any) => attempt.checks)).find((check: any) => check.id === recorded.id), recorded, "Completion handoff must include actual fresh verification evidence")
         assert.equal(runs(await rpc.status({}, options())).length, before)
         assert.equal(modeFeedback.length, 0)
         await client.session.wait({ sessionID: modeRun.supervisorSessionId as any }, { signal: AbortSignal.timeout(15_000) })

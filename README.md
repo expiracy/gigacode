@@ -50,11 +50,13 @@ Pause the current workflow.
 
 Ultra uses the existing graph engine through native `ultra_task` and `ultra_control` tools. General questions, configuration inspection, and clarification remain conversation; they do not automatically admit a graph based on prompt length. Planning saves a read-only proposal. Implementation requests authorise design and execution within their scope, under native permissions. Role and stage model settings continue to apply.
 
+Ultra's replies explain concrete code findings, design decisions, behavior changes, and test evidence. Completed work supplies accepted technical summaries rather than only task counts and file paths. Detailed scheduling information remains available through inspection when needed. The exact older bundled primary prompt upgrades when a model request is assembled; custom prompts remain intact. Rerunning the installer persists the new default in native configuration.
+
 Progress and results use normal native tool and subagent activity. Follow-up controls stay bound to their initiating conversation; repeated calls cannot launch the same intent twice. Selecting Build or Plan does not cancel a workflow. The initiating conversation retains coordinator restrictions while its run is active, including while paused; cancel or finish that run before direct project edits there. Other conversations retain their normal agent behaviour. The model selects tools from clear schemas; actual model quality and instruction following require separate evaluation.
 
 Each worker has a saved native child-session identity. Recovery reconciles those sessions before continuing; an unknown launch or session outcome requires inspection rather than another dispatch. A returning bound supervisor can continue its existing attempts after interruption. Native clients can render the supervisor and workers as ordinary subagent cards with navigation and Stop controls; nested workers appear inside the supervisor's session.
 
-Conversational inspection returns a compact, redacted view of actual task attempts and native checks. It keeps valid JSON below 30,000 bytes, prioritizes accepted and recent evidence, reports omitted records, and includes bounded log previews. Ask for a specific task's evidence for more detail; RPC inspection and exported audits retain the full redacted history.
+Conversational inspection returns a compact, redacted view of actual task attempts and native checks. It keeps valid JSON below 30,000 bytes, prioritizes accepted and recent evidence, reports omitted records, and includes bounded log previews and engine failure reasons. Whole-run summaries use accepted, native-succeeded results at the saved candidate and include a ready plan's exact proposal revision. Ask for a specific task's evidence to inspect historical results; RPC inspection and exported audits retain the full redacted history.
 
 The native command interface remains available for explicit controls:
 

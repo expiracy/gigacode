@@ -18,6 +18,7 @@ export interface WorkflowRequest {
   calls: string[]
   tools: string[]
   primaryScriptId?: string
+  system?: string
   error?: string
   state: "pending" | "held" | "completed" | "aborted" | "failed"
   hold?: string
@@ -158,6 +159,7 @@ export function createWorkflowFixture(): WorkflowFixture {
           if (script) {
             record.marker = "primary"
             record.primaryScriptId = script.id
+            record.system = body.messages.filter(message => ["system", "developer"].includes(String(message.role))).map(message => text(message.content)).join("\n")
             responseText = script.text ?? responseText
             // A tool result continuation completes the scripted primary turn;
             // duplicate calls must be explicit in the first response.

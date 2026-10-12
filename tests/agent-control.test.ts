@@ -46,7 +46,7 @@ function inspectedRun(checkCount = 2): Run {
         model: { ref: { providerID: "fixture", id: "model", variant: "high" }, requested: "fixture/model#high", origin: "captured" },
         inputHash: "input", workspaceHash: "current", candidateHash: "current", createdAt: 10, startedAt: 20, finishedAt: 300,
         prompt: "PRIVATE_PROMPT".repeat(100_000), result: { summary: "Verifier observed the red and green checks.", proposal: { private: "PRIVATE_PROPOSAL" } }, checks,
-      }] }], errors: ["PRIVATE_EVENT_PAYLOAD".repeat(100_000)],
+      }] }], errors: ["IRRELEVANT_HISTORICAL_ERROR", "Earlier native launch failed.", "PRIVATE_EVENT_PAYLOAD".repeat(100_000) + " Bearer sk-1234567890123456", "Latest native review retained a limitation."],
   } as unknown as Run
 }
 
@@ -61,7 +61,12 @@ test("task inspection gives the model actual red and green evidence without prom
   expect(attempt.resultSummary).toContain("red and green")
   expect(content).toContain("taskId")
   expect(content).toContain("export")
-  for (const marker of ["PRIVATE_OBJECTIVE", "PRIVATE_CRITERIA", "PRIVATE_INSTRUCTIONS", "PRIVATE_PROMPT", "PRIVATE_EVENT_PAYLOAD", "PRIVATE_PROPOSAL"]) expect(content).not.toContain(marker)
+  for (const marker of ["PRIVATE_OBJECTIVE", "PRIVATE_CRITERIA", "PRIVATE_INSTRUCTIONS", "PRIVATE_PROMPT", "IRRELEVANT_HISTORICAL_ERROR", "PRIVATE_PROPOSAL", "1234567890123456"]) expect(content).not.toContain(marker)
+  expect(view.run.omittedErrors).toBe(1)
+  expect(view.run.errors).toHaveLength(3)
+  expect(view.run.errors[1]).toContain("characters omitted")
+  expect(view.run.errors[1]).toContain("[REDACTED]")
+  for (const reason of view.run.errors) expect(reason.length).toBeLessThanOrEqual(1_000)
   expect(run).toEqual(original)
 })
 
@@ -88,12 +93,13 @@ test("inspection bounds model content as valid JSON with explicit record and out
   expect(content).not.toContain("1234567890123456")
 })
 
-test("whole-run inspection summarizes evidence and records while task inspection includes bounded narrative", () => {
+test("whole-run inspection includes bounded current accepted conclusions alongside evidence", () => {
   const run = inspectedRun()
   const view = JSON.parse(agentControl.inspectionContent(run))
   expect(view.counts).toEqual({ tasks: 1, attempts: 1, checks: 2 })
   expect(view.omitted).toEqual({ tasks: 0, attempts: 0, checks: 0 })
-  expect(view.tasks[0].attempts[0].resultSummary).toBeUndefined()
+  expect(view.tasks[0].attempts[0].resultSummary).toContain("red and green")
+  expect(view.tasks[0].attempts[0]).toMatchObject({ accepted: true, current: true })
   expect(Object.fromEntries(view.tasks[0].attempts[0].checks.map((check: CheckEvidence) => [check.checkId, [check.exit, check.outcome]]))).toEqual({ red: [1, "failed"], green: [0, "passed"] })
 })
 
@@ -154,4 +160,84 @@ test("capped inspection preserves accepted evidence first and then the newest re
   expect(visible[0]).toMatchObject({ id: "evidence_120", finishedAt: 99_999, exit: 1, outcome: "failed", output: "Newest observed failure" })
   expect(visible.length + freshView.omitted.checks).toBe(150)
   expect(checks.map(check => check.id)).toEqual(checkOrder)
+})
+
+test("ready design inspection describes the accepted conclusion and exact proposal revision", () => {
+  const run = inspectedRun(0), design = run.tasks[0]!
+  run.status = "ready"; run.mode = "plan"; run.phase = "planning"
+  run.candidateHash = undefined
+  run.proposal = { revision: 7, tasks: [], criteria: [], rationale: "Use native sessions and durable task state." }
+  design.spec.id = "chosen-approach"; design.spec.role = "synthesizer"; design.spec.stage = "design"
+  design.attempts[0]!.workspaceHash = run.workspaceHash
+  design.attempts[0]!.prompt = ""; design.attempts[0]!.result = { summary: "Use SQLite WAL for durable task state and native sessions for workers." }
+  const discovery = structuredClone(design)
+  discovery.spec.id = "repository-facts"; discovery.spec.role = "explorer"; discovery.spec.stage = "discovery"
+  discovery.attempts[0]!.id = "discovery_attempt"; discovery.acceptedAttemptId = "discovery_attempt"
+  discovery.attempts[0]!.result = { summary: "Earlier repository inventory." }
+  run.tasks.unshift(discovery)
+  const original = structuredClone(run), view = JSON.parse(agentControl.inspectionContent(run))
+  expect(view.run).toMatchObject({ status: "ready", proposalRevision: 7 })
+  expect(view.tasks[0].id).toBe("chosen-approach")
+  expect(view.tasks[0].attempts[0].resultSummary).toContain("SQLite WAL")
+  expect(view.tasks[0].attempts[0]).toMatchObject({ accepted: true, current: true })
+  expect(run).toEqual(original)
+})
+
+test.each(["partial", "failed"] as const)("%s execution without reporting exposes technical conclusions while stale claims remain historical", status => {
+  const run = inspectedRun(0), template = run.tasks[0]!
+  template.attempts[0]!.prompt = ""
+  run.status = status
+  run.errors = ["Earlier unrelated diagnostic", "Required native regression failed; the reviewed candidate is retained."]
+  const stale = structuredClone(template)
+  stale.spec.id = "previous-review"; stale.spec.role = "reviewer"; stale.spec.stage = "review"; stale.spec.writes = false
+  stale.attempts[0]!.workspaceHash = "before"; stale.attempts[0]!.candidateHash = "current"
+  stale.attempts[0]!.result = { summary: "Old candidate accepts negative durations." }
+  const implementation = structuredClone(template)
+  implementation.spec.id = "duration-validation"; implementation.spec.role = "implementer"; implementation.spec.stage = "implementation"; implementation.spec.writes = true
+  implementation.attempts[0]!.workspaceHash = "before"; implementation.attempts[0]!.candidateHash = "current"
+  implementation.attempts[0]!.result = { summary: "Added explicit rejection of negative durations in parseDuration." }
+  const verification = structuredClone(template)
+  verification.spec.id = "native-tests"; verification.spec.role = "verifier"; verification.spec.stage = "verification"; verification.spec.writes = false
+  verification.attempts[0]!.result = { summary: "Observed the regression fail before the fix, then pass after rejection was added." }
+  run.tasks = [stale, implementation, verification]
+  const view = JSON.parse(agentControl.inspectionContent(run))
+  expect(view.run.status).toBe(status)
+  expect(view.run.errors.at(-1)).toBe("Required native regression failed; the reviewed candidate is retained.")
+  expect(view.run.omittedErrors).toBe(0)
+  expect(view.tasks[0].id).toBe("native-tests")
+  expect(view.tasks[0].attempts[0].resultSummary).toContain("regression fail before the fix")
+  const writer = view.tasks.find((task: any) => task.id === "duration-validation").attempts[0]
+  expect(writer).toMatchObject({ current: true, accepted: true })
+  expect(writer.resultSummary).toContain("parseDuration")
+  const historic = view.tasks.find((task: any) => task.id === "previous-review").attempts[0]
+  expect(historic).toMatchObject({ accepted: true, current: false })
+  expect(historic.resultSummary).toBeUndefined()
+  const focused = JSON.parse(agentControl.inspectionContent(run, "previous-review"))
+  expect(focused.tasks[0].attempts[0]).toMatchObject({ current: false, resultSummary: "Old candidate accepts negative durations." })
+  verification.attempts[0]!.status = "failed"
+  expect(JSON.parse(agentControl.inspectionContent(run)).tasks.find((task: any) => task.id === "native-tests").attempts[0].resultSummary).toBeUndefined()
+})
+
+test("whole-run cap retains substantive current conclusions before noisy old discovery without fixed task IDs", () => {
+  const run = inspectedRun(1), template = run.tasks[0]!
+  template.attempts[0]!.prompt = ""
+  run.tasks = Array.from({ length: 100 }, (_, index) => {
+    const task = structuredClone(template)
+    task.spec.id = `repository-topic-${index}`; task.spec.role = "explorer"; task.spec.stage = "discovery"
+    task.attempts[0]!.result = { summary: "Earlier observed repository context. ".repeat(100) }
+    return task
+  })
+  const final = structuredClone(template)
+  final.spec.id = "final-native-evidence"; final.spec.role = "verifier"; final.spec.stage = "verification"; final.spec.writes = false
+  final.attempts[0]!.result = { summary: "The public API now rejects negative durations; exact native regressions passed." }
+  run.tasks.push(final)
+  const order = run.tasks.map(task => task.spec.id), content = agentControl.inspectionContent(run), view = JSON.parse(content)
+  expect(Buffer.byteLength(content, "utf8")).toBeLessThan(32 * 1024)
+  expect(view.omitted.tasks).toBeGreaterThan(0)
+  expect(view.tasks[0].id).toBe("final-native-evidence")
+  expect(view.tasks[0].attempts[0].resultSummary).toContain("rejects negative durations")
+  expect(view.tasks.length + view.omitted.tasks).toBe(101)
+  expect(view.run.errors.every((reason: string) => reason.length <= 1_000)).toBe(true)
+  expect(view.run.omittedErrors).toBe(1)
+  expect(run.tasks.map(task => task.spec.id)).toEqual(order)
 })

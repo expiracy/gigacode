@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { parseConfigOptions } from "../src/config.ts"
 import { assertHostVersion, supportedVersions } from "../src/compatibility.ts"
-import { ULTRA_AGENT_ID, ULTRA_PRIMARY_SYSTEM } from "../src/agents.ts"
+import { ULTRA_AGENT_ID, primarySystem } from "../src/agents.ts"
 import type { Rule } from "../src/types.ts"
 
 export const supportedVersion = supportedVersions.join(" or ")
@@ -156,7 +156,8 @@ function primaryAgent(existing: unknown): Record<string, unknown> {
   if (settings.permissions !== undefined && !Array.isArray(settings.permissions)) throw new Error(`${ULTRA_AGENT_ID}.permissions must be native OpenCode 2 rules`)
   // Native Config.Agent has no display-name field. The plugin sets Agent.Info.name
   // through the public transform, while config retains the stable selectable ID.
-  return { ...settings, mode: "primary", hidden: false, description: settings.description ?? "Transparent design, implementation, review and verification workflows", system: settings.system ?? ULTRA_PRIMARY_SYSTEM }
+  const description = settings.description === undefined || settings.description === "Transparent design, implementation, review and verification workflows" ? "Thorough coding, design, review and testing" : settings.description
+  return { ...settings, mode: "primary", hidden: false, description, system: primarySystem(settings.system) }
 }
 
 export interface InstallResult { scope: "global" | "project"; path: string; packagePath: string; backup?: string; supportedVersion: string; versionSource: string; changes: string[] }

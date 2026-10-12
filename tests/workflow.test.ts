@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { defaultExecutionPlan, defaultPlanningPlan, renderTaskPrompt } from "../src/workflow.ts"
+import { defaultExecutionPlan, defaultPlanningPlan, promptVersion, renderTaskPrompt } from "../src/workflow.ts"
 import { validatePlan } from "../src/graph.ts"
 import { parseConfig } from "../src/config.ts"
 import type { Attempt, Run, TaskResult } from "../src/types.ts"
@@ -42,7 +42,7 @@ describe("default workflows and transparent prompts", () => {
     const run = { id: "run-1", objective: "Fix queue ordering", directory: process.cwd(), revision: 1, mode: "plan", criteria: [{ id: "goal", description: "Queue order is preserved", required: true, kind: "assessment" }], config: parseConfig({ prompts: { planner: "Explain migration costs." } }) } as Run
     const attempt = { id: "attempt-1", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "provider/model#deep", ref: { providerID: "provider", id: "model", variant: "deep" }, origin: "project.role" } } as Attempt
     const rendered = renderTaskPrompt(run, task, attempt, [{ taskId: "explore", result: { summary: "Observed queue behavior" } }])
-    for (const value of ["ultra/3", "run-1", "attempt-1", "inputs", "snapshot", "provider/model#deep", "Queue order is preserved", "Explain migration costs.", "Observed queue behavior", "ultra_submit", '"summary"', '"proposal"']) expect(rendered).toContain(value)
+    for (const value of [promptVersion, "run-1", "attempt-1", "inputs", "snapshot", "provider/model#deep", "Queue order is preserved", "Explain migration costs.", "Observed queue behavior", "ultra_submit", '"summary"', '"proposal"']) expect(rendered).toContain(value)
     expect(rendered).toContain("untrusted")
     expect(rendered).toContain("read-only")
     expect(rendered).toContain("ultra_submit({result:")

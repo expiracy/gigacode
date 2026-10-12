@@ -8,7 +8,7 @@ import { SQLiteStore, sanitizeEventData } from "./store.ts"
 import { ArtifactStore } from "./artifacts.ts"
 import { loadProjectConfig, resolveModel } from "./config.ts"
 import { parseCommand, type UltraCommand } from "./commands.ts"
-import { ULTRA_AGENT_ID, ULTRA_AGENT_NAME } from "./agents.ts"
+import { ULTRA_AGENT_ID, ULTRA_AGENT_NAME, primarySystem } from "./agents.ts"
 import { agentControlSchema, agentTaskSchema, controlCommand, inspectionContent, primaryPermissionAllowed, primaryToolAllowed } from "./agent-control.ts"
 import { Error as NativeToolError, type ToolContext } from "@opencode/plugin/promise/tool"
 import { OpenCodeAdapter, invocation, invocationKey, sessionID, visibleTools } from "./opencode.ts"
@@ -251,7 +251,7 @@ export default Plugin.define({
             const saved = await drive
             await artifacts.write(saved.id, "run", saved)
             const files = await artifacts.export(saved, store.events(saved.projectId, saved.id))
-            return { content: `Ultracode ${saved.id}: ${saved.status}. ${JSON.stringify(files)}`, output: { run: summary(saved), files } }
+            return { content: inspectionContent(saved), output: { run: summary(saved), files } }
           } finally { controller.abort() }
         } })
         editor.add({ name: "ultra_submit", description: "Submit this worker's attributable structured task result. Native settlement and fresh evidence are still required.", input: Schema.Struct({ result: taskResultSchema }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
@@ -309,7 +309,9 @@ export default Plugin.define({
               if (stop.signal.aborted) { event.tools = {}; return }
               const intent = parentRuns(event.sessionID).some(run => run.status === "starting" && run.intentExpiresAt > Date.now() && !run.supervisorSessionId)
               event.tools = Object.fromEntries(Object.entries(event.tools).filter(([name]) => primaryToolAllowed(name) && (name !== "ultra_task" || (event.agent === ULTRA_AGENT_ID && caller.agent === ULTRA_AGENT_ID && !active)) && (name !== "ultra_start" || intent)))
-              if (event.system) event.system.push({ type: "text", text: `Ultra workflow coordinator. Use ultra_control to read actual status or control existing work. ${JSON.stringify(sanitizeEventData({ runs: parentRuns(event.sessionID).filter(run => !terminal.has(run.status) || busy(run)).map(summary) }))}\n${active ? "An active workflow owns project work. Do not start another graph. Switching agents does not cancel workers." : "There is no active workflow in this conversation. Use ultra_task for a new authorized project task."} Do not edit, run shell commands, or delegate directly. Config and general questions do not authorize a new workflow.` })
+              // Configured system text is applied after agent transforms; migrate the exact old default at request time.
+              if (event.agent === ULTRA_AGENT_ID && event.system) event.system = event.system.map(part => ({ ...part, text: primarySystem(part.text) }))
+              if (event.system) event.system.push({ type: "text", text: `Ultra project context. Explain concrete technical findings and changes; use ultra_control to inspect actual progress and accepted results before reporting them. ${JSON.stringify(sanitizeEventData({ runs: parentRuns(event.sessionID).filter(run => !terminal.has(run.status) || busy(run)).map(summary) }))}\n${active ? "The requested work is in progress. Continue answering the user; reuse its existing run rather than starting another. Switching agents does not cancel workers." : "No work is active. Use ultra_task for a new authorized project task."} Project edits, commands and delegation go through the workflow tools. Config and general questions do not authorize a new task. Internal identifiers and scheduling details belong in the audit unless requested or needed to explain a problem.` })
             } else {
               delete event.tools.ultra_task
               if (caller.parentID || !parentRuns(event.sessionID).length) delete event.tools.ultra_control

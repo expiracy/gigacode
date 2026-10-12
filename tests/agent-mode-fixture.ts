@@ -8,7 +8,7 @@ import { ULTRA_AGENT_ID, ULTRA_PRIMARY_SYSTEM } from "../src/agents.ts"
 import type { Run } from "../src/types.ts"
 
 /** A public-plugin fixture: actual engine/store, native prelaunch progress, no provider calls. */
-export async function agentModeFixture() {
+export async function agentModeFixture(options: { system?: string } = {}) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "ultra-agent-mode-")))
   const policy = [
     { action: "read", resource: "*", effect: "allow" },
@@ -17,7 +17,7 @@ export async function agentModeFixture() {
   ]
   const agents = new Map<string, any>([
     ["build", { id: "build", name: "Build", mode: "primary", hidden: false, permissions: structuredClone(policy) }],
-    [ULTRA_AGENT_ID, { id: ULTRA_AGENT_ID, name: ULTRA_AGENT_ID, mode: "primary", hidden: false, system: ULTRA_PRIMARY_SYSTEM, model: { providerID: "fixture", id: "test" }, permissions: structuredClone(policy) }],
+    [ULTRA_AGENT_ID, { id: ULTRA_AGENT_ID, name: ULTRA_AGENT_ID, mode: "primary", hidden: false, system: options.system ?? ULTRA_PRIMARY_SYSTEM, model: { providerID: "fixture", id: "test" }, permissions: structuredClone(policy) }],
     ["ultra-supervisor", { id: "ultra-supervisor", mode: "subagent", hidden: true, permissions: [] }],
     ["ultra-worker", { id: "ultra-worker", mode: "subagent", hidden: true, permissions: [] }],
   ])
@@ -104,6 +104,8 @@ export async function agentModeFixture() {
     event: { subscribe({ signal }: { signal: AbortSignal }) { return { async *[Symbol.asyncIterator]() { if (!signal.aborted) await new Promise<void>(done => signal.addEventListener("abort", () => done(), { once: true })) } } } },
   }
   const cleanup = await plugin.setup(context as any)
+  // Native configuration transforms run after user plugins and retain configured system text.
+  if (options.system !== undefined) agents.get(ULTRA_AGENT_ID).system = options.system
   const read = <T>(query: string): T[] => {
     const db = new Database(join(directory, ".ultracode", "state.sqlite"), { readonly: true })
     try { return db.query<{ body: string }, []>(query).all().map(row => JSON.parse(row.body) as T) }

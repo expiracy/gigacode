@@ -5,6 +5,8 @@ import { join, relative, resolve } from "node:path"
 import { ConfigAgent } from "@opencode/schema/config/agent"
 import { Schema } from "effect"
 import * as installer from "../scripts/install.ts"
+import { ULTRA_PRIMARY_SYSTEM } from "../src/agents.ts"
+import { LEGACY_PRIMARY_SYSTEM } from "./legacy-primary-system.ts"
 
 async function fixture() {
   await mkdir(resolve(".spike"), { recursive: true })
@@ -110,7 +112,7 @@ describe("global installer", () => {
     const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
     const native = JSON.parse(await readFile(installed.path, "utf8"))
     expect(native.agents.ultra).toMatchObject({ mode: "primary", hidden: false })
-    expect(native.agents.ultra.description).toEqual(expect.any(String))
+    expect(native.agents.ultra.description).toBe("Thorough coding, design, review and testing")
     expect(native.agents.ultra.system).toEqual(expect.any(String))
     expect(native.agents.ultra.permissions).toBeUndefined()
     expect(native.default_agent).toBeUndefined()
@@ -118,6 +120,34 @@ describe("global installer", () => {
     const decoded = Schema.decodeUnknownSync(ConfigAgent.Info)(native.agents.ultra)
     expect(decoded.mode).toBe("primary")
     expect(decoded.hidden).toBe(false)
+  })
+
+  test("upgrades the exact previous bundled primary prompt and description once while preserving settings", async () => {
+    const { plugin, configDirectory } = await fixture()
+    await mkdir(configDirectory)
+    const ultra = {
+      mode: "primary", hidden: false, model: "provider/model#deep", system: LEGACY_PRIMARY_SYSTEM,
+      description: "Transparent design, implementation, review and verification workflows",
+      request: { settings: { temperature: 0.2 } }, color: "#468ace", steps: 12,
+      permissions: [{ action: "edit", resource: "private/**", effect: "deny" }],
+    }
+    const original = JSON.stringify({ default_agent: "plan", agents: { ultra, build: { model: "provider/build" } } })
+    const path = join(configDirectory, "opencode.json")
+    await writeFile(path, original)
+    const first = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
+    const native = JSON.parse(await readFile(path, "utf8"))
+    expect(native.agents.ultra.system).not.toBe(LEGACY_PRIMARY_SYSTEM)
+    expect(native.agents.ultra).toEqual({ ...ultra, system: ULTRA_PRIMARY_SYSTEM, description: "Thorough coding, design, review and testing" })
+    expect(native.default_agent).toBe("plan")
+    expect(native.agents.build).toEqual({ model: "provider/build" })
+    expect(await readFile(first.backup!, "utf8")).toBe(original)
+    const contents = await readFile(path, "utf8")
+    const files = await readdir(configDirectory)
+    const second = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
+    expect(second.changes).toEqual([])
+    expect(second.backup).toBeUndefined()
+    expect(await readFile(path, "utf8")).toBe(contents)
+    expect(await readdir(configDirectory)).toEqual(files)
   })
 
   test("preserves Ultra primary model, ordered policy and user instructions across idempotent installs", async () => {

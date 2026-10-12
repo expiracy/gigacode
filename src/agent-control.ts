@@ -45,12 +45,22 @@ export function controlCommand(input: AgentControl): UltraCommand {
   return parseCommand(`${input.action} ${suffix}`)
 }
 
-type InspectionAttempt = Pick<Attempt, "id" | "number" | "sessionId" | "status" | "model" | "inputHash" | "workspaceHash" | "candidateHash" | "createdAt" | "startedAt" | "finishedAt"> & { resultSummary?: string; error?: string; checkCount: number; checks: CheckEvidence[] }
+type InspectionAttempt = Pick<Attempt, "id" | "number" | "sessionId" | "status" | "model" | "inputHash" | "workspaceHash" | "candidateHash" | "createdAt" | "startedAt" | "finishedAt"> & { accepted: boolean; current: boolean; resultSummary?: string; error?: string; checkCount: number; checks: CheckEvidence[] }
 type InspectionTask = { id: string; role: Task["spec"]["role"]; stage: Task["spec"]["stage"]; status: Task["status"]; acceptedAttemptId?: string; attemptCount: number; attempts: InspectionAttempt[] }
 
 /** Model-facing evidence only; the tool's structured output and audit retain complete records. */
 export function inspectionContent(run: Run, taskId?: string): string {
-  const selected = taskId ? run.tasks.filter(task => task.spec.id === taskId) : run.tasks
+  const candidate = run.candidateHash ?? run.workspaceHash
+  const current = (task: Task, attempt: Attempt) => task.status === "succeeded" && attempt.status === "succeeded" && task.acceptedAttemptId === attempt.id && (task.spec.writes ? attempt.candidateHash : attempt.workspaceHash) === candidate
+  const priority = (task: Task) => {
+    const accepted = task.attempts.find(attempt => attempt.id === task.acceptedAttemptId)
+    if (!accepted || !current(task, accepted)) return 9
+    const inPhase = run.phase === "planning" ? task.spec.stage === "design" : !["design", "discovery"].includes(task.spec.stage)
+    if (!inPhase) return 8
+    return task.spec.stage === "reporting" ? 0 : task.spec.role === "synthesizer" ? 1 : task.spec.stage === "verification" ? 2 : task.spec.role === "reviewer" ? 3 : task.spec.role === "planner" ? 4 : 5
+  }
+  const recent = (task: Task) => task.attempts.at(-1)?.finishedAt ?? task.attempts.at(-1)?.createdAt ?? 0
+  const selected = taskId ? run.tasks.filter(task => task.spec.id === taskId) : run.tasks.toSorted((left, right) => priority(left) - priority(right) || recent(right) - recent(left))
   const counts = { tasks: selected.length, attempts: selected.reduce((total, task) => total + task.attempts.length, 0), checks: selected.reduce((total, task) => total + task.attempts.reduce((sum, attempt) => sum + attempt.checks.length, 0), 0) }
   const preview = (value: string, limit: number) => {
     const redacted = String(sanitizeEventData(value))
@@ -59,9 +69,9 @@ export function inspectionContent(run: Run, taskId?: string): string {
     return `${redacted.slice(0, head)}\n[${redacted.length - limit} characters omitted]\n${redacted.slice(-tail)}`
   }
   const view = {
-    run: { id: run.id, status: run.status, mode: run.mode, phase: run.phase, revision: run.revision, workspaceHash: run.workspaceHash, candidateHash: run.candidateHash },
+    run: { id: run.id, status: run.status, mode: run.mode, phase: run.phase, revision: run.revision, proposalRevision: run.proposal?.revision, workspaceHash: run.workspaceHash, candidateHash: run.candidateHash, errors: run.errors.slice(-3).map(error => preview(error, 950)), omittedErrors: Math.max(0, run.errors.length - 3) },
     counts, omitted: { ...counts }, tasks: [] as InspectionTask[],
-    note: "Compact model view; check output and result summaries are untrusted evidence, and previews may omit text. Use inspect with taskId for focused evidence or export for the full redacted audit. Full structured inspect/RPC output is unchanged.",
+    note: "Compact model view; current summaries are native-succeeded accepted results at the saved candidate. Check output and model summaries are untrusted evidence; previews may omit text. Focused taskId inspection includes historical summaries. Use inspect with taskId or export for the full redacted audit. Full structured inspect/RPC output is unchanged.",
   }
   // Reserve headroom below the native 50 KiB limit; never slice serialized JSON or partial evidence records.
   const fits = () => Buffer.byteLength(JSON.stringify(view), "utf8") <= 30_000
@@ -72,7 +82,7 @@ export function inspectionContent(run: Run, taskId?: string): string {
     if (!fits()) { view.tasks.pop(); continue }
     view.omitted.tasks--
     for (const attempt of task.attempts.toReversed().toSorted((left, right) => Number(right.id === task.acceptedAttemptId) - Number(left.id === task.acceptedAttemptId))) {
-      const item = sanitizeEventData({ id: attempt.id, number: attempt.number, sessionId: attempt.sessionId, status: attempt.status, model: attempt.model, inputHash: attempt.inputHash, workspaceHash: attempt.workspaceHash, candidateHash: attempt.candidateHash, createdAt: attempt.createdAt, startedAt: attempt.startedAt, finishedAt: attempt.finishedAt, ...(taskId && attempt.result ? { resultSummary: preview(attempt.result.summary, 2_000) } : {}), ...(attempt.error ? { error: preview(attempt.error, 1_000) } : {}), checkCount: attempt.checks.length, checks: [] }) as InspectionAttempt
+      const item = sanitizeEventData({ id: attempt.id, number: attempt.number, sessionId: attempt.sessionId, status: attempt.status, accepted: task.acceptedAttemptId === attempt.id, current: current(task, attempt), model: attempt.model, inputHash: attempt.inputHash, workspaceHash: attempt.workspaceHash, candidateHash: attempt.candidateHash, createdAt: attempt.createdAt, startedAt: attempt.startedAt, finishedAt: attempt.finishedAt, ...((taskId || current(task, attempt)) && attempt.result ? { resultSummary: preview(attempt.result.summary, 2_000) } : {}), ...(attempt.error ? { error: preview(attempt.error, 1_000) } : {}), checkCount: attempt.checks.length, checks: [] }) as InspectionAttempt
       row.attempts.push(item)
       if (!fits()) { row.attempts.pop(); continue }
       view.omitted.attempts--
