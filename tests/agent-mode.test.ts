@@ -86,6 +86,10 @@ describe("Ultra primary agent", () => {
       const first = await tool(value, "ultra_task").execute(input, context)
       const replay = await tool(value, "ultra_task").execute(input, context)
       expect(first.content).toBeTruthy()
+      const progress = JSON.parse(first.content)
+      expect(progress.run).toMatchObject({ id: first.output.run.id, objective: input.objective, mode: "plan" })
+      expect(progress.tasks.find((task: any) => task.id === "explore")).toMatchObject({ title: "Inspect project and constraints", instructions: expect.stringContaining(input.objective) })
+      expect(JSON.parse(replay.content)).toEqual(progress)
       expect(replay.output).toMatchObject({ run: first.output.run, replay: true })
       expect(value.runs()).toHaveLength(1)
       const run = value.runs()[0]!
@@ -95,6 +99,21 @@ describe("Ultra primary agent", () => {
       expect(value.progress).toEqual([expect.objectContaining({ sessionID: "child_1", runId: run.id, ultraPrelaunchBound: true })])
       expect(value.sessions.get("child_1").permissions.slice(0, value.policy.length)).toEqual(value.policy)
       expect(value.synthetics).toEqual([])
+    } finally { await value.close() }
+  })
+
+  test("specific status exposes technical work without changing the durable status receipt", async () => {
+    const value = await agentModeFixture()
+    try {
+      const started = await launch(value)
+      const run = value.runs()[0]!
+      const status = await tool(value, "ultra_control").execute({ action: "status", runId: run.id }, value.toolContext({ id: "status_call" }))
+      expect(status.output).toEqual({ run: started.output.run })
+      const progress = JSON.parse(status.content)
+      expect(progress.run).toMatchObject({ id: run.id, status: run.status, objective: run.objective })
+      expect(progress.tasks.some((task: any) => task.instructions?.includes(run.objective))).toBe(true)
+      expect(value.runs()).toHaveLength(1)
+      expect(value.dispatches).toHaveLength(1)
     } finally { await value.close() }
   })
 

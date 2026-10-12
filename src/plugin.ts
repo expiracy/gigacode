@@ -9,7 +9,7 @@ import { ArtifactStore } from "./artifacts.ts"
 import { loadProjectConfig, resolveModel } from "./config.ts"
 import { parseCommand, type UltraCommand } from "./commands.ts"
 import { ULTRA_AGENT_ID, ULTRA_AGENT_NAME, primarySystem } from "./agents.ts"
-import { agentControlSchema, agentTaskSchema, controlCommand, inspectionContent, primaryPermissionAllowed, primaryToolAllowed } from "./agent-control.ts"
+import { agentControlSchema, agentTaskSchema, controlCommand, inspectionContent, progressContent, primaryPermissionAllowed, primaryToolAllowed } from "./agent-control.ts"
 import { Error as NativeToolError, type ToolContext } from "@opencode/plugin/promise/tool"
 import { OpenCodeAdapter, invocation, invocationKey, sessionID, visibleTools } from "./opencode.ts"
 import { UltraRpc, type CommandResult } from "./rpc.ts"
@@ -197,13 +197,13 @@ export default Plugin.define({
           const admission = { messageId: context.messageID, callId: context.id, requestHash: fingerprint(input) }
           const existing = parentRuns(context.sessionID).find(run => run.admission?.messageId === admission.messageId && run.admission.callId === admission.callId)
           if (existing && existing.admission!.requestHash !== admission.requestHash) throw new Error("Agent admission replay changed its request")
-          if (existing) return { content: `Existing Ultra workflow: ${JSON.stringify(sanitizeEventData(summary(existing)))}`, output: { run: summary(existing), replay: true } }
+          if (existing) return { content: progressContent(existing), output: { run: summary(existing), replay: true } }
           const run = await start(input.objective, input.mode, context.sessionID, admission, context)
           // Creation and its receipt commit together; consumed or uncertain intents are never dispatched again.
           const pending = engine.get(run.id)!
           if (pending.intentExpiresAt > Date.now() && !pending.supervisorSessionId && pending.status === "starting") await launch(pending, context)
           const saved = engine.get(run.id)!
-          return { content: `Ultra workflow started: ${JSON.stringify(sanitizeEventData(summary(saved)))}`, output: { run: summary(saved), ...(saved.supervisorSessionId ? { sessionId: saved.supervisorSessionId } : {}) } }
+          return { content: progressContent(saved), output: { run: summary(saved), ...(saved.supervisorSessionId ? { sessionId: saved.supervisorSessionId } : {}) } }
         } })
         editor.add({ name: "ultra_control", description: "Read or control this initiating conversation's workflows. config takes no other fields; status optionally takes runId; inspect requires runId and optionally taskId. pause/resume/cancel/export require runId. run requires runId and the exact saved revision. retry requires runId and taskId; input requires runId and the user's answer; budget requires runId and explicitly authorized limits. Read current status before changing it. Resume, retry, run and input may launch native work. Never invent authorization, answers or revisions.", input: agentControlSchema, output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           await primaryCaller(context)
@@ -231,14 +231,14 @@ export default Plugin.define({
           const result = command.type === "status" && !command.id ? { runs: parentRuns(context.sessionID).map(summary) } : await controlRaw(command, context.sessionID, context)
           const output = sanitizeEventData(result)
           if (receiptId) store.event(ctx.location.project.id, { id: `${receiptId}_result`, kind: "agent.control.result", ...("id" in command ? { runId: required(command.id!).id } : {}), data: output })
-          return { content: command.type === "inspect" ? inspectionContent((output as { run: Run }).run, command.taskId) : JSON.stringify(output), output }
+          return { content: command.type === "inspect" ? inspectionContent((output as { run: Run }).run, command.taskId) : command.type === "status" && command.id ? progressContent(required(command.id)) : JSON.stringify(output), output }
         } })
         editor.add({ name: "ultra_start", description: "Consume an authorized Ultracode start intent and launch its native supervisor.", input: Schema.Struct({ runId: Schema.String, intentId: Schema.String }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           const run = required(input.runId)
           await adapter.scoped(context.sessionID)
           if (input.intentId !== run.intentId) throw new Error("Start intent does not match the saved run")
           const child = await launch(run, context)
-          return { content: `Ultracode ${run.id} launched. Use ultra_control status or /ultracode status ${run.id} to inspect it.`, output: { runId: run.id, ...child } }
+          return { content: progressContent(required(run.id)), output: { runId: run.id, ...child } }
         } })
         editor.add({ name: "ultra_execute", description: "Drive and reconcile the bound run graph from its native supervisor. Await completion; do not call twice concurrently.", input: Schema.Struct({ runId: Schema.String, intentId: Schema.optionalKey(Schema.String) }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           const run = required(input.runId)
@@ -311,7 +311,7 @@ export default Plugin.define({
               event.tools = Object.fromEntries(Object.entries(event.tools).filter(([name]) => primaryToolAllowed(name) && (name !== "ultra_task" || (event.agent === ULTRA_AGENT_ID && caller.agent === ULTRA_AGENT_ID && !active)) && (name !== "ultra_start" || intent)))
               // Configured system text is applied after agent transforms; migrate the exact old default at request time.
               if (event.agent === ULTRA_AGENT_ID && event.system) event.system = event.system.map(part => ({ ...part, text: primarySystem(part.text) }))
-              if (event.system) event.system.push({ type: "text", text: `Ultra project context. Explain concrete technical findings and changes; use ultra_control to inspect actual progress and accepted results before reporting them. ${JSON.stringify(sanitizeEventData({ runs: parentRuns(event.sessionID).filter(run => !terminal.has(run.status) || busy(run)).map(summary) }))}\n${active ? "The requested work is in progress. Continue answering the user; reuse its existing run rather than starting another. Switching agents does not cancel workers." : "No work is active. Use ultra_task for a new authorized project task."} Project edits, commands and delegation go through the workflow tools. Config and general questions do not authorize a new task. Internal identifiers and scheduling details belong in the audit unless requested or needed to explain a problem.` })
+              if (event.system) event.system.push({ type: "text", text: `Ultra project context. Explain concrete technical findings and changes; use ultra_control to inspect actual progress and accepted results before reporting them. At kickoff, briefly describe the task-specific investigation or changes you intend to make using the objective and saved task purposes, then return to the user. Intended work is not a finding. The native background completion message will bring results back to this conversation; do not repeatedly poll unchanged status. Routine absence of results does not need a progress report; report actual blockers and meaningful developments. A planning-only request ends with a design. The run control executes a saved proposal and requires user authorization to implement; never call it to obtain planning results. ${JSON.stringify(sanitizeEventData({ runs: parentRuns(event.sessionID).filter(run => !terminal.has(run.status) || busy(run)).map(summary) }))}\n${active ? "The requested work is in progress. Continue answering the user; reuse its existing run rather than starting another. Switching agents does not cancel workers." : "No work is active. Use ultra_task for a new authorized project task."} Project edits, commands and delegation go through the workflow tools. Config and general questions do not authorize a new task. Internal identifiers and scheduling details belong in the audit unless requested or needed to explain a problem.` })
             } else {
               delete event.tools.ultra_task
               if (caller.parentID || !parentRuns(event.sessionID).length) delete event.tools.ultra_control

@@ -241,3 +241,103 @@ test("whole-run cap retains substantive current conclusions before noisy old dis
   expect(view.run.omittedErrors).toBe(1)
   expect(run.tasks.map(task => task.spec.id)).toEqual(order)
 })
+
+test("progress describes the requested work and task purposes without presenting intentions as findings", () => {
+  const run = inspectedRun(0), task = run.tasks[0]!
+  run.status = "planning"; run.phase = "planning"
+  run.objective = "Add exact duration formatting alongside parseDuration."
+  task.spec.title = "Inspect duration validation and existing regression tests"
+  task.spec.instructions = "Read src/duration.ts and tests/duration.test.ts to establish integer validation and roundtrip behavior."
+  task.status = "running"; task.acceptedAttemptId = undefined
+  task.attempts[0]!.status = "running"
+  task.attempts[0]!.result = { summary: "UNSETTLED_WORKER_CLAIM" }
+  const original = structuredClone(run), view = JSON.parse(agentControl.progressContent(run))
+  expect(view.run).toMatchObject({ id: run.id, objective: run.objective, status: "planning", mode: "execute", revision: 2 })
+  expect(view.tasks[0]).toMatchObject({ id: "verify", title: task.spec.title, instructions: task.spec.instructions, status: "running" })
+  expect(view.tasks[0].attempts[0]).toMatchObject({ accepted: false, current: false })
+  expect(view.tasks[0].attempts[0].resultSummary).toBeUndefined()
+  expect(view.note).toContain("intended work")
+  expect(view.note).toContain("not findings")
+  const inspection = JSON.parse(agentControl.inspectionContent(run))
+  expect(inspection.run.objective).toBeUndefined()
+  expect(inspection.tasks[0].title).toBeUndefined()
+  expect(inspection.tasks[0].instructions).toBeUndefined()
+  expect(run).toEqual(original)
+})
+
+test("progress prioritizes accepted current conclusions and active purposes before stale history", () => {
+  const run = inspectedRun(1), template = run.tasks[0]!
+  run.objective = "Reject invalid duration inputs without changing the public API."
+  run.status = "running"
+  template.spec.title = "Verify duration validation"
+  template.spec.instructions = "Run the configured regression check."
+  template.attempts[0]!.prompt = ""
+  template.attempts[0]!.result = { summary: "The public parser now rejects negative durations; the native regression passed." }
+  const active = structuredClone(template)
+  active.spec.id = "public-api-review"; active.spec.role = "reviewer"; active.spec.stage = "review"
+  active.spec.title = "Review parseDuration integer and overflow behavior"
+  active.spec.instructions = "Inspect safe-integer boundaries and preserve existing suffix parsing."
+  active.status = "running"; active.acceptedAttemptId = undefined
+  active.attempts[0]!.status = "running"; active.attempts[0]!.checks = []
+  active.attempts[0]!.result = { summary: "UNSETTLED_REVIEW_CLAIM" }
+  const pending = structuredClone(active)
+  pending.spec.id = "public-api-report"; pending.spec.stage = "reporting"
+  pending.spec.title = "Explain the resulting duration behavior"
+  pending.status = "pending"; pending.attempts = []
+  const history = Array.from({ length: 100 }, (_, index) => {
+    const task = structuredClone(template)
+    task.spec.id = `old-inspection-${index}`; task.spec.stage = "discovery"
+    task.attempts[0]!.workspaceHash = "before"; task.attempts[0]!.candidateHash = "current"
+    task.attempts[0]!.result = { summary: "STALE_CANDIDATE_CLAIM" }
+    task.attempts[0]!.checks[0]!.output = "Old diagnostic\n".repeat(500)
+    return task
+  })
+  run.tasks = [...history, pending, active, template]
+  const original = structuredClone(run), content = agentControl.progressContent(run), view = JSON.parse(content)
+  expect(view.tasks.slice(0, 3).map((task: any) => task.id)).toEqual(["verify", "public-api-review", "public-api-report"])
+  expect(view.tasks[0].attempts[0]).toMatchObject({ accepted: true, current: true, resultSummary: template.attempts[0]!.result!.summary })
+  expect(view.tasks[0].attempts[0].checks[0]).toMatchObject(template.attempts[0]!.checks[0]!)
+  expect(view.tasks[1]).toMatchObject({ title: active.spec.title, instructions: active.spec.instructions })
+  expect(content).not.toContain("UNSETTLED_REVIEW_CLAIM")
+  expect(content).not.toContain("STALE_CANDIDATE_CLAIM")
+  expect(view.omitted.tasks).toBeGreaterThan(0)
+  expect(view.tasks.length + view.omitted.tasks).toBe(run.tasks.length)
+  expect(run).toEqual(original)
+})
+
+test("progress bounds and redacts Unicode objectives and purposes while retaining complete evidence records", () => {
+  const run = inspectedRun(1), template = run.tasks[0]!
+  run.objective = "FORMAT_OBJECTIVE\n" + "中😀".repeat(40_000) + "\nOBJECTIVE_END Bearer sk-1234567890123456"
+  template.spec.title = "DURATION_TITLE\n" + "中😀".repeat(40_000) + "\nTITLE_END Bearer sk-1234567890123456"
+  template.spec.instructions = "DURATION_PURPOSE\n" + "中😀".repeat(40_000) + "\nPURPOSE_END Bearer sk-1234567890123456"
+  template.attempts[0]!.prompt = "PRIVATE_PROMPT"
+  template.attempts[0]!.result = { summary: "Reject fractions before formatting." }
+  run.tasks = Array.from({ length: 40 }, (_, index) => ({ ...template, spec: { ...template.spec, id: `duration-${index}` } }))
+  const original = structuredClone(run), content = agentControl.progressContent(run), view = JSON.parse(content)
+  expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(30_000)
+  expect(view.run.objective).toContain("FORMAT_OBJECTIVE")
+  expect(view.run.objective).toContain("OBJECTIVE_END")
+  expect(view.run.objective).toContain("omitted")
+  expect(view.run.objective).toContain("[REDACTED]")
+  expect(view.tasks.length).toBeGreaterThan(0)
+  expect(view.omitted.tasks).toBeGreaterThan(0)
+  for (const task of view.tasks) {
+    expect(task.title).toContain("DURATION_TITLE")
+    expect(task.title).toContain("TITLE_END")
+    expect(task.instructions).toContain("DURATION_PURPOSE")
+    expect(task.instructions).toContain("PURPOSE_END")
+    for (const purpose of [task.title, task.instructions]) {
+      expect(purpose).toContain("omitted")
+      expect(purpose).toContain("[REDACTED]")
+    }
+    for (const attempt of task.attempts) {
+      expect(attempt.resultSummary).toBe("Reject fractions before formatting.")
+      for (const check of attempt.checks) expect(check).toEqual(template.attempts[0]!.checks[0]!)
+    }
+  }
+  expect(view.tasks[0].attempts[0].checks).toHaveLength(1)
+  expect(view.run.errors.at(-1)).toBe("Latest native review retained a limitation.")
+  expect(view.run.omittedErrors).toBe(1)
+  for (const marker of ["1234567890123456", "PRIVATE_PROMPT", "PRIVATE_CRITERIA", "PRIVATE_PROPOSAL"]) expect(content).not.toContain(marker)
+  expect(run).toEqual(original)
+})
