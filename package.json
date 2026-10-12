@@ -4,11 +4,20 @@
   "description": "Transparent, durable multi-agent workflows for OpenCode 2",
   "private": true,
   "type": "module",
-  "exports": { ".": "./index.ts", "./tui": "./tui.ts" },
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./tui.ts"
+  },
   "files": ["index.ts", "tui.ts", "src", "scripts", "docs", "README.md"],
-  "engines": { "bun": ">=1.3.10" },
+  "engines": {
+    "bun": ">=1.3.10"
+  },
   "peerDependencies": {
-    "effect": "4.0.0-rc.112"
+    "effect": "4.0.0-rc.112",
+    "solid-js": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "solid-js": { "optional": true }
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -21,10 +30,11 @@
     "spike": "bun run spike/run.ts"
   },
   "devDependencies": {
-    "@opencode/plugin": "2.0.25",
     "@opencode/client": "2.0.25",
+    "@opencode/plugin": "2.0.25",
     "@types/bun": "1.3.10",
     "effect": "4.0.0-rc.112",
+    "solid-js": "1.9.15",
     "typescript": "5.9.3"
   }
 }

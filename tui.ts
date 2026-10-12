@@ -1,5 +1,6 @@
 import * as Plugin from "@opencode/plugin/tui/plugin"
-import type { DialogSelectOption } from "@opencode/plugin/tui/context"
+import type { Context, DialogSelectOption } from "@opencode/plugin/tui/context"
+import { createEffect, createRoot } from "solid-js"
 import { UltraRpc } from "./src/rpc.ts"
 import type { Config } from "./src/types.ts"
 
@@ -13,6 +14,42 @@ const limitLabels: Record<string, string> = {
   elapsedMs: "Elapsed run deadline (ms)", steps: "Model steps per worker",
 }
 const json = (value: unknown) => JSON.stringify(value, null, 2)
+
+/** Native root hydration loads immediate children only; Ultra workers are grandchildren. */
+async function hydrateFamily(ctx: Context, sessionID: string, signal: AbortSignal) {
+  let root = sessionID
+  const ancestors = new Set<string>()
+  while (!signal.aborted) {
+    if (ancestors.has(root)) throw new Error("Cyclic native session ancestry")
+    ancestors.add(root)
+    if (!ctx.data.session.get(root)) await ctx.data.session.sync(root)
+    if (signal.aborted) return
+    const info = ctx.data.session.get(root)
+    if (!info) throw new Error("Native session unavailable")
+    if (!info.parentID) break
+    root = info.parentID
+  }
+  const synced = new Set<string>()
+  const children = async (parentID: string, agent: string, visit: (id: string) => Promise<void>) => {
+    const cursors = new Set<string>()
+    let cursor: string | undefined
+    do {
+      if (signal.aborted) return
+      const page = await ctx.client.session.list({ parentID, cursor }, { signal })
+      for (const info of page.data) {
+        if (signal.aborted) return
+        if (info.parentID !== parentID || info.agent !== agent || synced.has(info.id)) continue
+        synced.add(info.id)
+        await ctx.data.session.sync(info.id)
+        if (!signal.aborted) await visit(info.id)
+      }
+      cursor = page.cursor.next ?? undefined
+      if (cursor && cursors.has(cursor)) throw new Error("Repeated native session cursor")
+      if (cursor) cursors.add(cursor)
+    } while (cursor)
+  }
+  await children(root, "ultra-supervisor", supervisor => children(supervisor, "ultra-worker", async () => {}))
+}
 
 /** A searchable, read-only view of effective settings, with full values on selection. */
 function configurationOptions(value: unknown): Setting[] {
@@ -42,6 +79,26 @@ export default Plugin.define({
   setup(ctx) {
     const rpc = ctx.client.rpc(UltraRpc)
     let disposed = false
+    let sessionID: string | undefined, loading: AbortController | undefined
+    const refresh = (id: string | undefined) => {
+      loading?.abort()
+      sessionID = id
+      if (!id || disposed) return
+      const controller = loading = new AbortController()
+      void hydrateFamily(ctx, id, controller.signal).catch(() => {
+        if (disposed || controller.signal.aborted) return
+        ctx.ui.toast.show({ title: "Ultra subagents", message: "Unable to load existing subagents. Reopen this conversation or reconnect to retry.", variant: "error", sessionID: id })
+      })
+    }
+    const disposeRoot = createRoot(dispose => {
+      createEffect(() => {
+        const route = ctx.ui.router.current()
+        const id = route.type === "session" ? route.sessionID : undefined
+        if (id !== sessionID) refresh(id)
+      })
+      return dispose
+    })
+    const reconnect = ctx.data.on("server.connected", () => refresh(sessionID))
     const configuration = async (value: unknown) => {
       const settings = configurationOptions(value)
       const options = settings.map(({ detail, ...option }) => option)
@@ -58,6 +115,6 @@ export default Plugin.define({
       if (data.command.trim() === "config") await configuration(data.result)
       else await ctx.ui.dialog.alert({ title: "Ultra command result", message: json(data.result) })
     })
-    return () => { if (!disposed) { disposed = true; unsubscribe() } }
+    return () => { if (!disposed) { disposed = true; loading?.abort(); disposeRoot(); reconnect(); unsubscribe() } }
   },
 })
