@@ -37,4 +37,3 @@ export function sanitizeEventData(data: unknown): unknown {
   }
   return visit(data, 0)
 }
-
