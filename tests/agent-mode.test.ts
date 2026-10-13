@@ -90,7 +90,7 @@ describe("Ultra primary agent", () => {
       const progress = JSON.parse(first.content)
       expect(progress.run).toMatchObject({ id: first.output.run.id, objective: input.objective, mode: "plan" })
       expect(progress.tasks).toHaveLength(1)
-      expect(progress.tasks[0]).toMatchObject({ role: "planner", instructions: expect.stringContaining(input.objective) })
+      expect(progress.tasks[0]).toMatchObject({ role: "planner", instructions: expect.stringContaining("Objective") })
       expect(JSON.parse(replay.content)).toEqual(progress)
       expect(replay.output).toMatchObject({ run: first.output.run, replay: true })
       expect(value.runs()).toHaveLength(1)
@@ -164,7 +164,7 @@ describe("Ultra primary agent", () => {
       expect(status.output).toEqual({ run: started.output.run })
       const progress = JSON.parse(status.content)
       expect(progress.run).toMatchObject({ id: run.id, status: run.status, objective: run.objective })
-      expect(progress.tasks.some((task: any) => task.instructions?.includes(run.objective))).toBe(true)
+      expect(progress.tasks.some((task: any) => task.instructions?.includes("Objective"))).toBe(true)
       expect(value.runs()).toHaveLength(1)
       expect(value.dispatches).toHaveLength(1)
     } finally { await value.close() }

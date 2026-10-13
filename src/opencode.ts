@@ -102,7 +102,7 @@ export class OpenCodeAdapter implements HostAdapter {
     return session
   }
   async models() {
-    return (await this.ctx.model.list()).data.map(model => ({ providerID: model.providerID, id: model.id, variants: model.variants.map(variant => variant.id), tools: model.capabilities.tools }))
+    return (await this.ctx.model.list()).data.map(model => ({ providerID: model.providerID, id: model.id, variants: model.variants.map(variant => variant.id), tools: model.capabilities.tools, ...(model.limit === undefined ? {} : { limit: { ...model.limit } }) }))
   }
   async workspace(directory: string) { return (await manifest(directory)).hash }
   async parallelBaseline(directory: string) {

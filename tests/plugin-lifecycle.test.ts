@@ -59,6 +59,39 @@ afterEach(() => {
 })
 
 describe("plugin lifecycle", () => {
+  test("bound worker context advertises only the result fields its role can submit", async () => {
+    const value = fixture(), cleanup = await plugin.setup(value.context as any)
+    try {
+      const admitted = await value.hooks.get("rpc").control({ text: "plan Inspect behavior", sessionId: "parent" })
+      value.store!.mutate(admitted.run.id, run => {
+        run.criteria = [
+          { id: "request", description: "Requested behavior", required: true, kind: "assessment" },
+          { id: "compatibility", description: "Existing interfaces", required: false, kind: "assessment" },
+          { id: "verification", description: "Native checks", required: true, kind: "check" },
+        ]
+        run.tasks[0]!.attempts.push({ id: "attempt", taskId: run.tasks[0]!.spec.id, number: 1, status: "running", ownerEpoch: 1, sessionId: "worker", inputHash: "inputs", prompt: "Task", model: { requested: "inherit", ref: { providerID: "fixture", id: "test" }, origin: "captured" }, createdAt: Date.now(), workspaceHash: "snapshot", checks: [], steps: 0 })
+      })
+      for (const role of ["planner", "reviewer", "verifier", "implementer", "synthesizer"] as const) {
+        value.store!.mutate(admitted.run.id, run => { run.tasks[0]!.spec.role = role })
+        const original = { ultra_submit: { name: "ultra_submit", input: { original: true } }, shell: { name: "shell" } }
+        const event = { sessionID: "worker", tools: original, system: [], messages: [] }
+        await value.hooks.get("session.context")(event)
+        expect(JSON.stringify(event.tools.ultra_submit.input).includes('"proposal"')).toBe(["planner", "synthesizer"].includes(role))
+        const properties = (event.tools.ultra_submit.input as any).properties.result.properties
+        for (const field of ["summary", "findings", "artifacts", "needsInput"]) expect(properties).toHaveProperty(field)
+        if (role === "implementer") expect(properties.assessments).toBeUndefined()
+        else expect(properties.assessments.items.properties.criterionId.enum).toEqual(["request", "compatibility"])
+        expect(properties.needsInput.description).toContain("never submit an empty string")
+        expect(event.tools.ultra_submit.name).toBe("ultra_submit")
+        expect(original.ultra_submit.input).toEqual({ original: true })
+        expect(event.tools).not.toHaveProperty("shell")
+      }
+      value.store!.mutate(admitted.run.id, run => { run.criteria = run.criteria.filter(criterion => criterion.kind === "check") })
+      const event = { sessionID: "worker", tools: { ultra_submit: { input: {} } }, system: [], messages: [] }
+      await value.hooks.get("session.context")(event)
+      expect((event.tools.ultra_submit.input as any).properties.result.properties.assessments).toBeUndefined()
+    } finally { await cleanup!() }
+  })
   test("registers the native preparation environment guard without changing unrelated shell calls", async () => {
     const value = fixture(), cleanup = await plugin.setup(value.context as any)
     try {

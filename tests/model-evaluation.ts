@@ -310,7 +310,9 @@ export async function runModelEvaluation(args: string[], runtime: { root?: strin
             if (scenario === "interrupted" && !interrupted) throw new Error("Interruption scenario did not obtain accepted predecessor work with a running dependent successor; requested recovery graph was not demonstrated")
             break
           }
-          if (!run && sessions.get(parent.id)?.outcome === "succeeded") throw new Error("The model finished without admitting the requested project workflow")
+          const primaryOutcome = sessions.get(parent.id)?.outcome
+          if (!run && primaryOutcome === "succeeded") throw new Error("The model finished without admitting the requested project workflow")
+          if (!run && (primaryOutcome === "failed" || primaryOutcome === "interrupted")) throw new Error(`The native primary ended with outcome ${primaryOutcome} without admitting the requested project workflow`)
           await Bun.sleep(500)
         }
         const descendants = (await readFamily()).filter(session => session.id !== parent.id)

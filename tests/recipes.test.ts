@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { recipeWorkflow } from "../src/recipes.ts"
+import { recipeNames, recipeWorkflow } from "../src/recipes.ts"
 import { validatePlan } from "../src/graph.ts"
 import { parseConfig } from "../src/config.ts"
 
@@ -20,7 +20,18 @@ test("bug investigation combines an independent execution trace and regression a
   const plan = validatePlan({ ...workflow, revision: 1, criteria: [] }, "plan", parseConfig({}))
   expect(plan.tasks.map(task => task.role)).toEqual(["explorer", "explorer", "planner"])
   expect(plan.tasks.at(-1)!.dependencies).toEqual(["trace", "regressions"])
-  expect(plan.tasks.every(task => !task.writes && task.instructions.includes("Investigate zero-duration rejection"))).toBe(true)
+  expect(plan.tasks.every(task => !task.writes)).toBe(true)
+})
+
+test.each([...recipeNames])("%s keeps its distinct read-only graph without copying the objective into each task", recipe => {
+  const objective = "Preserve the exact public contract and user constraints. ".repeat(500)
+  const workflow = recipeWorkflow(recipe, objective)
+  expect(workflow.tasks).toHaveLength(3)
+  expect(workflow.tasks.every(task => !task.writes && !task.checkIds?.length && !task.instructions.includes(objective))).toBe(true)
+  const branches = workflow.tasks.filter(task => !task.dependencies.length)
+  expect(branches).toHaveLength(2)
+  expect(new Set(branches.map(task => task.instructions)).size).toBe(2)
+  expect(workflow.tasks.at(-1)!.dependencies).toEqual(branches.map(task => task.id))
 })
 
 test("cross-checked research independently checks primary contracts and contrary evidence before reconciliation", () => {

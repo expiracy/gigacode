@@ -6,9 +6,10 @@ export type TaskStatus = "pending" | "running" | "waiting_permission" | "cancell
 export type AttemptStatus = "reserved" | "running" | "waiting_permission" | "cancelling" | "succeeded" | "failed" | "cancelled" | "ambiguous"
 export interface Rule { action: string; resource: string; effect: "allow" | "ask" | "deny" }
 export interface ModelRef { providerID: string; id: string; variant?: string }
-export interface ModelSelection { ref: ModelRef; origin: string; requested: string }
+export interface ModelLimits { context: number; input?: number; output: number }
+export interface ModelSelection { ref: ModelRef; origin: string; requested: string; readonly limit?: Readonly<ModelLimits> }
 export interface ModelOptions { default?: string; roles?: Partial<Record<Role, string>>; stages?: Partial<Record<Stage, string>> }
-export interface AvailableModel extends ModelRef { variants: string[]; tools?: boolean }
+export interface AvailableModel extends ModelRef { variants: string[]; tools?: boolean; limit?: ModelLimits }
 export interface Limits { workers: number; runs: number; attempts: number; repairRounds: number; workerMs: number; runMs: number; elapsedMs: number; steps: number; contextChars?: number }
 export interface CheckSpec { id: string; command: string; criterionIds: string[]; timeoutMs?: number }
 export interface Config { models: ModelOptions; limits: Limits; checks: CheckSpec[]; parallelWrites: boolean; autoThreshold: number; prompts?: Partial<Record<Role, string>> }

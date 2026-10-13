@@ -8,11 +8,11 @@ export function recipeName(value: unknown): RecipeName {
   return value as RecipeName
 }
 
-export function recipeWorkflow(name: RecipeName, objective: string): Workflow {
+export function recipeWorkflow(name: RecipeName, _objective: string): Workflow {
   recipeName(name)
   const task = (id: string, title: string, role: TaskSpec["role"], instructions: string, dependencies: string[] = []): TaskSpec => ({
     id, title, role, stage: role === "reviewer" ? "review" : role === "synthesizer" || role === "planner" ? "design" : "discovery",
-    instructions: `${instructions}\nRequested scope: ${objective}`, dependencies, writes: false,
+    instructions, dependencies, writes: false,
   })
   if (name === "bug-investigation") return {
     rationale: "An independent code trace and regression investigation establish the root cause before recommending a fix.",

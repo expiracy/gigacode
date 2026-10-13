@@ -1,0 +1,31 @@
+{
+  "models": {
+    "default": "inherit",
+    "roles": {
+      "supervisor": "inherit",
+      "explorer": "inherit",
+      "researcher": "inherit",
+      "planner": "inherit",
+      "implementer": "inherit",
+      "reviewer": "inherit",
+      "verifier": "inherit",
+      "synthesizer": "inherit"
+    },
+    "stages": {
+      "discovery": "inherit",
+      "design": "inherit",
+      "implementation": "inherit",
+      "review": "inherit",
+      "verification": "inherit",
+      "reporting": "inherit"
+    }
+  },
+  "limits": {
+    "workers": 1,
+    "runs": 1,
+    "attempts": 12,
+    "steps": 12,
+    "repairRounds": 1,
+    "contextChars": 16000
+  }
+}

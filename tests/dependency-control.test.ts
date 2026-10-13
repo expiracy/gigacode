@@ -39,6 +39,22 @@ test("an insufficient mandatory context budget stops dispatch and can be explici
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }) }
 })
 
+test("model headroom stops dispatch even when the manual character budget is large", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ultra-model-context-")), store = new SQLiteStore(join(directory, "state.sqlite")), host = new FakeHost()
+  host.catalog[0]!.limit = { context: 4_096, output: 1_024 }
+  const engine = new Engine(store, host, "project", directory, parseConfig({ limits: { contextChars: 100_000 } }))
+  try {
+    const run = await engine.start({ objective: "Preserve requirements while inspecting behavior", mode: "plan", parentSessionId: "parent", capturedModel: { providerID: "fixture", id: "test" }, policy: [] })
+    engine.consumeStartIntent(run.id, run.intentId, "parent"); engine.bindSupervisor(run.id, run.intentId, "supervisor")
+    await engine.tick(run.id, invocation())
+    const saved = engine.get(run.id)!
+    expect(saved.status).toBe("waiting_budget")
+    expect(saved.errors.at(-1)).toContain("estimated model input headroom")
+    expect(saved.tasks[0]!.attempts).toHaveLength(0)
+    expect(host.launches).toHaveLength(0)
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }) }
+})
+
 test("a bound worker retrieves only its saved predecessor and leaves an attributable audit", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ultra-dependency-")), store = new SQLiteStore(join(directory, "state.sqlite")), host = new FakeHost()
   const engine = new Engine(store, host, "project", directory, parseConfig({ limits: { contextChars: 12_000 } }))

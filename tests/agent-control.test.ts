@@ -73,6 +73,74 @@ function inspectedRun(checkCount = 2): Run {
   } as unknown as Run
 }
 
+test("check previews bound multilingual logs by UTF-8 bytes while retaining provenance and redacted head and tail", () => {
+  const evidence = inspectedRun(1).tasks[0]!.attempts[0]!.checks[0]!
+  evidence.output = "HEAD_FAILURE Bearer sk-1234567890123456\n" + "中😀é\"\n".repeat(20_000) + "\nTAIL_RESULT password=credential-value"
+  const original = structuredClone(evidence), { output, ...metadata } = evidence
+  for (const budget of [6_000, 2_000, 64_000]) {
+    const content = agentControl.checkContent(evidence, budget), view = JSON.parse(content)
+    expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(Math.min(budget, 6_000))
+    expect(view).toMatchObject(metadata)
+    expect(view.output).toContain("HEAD_FAILURE")
+    expect(view.output).toContain("TAIL_RESULT")
+    expect(view.output).toContain("[REDACTED]")
+    expect(view.output).toContain("characters omitted")
+    expect(view.output).not.toContain("�")
+    expect(view.omittedCharacters).toBeGreaterThan(0)
+    expect(view.output).toContain(`[${view.omittedCharacters} characters omitted]`)
+    expect(view.fullEvidence).toEqual({ runAudit: "ultra_control export", evidenceId: evidence.id, checkId: evidence.checkId })
+    expect(view.note).toContain("log text may be omitted")
+    for (const secret of ["1234567890123456", "credential-value"]) expect(content).not.toContain(secret)
+  }
+  expect(Buffer.byteLength(agentControl.checkContent(evidence), "utf8")).toBeLessThanOrEqual(6_000)
+  expect(evidence).toEqual(original)
+})
+
+test("check previews retain complete small logs and required metadata when an allowance is too small", () => {
+  const evidence = inspectedRun(1).tasks[0]!.attempts[0]!.checks[0]!
+  expect(JSON.parse(agentControl.checkContent(evidence))).toMatchObject({ ...evidence, omittedCharacters: 0 })
+  evidence.command += " password=credential-value"
+  const original = structuredClone(evidence), view = JSON.parse(agentControl.checkContent(evidence, 1))
+  expect(view).toMatchObject({ id: evidence.id, checkId: evidence.checkId, attemptId: evidence.attemptId, taskId: evidence.taskId, sessionId: evidence.sessionId, callId: evidence.callId, outcome: "failed", exit: 1, workspaceHash: "before", command: "bun test tests/regression.test.ts password=[REDACTED]", output: "", omittedCharacters: Array.from(evidence.output).length })
+  expect(view.note).toContain("metadata exceeds the requested byte allowance")
+  expect(view.fullEvidence.evidenceId).toBe(evidence.id)
+  expect(evidence).toEqual(original)
+})
+
+test("inspection and progress respect a smaller configured byte cap without slicing metadata records", () => {
+  const run = inspectedRun(1), template = run.tasks[0]!
+  run.config = { limits: { contextChars: 4_000 } } as Run["config"]
+  run.objective = "Verify the regression at the saved candidate."
+  run.errors = ["An earlier candidate failed the regression."]
+  template.spec.title = "Verify saved candidate"
+  template.spec.instructions = "Run the configured regression check."
+  template.attempts[0]!.checks[0]!.output = "HEAD_FAILURE\n" + "中😀".repeat(40_000) + "\nTAIL_RESULT"
+  run.tasks = Array.from({ length: 20 }, (_, index) => ({ ...template, spec: { ...template.spec, id: `verify-${index}` } }))
+  const original = structuredClone(run)
+  for (const content of [agentControl.inspectionContent(run), agentControl.progressContent(run)]) {
+    const view = JSON.parse(content)
+    expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(4_000)
+    expect(view.run).toMatchObject({ id: run.id, status: run.status, candidateHash: run.candidateHash, revision: run.revision })
+    expect(view.omitted.tasks).toBeGreaterThan(0)
+    expect(view.tasks.length + view.omitted.tasks).toBe(20)
+    const attempts = view.tasks.flatMap((task: any) => task.attempts), checks = attempts.flatMap((attempt: any) => attempt.checks)
+    expect(attempts.length + view.omitted.attempts).toBe(20)
+    expect(checks.length + view.omitted.checks).toBe(20)
+    for (const check of checks) expect(check).toMatchObject({ id: "evidence_0", exit: 1, outcome: "failed", workspaceHash: "before", command: "bun test tests/regression.test.ts" })
+  }
+  expect(run).toEqual(original)
+})
+
+test("a configured cap below the base run view retains metadata and explicitly omits all records", () => {
+  const run = inspectedRun(2)
+  run.config = { limits: { contextChars: 1 } } as Run["config"]
+  const view = JSON.parse(agentControl.inspectionContent(run))
+  expect(view.run).toMatchObject({ id: run.id, status: run.status, candidateHash: run.candidateHash, revision: run.revision })
+  expect(view.tasks).toEqual([])
+  expect(view.omitted).toEqual(view.counts)
+  expect(view.note).toContain("metadata exceeds the configured byte allowance")
+})
+
 test("task inspection gives the model actual red and green evidence without prompts or event payloads", () => {
   const run = inspectedRun(), original = structuredClone(run)
   const content = agentControl.inspectionContent(run, "verify")

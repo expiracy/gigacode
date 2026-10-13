@@ -59,6 +59,31 @@ describe("workflow configuration and model selection", () => {
     expect(selected.requested).toBe("inherit")
   })
 
+  test("snapshots only the selected model capacity without changing legacy selections", () => {
+    expect(resolveModel(task, run(), catalog)).toEqual({ ref: { providerID: "a", id: "base", variant: "deep" }, origin: "project.default", requested: "inherit" })
+    const limit = { context: 8_192, input: 4_096, output: 1_024 }
+    const available = catalog.map(model => ({ ...model, ...(model.id === "code" ? { limit } : {}) }))
+    const selected = resolveModel({ ...task, model: "b/code#fast" }, run(), available)
+    expect(selected.limit).toEqual(limit)
+    expect(selected.limit).not.toBe(limit)
+    limit.context = 262_144; limit.input = 200_000; limit.output = 32_768
+    expect(selected.limit).toEqual({ context: 8_192, input: 4_096, output: 1_024 })
+    expect(Object.isFrozen(selected.limit)).toBe(true)
+    expect(Reflect.set(selected.limit!, "context", 262_144)).toBe(false)
+  })
+
+  test("validates selected capacity numbers without assuming related maxima", () => {
+    const select = (limit: unknown) => resolveModel({ ...task, model: "b/code" }, run(), [{ ...catalog[1]!, limit } as AvailableModel])
+    for (const value of [0, -1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => select({ context: value, output: 0 })).toThrow("limit.context")
+      expect(() => select({ context: 8_192, input: value, output: 0 })).toThrow("limit.input")
+    }
+    for (const output of [-1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) expect(() => select({ context: 8_192, output })).toThrow("limit.output")
+    expect(select({ context: 8_192, output: 0 }).limit).toEqual({ context: 8_192, output: 0 })
+    expect(select({ context: 8_192, input: 32_768, output: 32_768 }).limit).toEqual({ context: 8_192, input: 32_768, output: 32_768 })
+    expect(resolveModel(task, run(), [...catalog, { providerID: "bad", id: "unselected", variants: [], limit: { context: 0, output: 0 } }])).not.toHaveProperty("limit")
+  })
+
   test("rejects unavailable models, variants, and tool-less models without fallback", () => {
     for (const model of ["missing/model", "a/base#missing", "a/text-only", "b/code#deep", "a/base#fast#deep"]) {
       expect(() => resolveModel({ ...task, model }, run(), catalog)).toThrow()

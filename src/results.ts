@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import { roles, stages } from "./config.ts"
-import type { Attempt, Run, Task, TaskResult } from "./types.ts"
+import type { Attempt, Criterion, Run, Task, TaskResult, TaskSpec } from "./types.ts"
 
 /** Isolated writer claims refer to their captured changes once native integration incorporates them. */
 export function currentResult(run: Run, task: Task, attempt: Attempt): boolean {
@@ -50,6 +50,22 @@ export const taskResultSchema = Schema.Struct({
   artifacts: Schema.optionalKey(Schema.Array(text).annotate({ description: "References to actual relevant artifacts." })),
   needsInput: Schema.optionalKey(text.annotate({ description: "The specific missing user decision, when work cannot continue." })),
 })
+
+const { proposal: _proposal, ...resultFields } = taskResultSchema.fields
+const resultInput = Schema.toJsonSchemaDocument(Schema.Struct({ result: Schema.Struct(resultFields) })).schema
+const proposalInput = Schema.toJsonSchemaDocument(Schema.Struct({ result: taskResultSchema })).schema
+
+/** Advertise relevant fields and saved assessment IDs without changing registered runtime validation. */
+export function submitInputSchema(task: Pick<TaskSpec, "role" | "stage">, criteria?: readonly Criterion[]) {
+  const schema = structuredClone(task.stage === "design" && ["planner", "synthesizer"].includes(task.role) ? proposalInput : resultInput)
+  const properties = (schema.properties as { result: { properties: Record<string, unknown> } }).result.properties
+  const assessmentIds = criteria?.filter(criterion => criterion.kind === "assessment").map(criterion => criterion.id)
+  if (task.role === "implementer" || assessmentIds?.length === 0) delete properties.assessments
+  else if (assessmentIds) (properties.assessments as { items: { properties: { criterionId: { enum?: string[] } } } }).items.properties.criterionId.enum = assessmentIds
+  const needsInput = properties.needsInput as { description: string }
+  needsInput.description = "The specific missing user decision, when work cannot continue. Omit this field when unused; never submit an empty string."
+  return schema
+}
 
 const decodeResult = Schema.decodeUnknownSync(taskResultSchema, { onExcessProperty: "error", reportInput: false })
 

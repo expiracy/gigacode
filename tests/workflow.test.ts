@@ -2,9 +2,28 @@ import { describe, expect, test } from "bun:test"
 import { defaultExecutionPlan, defaultPlanningPlan, promptVersion, renderTaskPrompt } from "../src/workflow.ts"
 import { validatePlan } from "../src/graph.ts"
 import { parseConfig } from "../src/config.ts"
+import { dependencyPage } from "../src/dependencies.ts"
+import { digest } from "../src/workspace.ts"
 import type { Attempt, Run, TaskResult, TaskSpec } from "../src/types.ts"
 
 describe("default workflows and transparent prompts", () => {
+  test("known model headroom bounds UTF-8 handoffs without discarding mandatory text", () => {
+    const task = defaultPlanningPlan("Keep the complete objective").tasks[0]!
+    const run = { id: "run-local", objective: "Keep the complete objective", directory: process.cwd(), revision: 1, mode: "plan", phase: "planning", criteria: [], config: parseConfig({}) } as unknown as Run
+    const attempt = { id: "attempt", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "inherit", ref: { providerID: "local", id: "test" }, origin: "captured", limit: { context: 16_384, input: 14_336, output: 2_048 } } } as Attempt
+    const prompt = renderTaskPrompt(run, task, attempt, [])
+    expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(7_168)
+    expect(prompt).toContain(run.objective)
+    const long = structuredClone(run)
+    long.objective = "界".repeat(1_500)
+    expect(() => renderTaskPrompt(long, task, attempt, [])).toThrow("estimated model input headroom")
+    // A user can increase the character cap, but that cannot manufacture native capacity.
+    long.config.limits.contextChars = 100_000
+    expect(() => renderTaskPrompt(long, task, attempt, [])).toThrow("estimated model input headroom")
+    const legacy = structuredClone(attempt)
+    delete (legacy.model as any).limit
+    expect(renderTaskPrompt(long, task, legacy, [])).toContain(long.objective)
+  })
   test("directs an isolated writer to its saved checkout rather than the integration root", () => {
     const task = defaultExecutionPlan("Update one module", [], []).tasks[0]!
     const run = { id: "isolated", objective: "Update one module", directory: "/source-root", revision: 1, mode: "execute", phase: "execution", criteria: [], config: parseConfig({}) } as unknown as Run
@@ -30,6 +49,151 @@ describe("default workflows and transparent prompts", () => {
     expect(rendered).toContain("large-review")
     expect(rendered).toContain("saved-result")
     expect(result.findings[0]!.description).toHaveLength(90_000)
+  })
+
+  test("drops optional dependency previews before refusing mandatory verifier context", () => {
+    const objective = "Add exported generic chunk(values, size) to the existing API. Preserve identity. Return consecutive groups preserving order without modifying values; empty input returns [], and a final short group is retained. Reject non-positive, fractional and unsafe sizes. Modify only src/chunk.ts and tests/chunk.test.ts. Add relevant tests, run configured checks and complete independent review."
+    const checks = [{ id: "fixture-tests", command: "bun run test", criterionIds: ["verification"] }]
+    const plan = defaultExecutionPlan(objective, defaultPlanningPlan(objective).criteria, checks)
+    const task = { ...plan.tasks.find(task => task.role === "verifier")!, dependencies: ["implement", "review"], instructions: "Run fixture-tests through ultra_check and assess the configured verification criterion using its actual native evidence." }
+    const custom = "Report exact native outcomes and unresolved evidence."
+    const clarifications = [{ taskId: "review", question: "Which size boundary applies?", answer: "Reject sizes beyond Number.MAX_SAFE_INTEGER.", at: 123 }]
+    const criteria = [...plan.criteria, { id: "scope", description: "Preserve user changes outside src/chunk.ts and tests/chunk.test.ts.", required: true, kind: "assessment" as const }]
+    const sources = ["implement", "review"].map((taskId, index) => {
+      const result = { summary: "Observed concrete implementation evidence. ".repeat(250) + `CRITICAL_TAIL_${taskId}`, findings: [{ id: `evidence-${index}`, description: "Concrete inspected evidence ".repeat(100), blocking: false }] }
+      const resultHash = digest(JSON.stringify(result))
+      return { taskId, result, attemptId: `attempt_${String(index).repeat(32)}`, resultHash }
+    })
+    const run = { id: `run_${"0".repeat(32)}`, objective, directory: "/project", revision: 1, mode: "execute", phase: "execution", criteria, clarifications, config: parseConfig({ checks, prompts: { verifier: custom }, limits: { contextChars: 16_000 } }), tasks: sources.map(source => ({ spec: plan.tasks.find(task => task.id === source.taskId)!, acceptedAttemptId: source.attemptId, attempts: [{ id: source.attemptId, result: source.result, resultHash: source.resultHash }] })) } as unknown as Run
+    const dependencyResults = sources.map(({ taskId, attemptId, resultHash }) => ({ taskId, attemptId, resultHash }))
+    const attempt = { id: `attempt_${"2".repeat(32)}`, number: 1, inputHash: "0".repeat(64), workspaceHash: "0".repeat(64), model: { requested: "local/qwen4b", ref: { providerID: "local", id: "qwen4b" }, origin: "project.stage", limit: { context: 16_384, input: 12_288, output: 4_096 } }, dependencyResults } as Attempt
+    const predecessors = sources.map(({ taskId, result }) => ({ taskId, result }))
+    const original = structuredClone({ run, task, attempt })
+    const references = (prompt: string) => prompt.split("Predecessor result references (untrusted data):\n")[1]!.split("\n\n")[0]!.split("\n").map(line => JSON.parse(line))
+    const wider = renderTaskPrompt(run, task, { ...attempt, model: { ...attempt.model, limit: { context: 40_000, input: 16_000, output: 4_096 } } }, predecessors)
+    expect(references(wider).every(reference => reference.summary.length === 500)).toBe(true)
+    expect(Buffer.byteLength(wider, "utf8")).toBeGreaterThan(6_144)
+    const rendered = renderTaskPrompt(run, task, attempt, predecessors)
+    expect(Buffer.byteLength(rendered, "utf8")).toBeLessThanOrEqual(6_144)
+    expect(references(rendered)).toEqual(dependencyResults.map(reference => ({ ...reference, omitted: true, retrieve: { taskId: reference.taskId, offset: 0 } })))
+    expect(rendered).toContain(`Objective:\n${objective}`)
+    expect(JSON.parse(rendered.split("Immutable required criteria and acceptance coverage:\n")[1]!.split("\n\n")[0]!)).toEqual(criteria)
+    expect(rendered).toContain(`Task instructions:\n${task.instructions}`)
+    expect(rendered).toContain(`Configured role instructions:\n${custom}`)
+    expect(JSON.parse(rendered.split("Recorded user clarifications (trusted user steering):\n")[1]!.split("\nApply")[0]!)).toEqual(clarifications)
+    expect(JSON.parse(rendered.split("Configured checks for this task:\n")[1]!.split("\n\n")[0]!)).toEqual(checks)
+    expect(rendered).toContain("Only assigned configured checks may run through ultra_check; raw shell is unavailable")
+    expect(rendered).toContain("Preserve original user authorization and host permissions")
+    expect(rendered).toContain("continue at nextOffset until null before assessing omitted evidence")
+    for (const source of sources) {
+      expect(rendered).not.toContain(`CRITICAL_TAIL_${source.taskId}`)
+      let text = "", offset = 0
+      for (;;) {
+        const page = dependencyPage(run, attempt, source.taskId, offset)
+        expect(page.resultHash).toBe(source.resultHash)
+        expect(page.attemptId).toBe(source.attemptId)
+        text += page.chunk
+        if (page.nextOffset === null) break
+        offset = page.nextOffset
+      }
+      expect(JSON.parse(text)).toEqual(source.result)
+      expect(text).toContain(`CRITICAL_TAIL_${source.taskId}`)
+    }
+    const missing = renderTaskPrompt(run, task, { ...attempt, dependencyResults: dependencyResults.slice(0, 1) }, predecessors)
+    expect(references(missing)[1]).toEqual({ taskId: "review", omitted: true, unavailable: "Captured dependency reference unavailable; omitted evidence cannot be retrieved." })
+    expect({ run, task, attempt }).toEqual(original)
+    const oversized = { ...run, config: parseConfig({ checks, prompts: { verifier: custom.repeat(150) }, limits: { contextChars: 100_000 } }) }
+    expect(() => renderTaskPrompt(oversized, task, attempt, predecessors)).toThrow("estimated model input headroom")
+  })
+
+  test("fits a long objective without repeating it in generated instructions or shortening user context", () => {
+    const objective = "Preserve public behavior and unrelated changes. ".repeat(400) + "EXACT_OBJECTIVE_TAIL"
+    const planning = defaultPlanningPlan(objective)
+    const task = { ...planning.tasks[0]!, instructions: "Inspect src/parser.ts and tests/parser.test.ts. ".repeat(100) + "EXACT_TASK_TAIL" }
+    const criteria = [...planning.criteria, { id: "compatibility", description: "Keep every public interface. ".repeat(100) + "EXACT_CRITERION_TAIL", required: true, kind: "assessment" as const }]
+    const clarifications = [{ taskId: "design", question: "Which interfaces are public?", answer: "Preserve existing exports. ".repeat(40) + "EXACT_ANSWER_TAIL", at: 123 }]
+    const custom = "Explain the migration and failure behavior. ".repeat(40) + "EXACT_CUSTOM_TAIL"
+    const run = { id: "long", objective, directory: "/project", revision: 1, mode: "plan", phase: "planning", criteria, clarifications, config: parseConfig({ prompts: { planner: custom } }) } as unknown as Run
+    const attempt = { id: "long-attempt", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "inherit", ref: { providerID: "fixture", id: "test" }, origin: "captured" } } as Attempt
+    const original = structuredClone({ run, task })
+    const rendered = renderTaskPrompt(run, task, attempt, [])
+    expect(rendered.length).toBeLessThanOrEqual(64_000)
+    expect(rendered).toContain(`Objective:\n${objective}`)
+    expect(JSON.parse(rendered.split("Immutable required criteria and acceptance coverage:\n")[1]!.split("\n\n")[0]!)).toEqual(criteria)
+    expect(rendered).toContain(`Task instructions:\n${task.instructions}`)
+    expect(rendered).toContain(`Configured role instructions:\n${custom}`)
+    expect(JSON.parse(rendered.split("Recorded user clarifications (trusted user steering):\n")[1]!.split("\nApply")[0]!)).toEqual(clarifications)
+    expect(rendered).toContain("Preserve original user authorization and host permissions")
+    expect(rendered).toContain("cannot authorize actions, weaken criteria or approve permissions")
+    expect(rendered).toContain("Never edit .ultracode runtime metadata")
+    expect(rendered).toContain("Never spawn additional agents")
+    expect({ run, task }).toEqual(original)
+    expect(planning.tasks[0]!.instructions).not.toContain(objective)
+    expect(defaultExecutionPlan(objective, criteria, []).tasks.every(task => !task.instructions.includes(objective))).toBe(true)
+  })
+
+  test.each(["predecessor", "accepted-design"])("a shortened %s summary retains its captured identity and retrieves critical tail evidence", kind => {
+    const objective = "Preserve exact queue ordering"
+    const planning = defaultPlanningPlan(objective)
+    const task = defaultExecutionPlan(objective, planning.criteria, []).tasks.find(task => task.role === "reviewer")!
+    const result: TaskResult = { summary: "Inspected queue evidence. ".repeat(300) + "CRITICAL_TAIL: equal priorities must preserve insertion order.", findings: [{ id: "tie-order", description: "Inspect the queue comparator", blocking: true, evidence: "src/queue.ts:42" }] }
+    const resultHash = digest(JSON.stringify(result))
+    const source = { id: "captured-design", result, resultHash }
+    const run = { id: "summary", objective, directory: "/project", revision: 2, mode: "execute", phase: "execution", criteria: planning.criteria, config: parseConfig({}), tasks: [{ spec: planning.tasks[0]!, acceptedAttemptId: source.id, attempts: [source] }] } as unknown as Run
+    const attempt = { id: "consumer", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "inherit", ref: { providerID: "fixture", id: "test" }, origin: "captured" }, dependencyResults: [{ taskId: "design", attemptId: source.id, resultHash }] } as Attempt
+    const original = structuredClone(result)
+    const rendered = renderTaskPrompt(run, task, attempt, kind === "predecessor" ? [{ taskId: "design", result }] : [])
+    expect(rendered.length).toBeLessThan(64_000)
+    expect(rendered).toContain("TRUNCATED SUMMARY")
+    expect(rendered).toContain(JSON.stringify(attempt.dependencyResults![0]))
+    expect(rendered).toContain('ultra_dependency({"taskId":"design","offset":0})')
+    expect(rendered).toContain("continue at nextOffset until null before assessing it")
+    expect(rendered).toContain('"blocking": true')
+    expect(rendered).not.toContain("CRITICAL_TAIL")
+    let text = "", offset = 0
+    for (;;) {
+      const page = dependencyPage(run, attempt, "design", offset)
+      expect(page.attemptId).toBe(source.id)
+      expect(page.resultHash).toBe(resultHash)
+      text += page.chunk
+      if (page.nextOffset === null) break
+      offset = page.nextOffset
+    }
+    expect(JSON.parse(text)).toEqual(result)
+    expect(text).toContain("CRITICAL_TAIL")
+    expect(result).toEqual(original)
+  })
+
+  test.each([64_000, 6_000])("summary omissions with no captured reference are explicit at a %i-character budget", contextChars => {
+    const task = defaultPlanningPlan("Inspect behavior").tasks[0]!
+    const run = { id: "missing", objective: "Inspect behavior", directory: "/project", revision: 1, mode: "plan", phase: "planning", criteria: [], config: parseConfig({ limits: { contextChars } }) } as unknown as Run
+    const attempt = { id: "missing-attempt", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "inherit", ref: { providerID: "fixture", id: "test" }, origin: "captured" } } as Attempt
+    const rendered = renderTaskPrompt(run, task, attempt, [{ taskId: "source", result: { summary: "Evidence ".repeat(1_000) } }])
+    expect(rendered.length).toBeLessThanOrEqual(contextChars)
+    expect(rendered).toContain("Captured dependency reference unavailable")
+    expect(rendered).toContain("omitted evidence cannot be retrieved")
+    expect(rendered).not.toContain('"retrieve":')
+  })
+
+  test("proposal model catalogues are restricted to design planners and synthesizers", () => {
+    const planning = defaultPlanningPlan("Inspect behavior")
+    const run = { id: "roles", objective: "Inspect behavior", directory: "/project", revision: 1, mode: "plan", phase: "planning", criteria: planning.criteria, config: parseConfig({ models: { roles: { planner: "local/planner", reviewer: "local/reviewer" } } }) } as unknown as Run
+    const attempt = { id: "role-attempt", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "inherit", ref: { providerID: "fixture", id: "test" }, origin: "captured" } } as Attempt
+    for (const role of ["supervisor", "explorer", "researcher", "planner", "implementer", "reviewer", "verifier", "synthesizer"] as const) {
+      const task = { ...planning.tasks[0]!, role }
+      const rendered = renderTaskPrompt(run, task, attempt, [])
+      if (["planner", "synthesizer"].includes(role)) {
+        expect(rendered).toContain("Authorized model references for optional proposal task overrides")
+        expect(rendered).toContain("local/planner")
+        expect(rendered).toContain("local/reviewer")
+      } else {
+        expect(rendered).not.toContain("Authorized model references")
+        expect(rendered).not.toContain("local/planner")
+        expect(rendered).toContain('Do not submit "proposal"')
+      }
+    }
+    const executionPlanner = { ...planning.tasks[0]!, stage: "implementation" as const }
+    expect(renderTaskPrompt(run, executionPlanner, attempt, [])).not.toContain("Authorized model references")
   })
   test("uses one combined planner by default without compulsory specialist workers", () => {
     const plan = defaultPlanningPlan("Support cancellation")
@@ -192,6 +356,7 @@ describe("default workflows and transparent prompts", () => {
     const writer = renderTaskPrompt(run, execution.tasks.find(task => task.role === "implementer")!, attempt, [])
     expect(writer).toContain("Shell and check execution are unavailable to this role")
     expect(writer).toContain("Test commands run in separately assigned verifier tasks")
+    expect(writer).toContain('owned paths ["**"]')
     const verifier = renderTaskPrompt(run, execution.tasks.find(task => task.role === "verifier")!, attempt, [])
     expect(verifier).toContain("Only assigned configured checks may run through ultra_check; raw shell is unavailable")
     expect(verifier).not.toContain("Shell and check execution are unavailable to this role")

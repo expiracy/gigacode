@@ -191,5 +191,11 @@ export function resolveModel(task: TaskSpec, run: Pick<Run, "modelOptions" | "ca
   if (!available) throw new Error(`Model ${ref.providerID}/${ref.id} is not available; no fallback was selected`)
   if (ref.variant !== undefined && !available.variants.includes(ref.variant)) throw new Error(`Variant ${ref.variant} is not available for ${ref.providerID}/${ref.id}`)
   if (available.tools === false) throw new Error(`Model ${ref.providerID}/${ref.id} does not support workflow tools`)
-  return { ref, origin, requested }
+  if (available.limit === undefined) return { ref, origin, requested }
+  const label = `Model ${ref.providerID}/${ref.id} limit`
+  const context = integer(available.limit.context, `${label}.context`)
+  const input = available.limit.input === undefined ? undefined : integer(available.limit.input, `${label}.input`)
+  const output = integer(available.limit.output, `${label}.output`, 0)
+  const limit = Object.freeze({ context, ...(input === undefined ? {} : { input }), output })
+  return { ref, origin, requested, limit }
 }

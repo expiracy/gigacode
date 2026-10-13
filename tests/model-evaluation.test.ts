@@ -280,6 +280,46 @@ test("observed cost over the allowance stops before requesting model work and wr
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test.each(["failed", "interrupted", "succeeded"])("a native %s primary without workflow admission stops polling and saves its failure after parent cleanup", async outcome => {
+  const root = await mkdtemp(join(tmpdir(), "evaluation-test-")), directory = join(root, "planning")
+  const options = parseEvaluationOptions(explicit), tokens = { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }
+  let prompted = false, statusCalls = 0, prompts = 0
+  const interrupted: string[] = [], settled: string[] = []
+  const parent = () => ({ id: "parent", ...(prompted ? { outcome } : {}), projectID: "fixture", agent: "ultra", model: options.model, cost: 0.01, tokens, time: { created: 1, updated: 2, ...(prompted ? { idle: 2 } : {}) }, location: { directory } })
+  const transport = scriptedFetch(async request => {
+    const path = new URL(request.url).pathname
+    if (path === "/api/info") return Response.json({ version: "2.0.25" })
+    if (path === "/api/model") return Response.json({ data: [{ ...options.model, capabilities: { tools: true }, variants: [{ id: "high" }] }] })
+    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "ultracode.json"), "utf8")), promptVersion: "ultra/test" } })
+    if (path === "/api/session" && request.method === "POST") return Response.json({ data: parent() })
+    if (path.endsWith("/prompt")) { prompts++; prompted = true; return Response.json({ data: { id: "receipt" } }) }
+    if (path.endsWith("/status")) {
+      if (++statusCalls > 1) return Response.json({ type: "RpcInternalError", message: "Unexpected repeated status polling after terminal primary" }, { status: 500 })
+      return Response.json({ output: { runs: [] } })
+    }
+    if (path === "/api/session") return Response.json({ data: [parent()], cursor: {} })
+    if (path === "/api/session/parent") return Response.json({ data: parent() })
+    if (path.endsWith("/interrupt")) { interrupted.push(path.split("/").at(-2)!); return Response.json({ status: "interrupted" }) }
+    if (path.endsWith("/wait")) { settled.push(path.split("/").at(-2)!); return new Response(null, { status: 204 }) }
+    return Response.json({ error: `Unexpected ${path}` }, { status: 500 })
+  })
+  try {
+    const failure = outcome === "succeeded" ? "The model finished without admitting the requested project workflow" : `The native primary ended with outcome ${outcome} without admitting the requested project workflow`
+    await expect(runModelEvaluation([...explicit, "--scenario", "planning"], { root, fetch: transport })).rejects.toThrow(failure)
+    expect(prompts).toBe(1)
+    expect(statusCalls).toBe(1)
+    expect(interrupted).toEqual(["parent"])
+    expect(settled).toEqual(["parent"])
+    const report = JSON.parse(await readFile(join(root, "evaluation.json"), "utf8"))
+    expect(report.failure).toBe(failure)
+    expect(report.cases[0]).toMatchObject({ error: failure, cleanupSettledSessions: ["parent"], cleanupErrors: [] })
+    expect(report.cases[0].observedRun).toBeNull()
+    expect(report.cases[0].score).toBeUndefined()
+    expect(report.usage.cost).toBe(0.01)
+    expect(await readFile(join(root, "evaluation.md"), "utf8")).toContain(failure)
+  } finally { await rm(root, { recursive: true, force: true }) }
+}, 5_000)
+
 test("scripted native responses allow a final response beyond ten seconds within the scenario budget", async () => {
   const root = await mkdtemp(join(tmpdir(), "evaluation-test-")), directory = join(root, "bugfix")
   const args = [...explicit, "--scenario", "bugfix"]

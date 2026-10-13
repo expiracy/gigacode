@@ -58,6 +58,20 @@ function bridgeFixture() {
 }
 
 describe("native adapter boundaries", () => {
+  test("model discovery preserves native capacity metadata and copies the catalog limit", async () => {
+    const f = bridgeFixture(), limit = { context: 8_192, input: 6_144, output: 0 }
+    Object.assign(f.ctx, { model: { async list() { return { data: [
+      { providerID: "local", id: "small", variants: [{ id: "fast" }], capabilities: { tools: true }, limit },
+      { providerID: "fixture", id: "legacy", variants: [], capabilities: { tools: true } },
+    ] } } } })
+    const models = await f.adapter.models()
+    expect(models).toEqual([
+      { providerID: "local", id: "small", variants: ["fast"], tools: true, limit: { context: 8_192, input: 6_144, output: 0 } },
+      { providerID: "fixture", id: "legacy", variants: [], tools: true },
+    ])
+    limit.context = 262_144
+    expect(models[0]!.limit?.context).toBe(8_192)
+  })
   test("completion notices use valid stable native message IDs for queued retries", async () => {
     const f = bridgeFixture(), notices: any[] = []
     f.context("parent")
