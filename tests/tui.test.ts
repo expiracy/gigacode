@@ -1,5 +1,6 @@
 import { expect, mock, test } from "bun:test"
 import { defaultConfig } from "../src/config.ts"
+import type { WorkflowSnapshot } from "../src/workflow-view.ts"
 
 // Match OpenCode's shared reactive runtime rather than Solid's server entry.
 const solidEntry = "solid-js/dist/solid.js"
@@ -13,6 +14,17 @@ function fixture() {
   const [cache, setCache] = solid.createSignal<any[]>([])
   let selected: string | undefined
   let calls = 0, disposed = 0
+  let finishDialog: ((value?: string) => void) | undefined
+  const workflowReads: any[] = [], controls: any[] = [], navigations: any[] = []
+  const workflowResponse: WorkflowSnapshot = { sessionId: "parent", runs: [{
+    id: "run_1", parentSessionId: "parent", directory: "C:/project", generation: 1, revision: 2,
+    status: "running", phase: "execution", objective: "Fix the parser", supervisorSessionId: "supervisor", errors: [], omittedErrors: 0,
+    tasks: [{ id: "fix", title: "Fix parser", role: "implementer", stage: "implementation", status: "running", dependencies: [], attempts: 1, sessionId: "worker",
+      model: { ref: { providerID: "fixture", id: "model" }, requested: "fixture/model", origin: "captured" }, waits: [], blockers: [], checks: [] }],
+    usage: { workers: 1, attempts: 1, tokens: null, cost: null, tokenObservations: 0, costObservations: 0, activeMs: 100, elapsedMs: 200, limits: defaultConfig.limits },
+  }] }
+  let workflow = async (_input: any, _options: any) => structuredClone(workflowResponse)
+  let control = async (_input: any, _options: any) => ({})
   const layers: any[] = [], dialogs: any[] = [], reads: any[] = [], synced: string[] = [], toasts: any[] = []
   const sessions = new Map<string, any>(), events = new Map<string, Set<Function>>()
   let list: (input: any, options: any) => Promise<any> = async input => ({ data: [...sessions.values()].filter(info => info.parentID === input.parentID), cursor: {} })
@@ -21,6 +33,8 @@ function fixture() {
     app: { version: "2.0.25" }, location: { directory: "C:/plugin-project" },
     client: { session: { async list(input: any, options: any) { reads.push(input); return list(input, options) } }, rpc() { return {
       async config() { calls++; return response },
+      async workflow(input: any, options: any) { workflowReads.push({ input, options }); return workflow(input, options) },
+      async control(input: any, options: any) { controls.push({ input, options }); return control(input, options) },
       events: { on(name: string, callback: typeof listener) { expect(name).toBe("commandResult"); listener = callback; return () => { disposed++ } } },
     } } },
     keymap: { layer(factory: () => unknown) { layers.push(factory()) } },
@@ -30,17 +44,25 @@ function fixture() {
         root(id: string) { let current = id; const seen = new Set<string>(); while (!seen.has(current)) { seen.add(current); const parent = cache().find(info => info.id === current)?.parentID; if (!parent) return current; current = parent }; return current },
         async sync(id: string) { synced.push(id); const info = sessions.get(id); if (!info) throw new Error("Missing fixture session"); setCache(old => [...old.filter(value => value.id !== id), info]) },
       } },
-    ui: { router: { current: route }, toast: { show(value: any) { toasts.push(value) } }, dialog: {
-      async select(options: any) { dialogs.push({ kind: "select", ...options }); return selected },
+    ui: { router: { current: route, navigate(value: unknown) { navigations.push(value); setRoute(value) } }, toast: { show(value: any) { toasts.push(value) } }, dialog: {
+      async select(options: any) {
+        dialogs.push(Object.assign(Object.create(options), { kind: "select" }))
+        if (options.title === "Ultra workflows" && !selected) return new Promise<string | undefined>(resolve => { finishDialog = resolve })
+        return selected
+      },
       async alert(options: any) { dialogs.push({ kind: "alert", ...options }) },
+      clear() { finishDialog?.(); finishDialog = undefined },
     } },
   }
   return {
-    context, layers, dialogs, response, reads, synced, toasts,
+    context, layers, dialogs, response, reads, synced, toasts, workflowReads, workflowResponse, controls, navigations,
     get calls() { return calls }, get disposed() { return disposed },
     route(value: unknown) { setRoute(value) }, select(value?: string) { selected = value },
     seed(values: any[], cached: string[] = []) { values.forEach(info => sessions.set(info.id, info)); setCache(cached.map(id => sessions.get(id))) },
     list(callback: typeof list) { list = callback },
+    workflow(callback: typeof workflow) { workflow = callback },
+    control(callback: typeof control) { control = callback },
+    close() { context.ui.dialog.clear() },
     async nativeEvent(name: string) { for (const callback of events.get(name) ?? []) callback({ type: name }); await settle() },
     async event(data: unknown) { await listener({ data }) },
   }
@@ -216,9 +238,9 @@ test("other command results are visible only in their initiating session", async
     await f.event({ sessionId: "other", command: "status", result: { runs: [] } })
     expect(f.dialogs).toHaveLength(0)
     await f.event({ sessionId: "parent", command: "status", result: { runs: [] } })
-    expect(f.dialogs[0].title).toBe("Ultra command result")
-    expect(f.dialogs[0].message).toContain('"runs": []')
-  } finally { await cleanup!() }
+    await settle()
+    expect(f.dialogs[0].title).toBe("Ultra workflows")
+  } finally { f.close(); await cleanup!() }
 })
 
 test("native command failures give actionable visible errors without another RPC", async () => {
@@ -239,4 +261,256 @@ test("terminal reload unsubscribes once and does not display late results", asyn
   expect(f.disposed).toBe(1)
   await f.event({ sessionId: "parent", command: "config", result: f.response })
   expect(f.dialogs).toHaveLength(0)
+})
+
+test("existing status feedback opens a searchable workflow snapshot in its initiating conversation", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status run_1", result: { run: { id: "run_1" } } }); await settle()
+    expect(f.workflowReads).toHaveLength(1)
+    expect(f.workflowReads[0].input).toEqual({ sessionId: "parent", runId: "run_1" })
+    expect(f.dialogs[0].title).toBe("Ultra workflows")
+    expect(f.dialogs[0].placeholder).toContain("Search")
+    for (const text of ["execution", "running", "Fix parser", "fixture/model", "worker", "unknown"]) expect(JSON.stringify(f.dialogs[0].options)).toContain(text)
+    expect(f.layers).toHaveLength(0)
+  } finally { f.close(); await cleanup!() }
+})
+
+test("an open workflow dialog refreshes durable rows without replacing the native dialog", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: { runs: [] } }); await settle()
+    const dialog = f.dialogs[0]
+    f.workflowResponse.runs[0]!.generation++
+    f.workflowResponse.runs[0]!.tasks[0]!.status = "succeeded"
+    await Bun.sleep(2100)
+    expect(f.workflowReads).toHaveLength(2)
+    expect(f.dialogs).toHaveLength(1)
+    expect(dialog.options.find((row: any) => row.category === "Tasks").description).toContain("succeeded")
+  } finally { f.close(); await cleanup!() }
+})
+
+test("workflow snapshot refreshes never overlap a held read", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  let release: ((value: WorkflowSnapshot) => void) | undefined
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    f.workflow(() => new Promise(resolve => { release = resolve }))
+    await Bun.sleep(4100)
+    expect(f.workflowReads).toHaveLength(2)
+  } finally { release?.(f.workflowResponse); f.close(); await cleanup!(); await settle() }
+})
+
+test("reconnect immediately reloads an open workflow from durable state", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    f.workflowResponse.runs[0]!.generation++
+    f.workflowResponse.runs[0]!.status = "paused"
+    await f.nativeEvent("server.connected")
+    expect(f.workflowReads).toHaveLength(2)
+    expect(f.dialogs[0].options[0].description).toContain("paused")
+  } finally { f.close(); await cleanup!() }
+})
+
+test("navigation aborts a pending workflow read and ignores its late snapshot", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  let release!: (value: WorkflowSnapshot) => void
+  f.workflow(() => new Promise(resolve => { release = resolve }))
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    f.route({ type: "home" })
+    expect(f.workflowReads[0].options.signal?.aborted).toBe(true)
+    release(f.workflowResponse); await settle()
+    expect(f.dialogs).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("configuration feedback replaces a pending workflow view without a late dialog takeover", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  let release!: (value: WorkflowSnapshot) => void
+  f.workflow(() => new Promise(resolve => { release = resolve }))
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.workflowReads[0].options.signal.aborted).toBe(true)
+    release(f.workflowResponse); await settle()
+    expect(f.dialogs.map(dialog => dialog.title)).toEqual(["Ultra configuration"])
+  } finally { f.close(); await cleanup!() }
+})
+
+test("failed workflow snapshots remain visible and recover on reconnect", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.workflow(async () => { throw new Error("fixture disconnected") })
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    expect(f.dialogs).toHaveLength(1)
+    expect(f.dialogs[0].options[0].title).toContain("unavailable")
+    expect(f.dialogs[0].options[0].description).toContain("fixture disconnected")
+    f.workflow(async () => f.workflowResponse)
+    await f.nativeEvent("server.connected")
+    expect(f.dialogs[0].options[0].title).toBe("Fix the parser")
+  } finally { f.close(); await cleanup!() }
+})
+
+test("pause acts through the initiating-session RPC and refreshes the durable snapshot", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    const action = f.dialogs[0].actions?.find((action: any) => action.title === "Pause")
+    expect(action).toBeDefined()
+    await action.onTrigger(f.dialogs[0].options[0].value); await settle()
+    expect(f.controls[0].input).toEqual({ text: "pause run_1", sessionId: "parent" })
+    expect(f.workflowReads).toHaveLength(2)
+    expect(f.dialogs).toHaveLength(1)
+  } finally { f.close(); await cleanup!() }
+})
+
+test("a paused workflow offers an explicit resume control", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.workflowResponse.runs[0]!.status = "paused"
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    const action = f.dialogs[0].actions?.find((action: any) => action.title === "Resume")
+    expect(action).toBeDefined()
+    await action.onTrigger(f.dialogs[0].options[0].value); await settle()
+    expect(f.controls[0].input).toEqual({ text: "resume run_1", sessionId: "parent" })
+  } finally { f.close(); await cleanup!() }
+})
+
+test("cancellation uses the existing control RPC once without adding transcript input", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    const action = f.dialogs[0].actions?.find((action: any) => action.title === "Cancel")
+    expect(action).toBeDefined()
+    await action.onTrigger(f.dialogs[0].options[0].value); await settle()
+    expect(f.controls.map(call => call.input)).toEqual([{ text: "cancel run_1", sessionId: "parent" }])
+    expect(f.calls).toBe(0)
+  } finally { f.close(); await cleanup!() }
+})
+
+test("live updates preserve task selection identities when earlier results appear", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  const run = f.workflowResponse.runs[0]!
+  run.tasks.push({ ...structuredClone(run.tasks[0]!), id: "other", sessionId: "other-worker" })
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    const selected = f.dialogs[0].options.find((row: any) => row.description.includes("other-worker")).value
+    run.generation++; run.tasks[0]!.result = { summary: "Parser fixed", current: true }
+    await f.nativeEvent("server.connected")
+    expect(f.dialogs[0].options.find((row: any) => row.value === selected).description).toContain("other-worker")
+  } finally { f.close(); await cleanup!() }
+})
+
+test("older durable generations cannot regress the displayed workflow", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  const run = f.workflowResponse.runs[0]!
+  run.generation = 5; run.status = "paused"
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    run.generation = 4; run.status = "running"
+    await f.nativeEvent("server.connected")
+    expect(f.dialogs[0].options[0].description).toContain("paused")
+  } finally { f.close(); await cleanup!() }
+})
+
+test("post-control refresh waits for an older read then fetches a new durable snapshot", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  let release!: (value: WorkflowSnapshot) => void
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    const old = structuredClone(f.workflowResponse)
+    let reads = 0
+    f.workflow(async () => ++reads === 1 ? new Promise(resolve => { release = resolve }) : f.workflowResponse)
+    await f.nativeEvent("server.connected")
+    f.workflowResponse.runs[0]!.generation++; f.workflowResponse.runs[0]!.status = "cancelled"
+    f.dialogs[0].actions.find((action: any) => action.title === "Cancel").onTrigger(f.dialogs[0].options[0].value)
+    await settle()
+    expect(f.workflowReads).toHaveLength(2)
+    release(old); await settle()
+    expect(f.workflowReads).toHaveLength(3)
+    expect(f.dialogs[0].options[0].description).toContain("cancelled")
+  } finally { f.close(); await cleanup!() }
+})
+
+test("Open agent session navigates to the selected worker's actual native conversation", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    const action = f.dialogs[0].actions?.find((action: any) => action.title === "Open agent session")
+    expect(action).toBeDefined()
+    action.onTrigger(f.dialogs[0].options.find((row: any) => row.category === "Tasks").value)
+    expect(f.navigations).toEqual([{ type: "session", sessionID: "worker" }])
+    expect(f.controls).toHaveLength(0)
+  } finally { f.close(); await cleanup!() }
+})
+
+test("a failed control is visible and never replayed by a reconnect", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.control(async () => { throw new Error("Cancellation could not establish native settlement") })
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    f.dialogs[0].actions.find((action: any) => action.title === "Cancel").onTrigger(f.dialogs[0].options[0].value)
+    await settle()
+    expect(f.toasts.some(toast => toast.title === "Ultra control error" && toast.message.includes("native settlement"))).toBe(true)
+    await f.nativeEvent("server.connected")
+    expect(f.controls).toHaveLength(1)
+  } finally { f.close(); await cleanup!() }
+})
+
+test("closing the workflow dialog stops its timer and reconnect reads", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    f.close(); await settle()
+    expect(f.workflowReads[0].options.signal.aborted).toBe(true)
+    await f.nativeEvent("server.connected")
+    await Bun.sleep(2100)
+    expect(f.workflowReads).toHaveLength(1)
+  } finally { await cleanup!() }
+})
+
+test("disposal aborts a pending snapshot and suppresses late workflow UI", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  let release!: (value: WorkflowSnapshot) => void
+  f.workflow(() => new Promise(resolve => { release = resolve }))
+  f.route({ type: "session", sessionID: "parent" })
+  await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+  await cleanup!(); await cleanup!()
+  expect(f.workflowReads[0].options.signal.aborted).toBe(true)
+  release(f.workflowResponse); await settle()
+  await f.nativeEvent("server.connected")
+  expect(f.workflowReads).toHaveLength(1)
+  expect(f.dialogs).toHaveLength(0)
+  expect(f.disposed).toBe(1)
+})
+
+test("retained control callbacks cannot act after navigation to another initiating conversation", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    const action = f.dialogs[0].actions.find((action: any) => action.title === "Cancel")
+    const value = f.dialogs[0].options[0].value
+    f.route({ type: "session", sessionID: "other" })
+    action.onTrigger(value); await settle()
+    expect(f.controls).toHaveLength(0)
+  } finally { f.close(); await cleanup!() }
 })

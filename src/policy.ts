@@ -6,7 +6,7 @@ type Effect = Rule["effect"]
 const ranks: Record<Effect, number> = { allow: 0, ask: 1, deny: 2 }
 const mutations = new Set(["edit", "write", "patch", "apply_patch", "delete", "move", "mkdir"])
 const pathActions = new Set(["read", "glob", "grep", "list", "external_directory", ...mutations])
-const safeActions = new Set(["read", "glob", "grep", "list", "lsp", "webfetch", "websearch", "search", "models", "skill", "question", "todoread", "todowrite", "ultra_submit"])
+const safeActions = new Set(["read", "glob", "grep", "list", "lsp", "webfetch", "websearch", "search", "models", "skill", "question", "todoread", "todowrite", "ultra_submit", "ultra_dependency"])
 const normalize = (value: string) => value.replaceAll("\\", "/")
 const equalCase = (value: string) => process.platform === "win32" ? value.toLowerCase() : value
 const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -57,7 +57,7 @@ function within(directory: string, resource: string): { allowed: boolean; relati
   return { allowed: local !== ".." && !local.startsWith(`..${sep}`) && !isAbsolute(local), relative: normalize(local), absolute: target }
 }
 
-function owned(pattern: string, resource: string): boolean {
+export function owned(pattern: string, resource: string): boolean {
   pattern = normalize(pattern).replace(/^\.\//, "")
   if (/^(?:\/|~|[A-Za-z]:)/.test(pattern) || pattern.split("/").includes("..")) return false
   let source = ""
@@ -79,6 +79,8 @@ function roleEffect(role: Role, action: string): Effect {
   if (action === "shell") return role === "implementer" || role === "verifier" ? "allow" : "deny"
   if (mutations.has(action)) return role === "implementer" ? "allow" : "deny"
   if (action === "ultra_check") return role === "verifier" ? "allow" : "deny"
+  if (action === "ultra_integrate") return role === "implementer" ? "allow" : "deny"
+  if (action === "ultra_prepare") return role === "implementer" ? "allow" : "deny"
   if (action === "ultra_execute") return role === "supervisor" ? "allow" : "deny"
   if (action === "external_directory") return "allow" // The separate path boundary still applies.
   return safeActions.has(action) ? "allow" : "deny"
@@ -105,7 +107,7 @@ export function restrictPermission(hostEffect: Effect, runRules: Rule[], role: R
         for (const rule of runRules) if (hostMatch(rule.action, action) && names.some(name => hostMatch(rule.resource, name))) captured = rule.effect
         effect = strictest(effect, captured)
         if (mutations.has(action)) {
-          if (equalCase(scope.relative).split("/").includes(".ultracode")) return "deny"
+          if (equalCase(scope.relative).split("/").some(part => part === ".ultracode" || part === ".git")) return "deny"
           if (!ownedPaths?.some(pattern => owned(pattern, scope.relative))) return "deny"
         }
       } catch { return "deny" }

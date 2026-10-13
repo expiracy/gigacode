@@ -40,6 +40,17 @@ test("task tools reuse typed graph fields without handing the model acceptance c
   ]) expect(() => decode({ ...input, workflow })).toThrow()
 })
 
+test("task recipes are explicit plan-only alternatives to authored graphs", () => {
+  const decode = Schema.decodeUnknownSync(agentTaskSchema, { onExcessProperty: "error" })
+  expect(decode({ objective: "Review the parser", mode: "plan", recipe: "deep-review" })).toEqual({ objective: "Review the parser", mode: "plan", recipe: "deep-review" })
+  const workflow = { rationale: "One reader", tasks: [{ id: "read", title: "Read", role: "explorer", stage: "discovery", instructions: "Inspect", dependencies: [], writes: false }] }
+  for (const input of [
+    { objective: "Review", mode: "plan", recipe: "unknown" },
+    { objective: "Review", mode: "execute", recipe: "deep-review" },
+    { objective: "Review", mode: "plan", recipe: "deep-review", workflow },
+  ]) expect(() => decode(input)).toThrow()
+})
+
 function inspectedRun(checkCount = 2): Run {
   const checks: CheckEvidence[] = Array.from({ length: checkCount }, (_, index) => ({
     id: `evidence_${index}`, checkId: index ? "green" : "red", criterionIds: ["tests"],

@@ -1,18 +1,20 @@
 import { Schema } from "effect"
 import { parseCommand, type UltraCommand } from "./commands.ts"
 import { sanitizeEventData } from "./store.ts"
-import { taskSchema } from "./results.ts"
+import { currentResult, taskSchema } from "./results.ts"
+import { recipeNames } from "./recipes.ts"
 import type { Attempt, CheckEvidence, Run, Task } from "./types.ts"
 
 const text = Schema.String.check(Schema.isMinLength(1))
 const positive = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
 export const agentTaskSchema = Schema.Struct({
   objective: text, mode: Schema.Literals(["plan", "execute"]),
+  recipe: Schema.optionalKey(Schema.Literals(recipeNames).annotate({ description: "Explicit read-only strategy. Use plan mode; do not combine with an authored workflow." })),
   workflow: Schema.optionalKey(Schema.Struct({
     rationale: Schema.String.check(Schema.isPattern(/\S/)),
     tasks: Schema.Array(taskSchema).check(Schema.isMinLength(1)),
   }).annotate({ description: "The smallest useful task graph for this request. The engine supplies immutable acceptance criteria. Omit for a single planning worker; in execute mode a supplied graph starts implementation directly." })),
-})
+}).check(Schema.makeFilter(input => input.recipe !== undefined && (input.mode !== "plan" || input.workflow !== undefined) ? "Recipes require plan mode and cannot be combined with workflow" : undefined))
 
 // A single object schema works with providers that reject a union at the tool's root.
 // Action-specific requirements use the same validator as native control commands.
@@ -22,7 +24,7 @@ export const agentControlSchema = Schema.Struct({
   limits: Schema.optionalKey(Schema.Struct({
     workers: Schema.optionalKey(positive), runs: Schema.optionalKey(positive), attempts: Schema.optionalKey(positive),
     repairRounds: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-    workerMs: Schema.optionalKey(positive), runMs: Schema.optionalKey(positive), elapsedMs: Schema.optionalKey(positive), steps: Schema.optionalKey(positive),
+    workerMs: Schema.optionalKey(positive), runMs: Schema.optionalKey(positive), elapsedMs: Schema.optionalKey(positive), steps: Schema.optionalKey(positive), contextChars: Schema.optionalKey(positive),
   })),
 })
 export type AgentControl = typeof agentControlSchema.Type
@@ -66,8 +68,7 @@ export function progressContent(run: Run): string {
 }
 
 function compactContent(run: Run, taskId: string | undefined, work: boolean): string {
-  const candidate = run.candidateHash ?? run.workspaceHash
-  const current = (task: Task, attempt: Attempt) => task.status === "succeeded" && attempt.status === "succeeded" && task.acceptedAttemptId === attempt.id && (task.spec.writes ? attempt.candidateHash : attempt.workspaceHash) === candidate
+  const current = (task: Task, attempt: Attempt) => currentResult(run, task, attempt)
   const priority = (task: Task) => {
     const accepted = task.attempts.find(attempt => attempt.id === task.acceptedAttemptId)
     if (!accepted || !current(task, accepted)) return work && ["running", "waiting_permission", "cancelling"].includes(task.status) ? 8.1 : work && task.status === "pending" ? 8.2 : 9

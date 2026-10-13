@@ -100,7 +100,7 @@ function proposal(required: Criterion[], machineChecks = true): Plan {
 }
 
 /** Loopback protocol fixture: it emits real tool calls without using a paid model. */
-export function createWorkflowFixture(): WorkflowFixture {
+export function createWorkflowFixture(options: { writePaths?: Record<string, string> } = {}): WorkflowFixture {
   const requests: WorkflowRequest[] = []
   const primaryScripts: (PrimaryScript & { id: string })[] = []
   const holds: { key: string; marker: WorkflowRequest["marker"]; role?: string; matched: boolean; released: boolean; resolve?: () => void }[] = []
@@ -151,12 +151,17 @@ export function createWorkflowFixture(): WorkflowFixture {
           const required = criteria(prompt)
           const directory = /^Directory: (.+)$/m.exec(prompt)?.[1]
           if (!directory) throw new Error("Native worker prompt omitted its directory")
-          if (meta.role === "implementer" && prompt.includes("Automatic mode should coordinate") && !completedCalls.includes("read")) {
+          const internal = record.tools.includes("ultra_prepare") ? "ultra_prepare" : record.tools.includes("ultra_integrate") ? "ultra_integrate" : undefined
+          const writePath = options.writePaths?.[meta.taskId] ?? "implemented.txt"
+          if (internal) {
+            if (!completedCalls.includes(internal)) calls = [{ name: internal, arguments: {} }]
+            else if (!completedCalls.includes("ultra_submit")) calls = [{ name: "ultra_submit", arguments: { result: { summary: `Native ${internal} completed.` } } }]
+          } else if (meta.role === "implementer" && prompt.includes("Automatic mode should coordinate") && !completedCalls.includes("read")) {
             calls = [{ name: "read", arguments: { path: directory.replaceAll("\\", "/") + "/implemented.txt" } }]
           } else if (meta.role === "implementer" && !completedCalls.includes("write")) {
-            calls = [{ name: "write", arguments: { path: directory.replaceAll("\\", "/") + "/implemented.txt", content: "native implementation verified\n" } }]
+            calls = [{ name: "write", arguments: { path: directory.replaceAll("\\", "/") + "/" + writePath, content: "native implementation verified\n" } }]
           } else if (meta.role === "reviewer" && meta.stage === "review" && !completedCalls.includes("read")) {
-            calls = [{ name: "read", arguments: { path: directory.replaceAll("\\", "/") + "/implemented.txt" } }]
+            calls = [{ name: "read", arguments: { path: directory.replaceAll("\\", "/") + "/" + (Object.values(options.writePaths ?? {})[0] ?? "implemented.txt") } }]
           } else if (meta.role === "verifier" && !completedCalls.includes("ultra_check")) {
             calls = [{ name: "ultra_check", arguments: { checkId: "fixture-check" } }]
           } else if (!completedCalls.includes("ultra_submit")) {

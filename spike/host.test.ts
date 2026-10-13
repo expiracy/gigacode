@@ -10,6 +10,10 @@ test("native compatibility candidates are explicit and default to the original t
   for (const version of ["", "2.0.24", "2.0.27", "latest", "2.0.26 "]) expect(() => expectedHostVersion(version)).toThrow(/candidate/)
 })
 
+test("native suites can select the installed 2.0.28 host explicitly", () => {
+  expect(expectedHostVersion("2.0.28")).toBe("2.0.28")
+})
+
 test("project configuration discovery is disabled unless the isolated probe opts in", () => {
   expect(isolatedEnvironment("C:\\fixture", "local-password").OPENCODE_CONFIG_PROJECT_DISABLE).toBe("1")
   expect(isolatedEnvironment("C:\\fixture", "local-password", { projectConfiguration: true }).OPENCODE_CONFIG_PROJECT_DISABLE).toBeUndefined()

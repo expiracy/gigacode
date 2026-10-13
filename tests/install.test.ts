@@ -7,6 +7,7 @@ import { Schema } from "effect"
 import * as installer from "../scripts/install.ts"
 import { ULTRA_PRIMARY_SYSTEM } from "../src/agents.ts"
 import { LEGACY_PRIMARY_SYSTEM } from "./legacy-primary-system.ts"
+import { WORKFLOW_PRIMARY_SYSTEM } from "./workflow-primary-system.ts"
 
 async function fixture() {
   await mkdir(resolve(".spike"), { recursive: true })
@@ -107,6 +108,15 @@ describe("installed host discovery", () => {
 })
 
 describe("global installer", () => {
+  test("upgrades the workflow default with explicit pre-edit check assignments", async () => {
+    const { plugin, configDirectory } = await fixture()
+    await mkdir(configDirectory)
+    await writeFile(join(configDirectory, "opencode.json"), JSON.stringify({ agents: { ultra: { system: WORKFLOW_PRIMARY_SYSTEM } } }))
+    const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.28" })
+    const config = JSON.parse(await readFile(installed.path, "utf8"))
+    expect(config.agents.ultra.system).toContain("Pre-edit RED checks")
+    expect(config.agents.ultra.system).toBe(ULTRA_PRIMARY_SYSTEM)
+  })
   test("installs a visible native Ultra primary agent without widening permission defaults", async () => {
     const { plugin, configDirectory } = await fixture()
     const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
@@ -194,6 +204,13 @@ describe("global installer", () => {
     const { plugin, configDirectory } = await fixture()
     const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.26" })
     expect(installed.supportedVersion).toBe("2.0.26")
+    expect(JSON.parse(await readFile(installed.path, "utf8")).plugins).toEqual([{ package: plugin }])
+  })
+
+  test("accepts the installed 2.0.28 host after native compatibility verification", async () => {
+    const { plugin, configDirectory } = await fixture()
+    const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.28" })
+    expect(installed.supportedVersion).toBe("2.0.28")
     expect(JSON.parse(await readFile(installed.path, "utf8")).plugins).toEqual([{ package: plugin }])
   })
 

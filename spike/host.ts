@@ -4,9 +4,9 @@ import { existsSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { createServer } from "node:net"
 
-export function expectedHostVersion(value: string | undefined): "2.0.25" | "2.0.26" {
+export function expectedHostVersion(value: string | undefined): "2.0.25" | "2.0.26" | "2.0.28" {
   const version = value ?? "2.0.25"
-  if (version !== "2.0.25" && version !== "2.0.26") throw new Error(`Unsupported compatibility candidate: ${version}; select 2.0.25 or 2.0.26 with OPENCODE_TEST_VERSION`)
+  if (version !== "2.0.25" && version !== "2.0.26" && version !== "2.0.28") throw new Error(`Unsupported compatibility candidate: ${version}; select 2.0.25, 2.0.26 or 2.0.28 with OPENCODE_TEST_VERSION`)
   return version
 }
 export const EXPECTED_VERSION = expectedHostVersion(process.env.OPENCODE_TEST_VERSION)

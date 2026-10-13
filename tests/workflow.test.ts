@@ -5,6 +5,32 @@ import { parseConfig } from "../src/config.ts"
 import type { Attempt, Run, TaskResult, TaskSpec } from "../src/types.ts"
 
 describe("default workflows and transparent prompts", () => {
+  test("directs an isolated writer to its saved checkout rather than the integration root", () => {
+    const task = defaultExecutionPlan("Update one module", [], []).tasks[0]!
+    const run = { id: "isolated", objective: "Update one module", directory: "/source-root", revision: 1, mode: "execute", phase: "execution", criteria: [], config: parseConfig({}) } as unknown as Run
+    const attempt = { id: "writer", number: 1, inputHash: "inputs", workspaceHash: "snapshot", worktree: { directory: "/isolated-checkout", state: "ready" }, model: { requested: "inherit", ref: { providerID: "fixture", id: "test" }, origin: "captured" } } as Attempt
+    expect(renderTaskPrompt(run, task, attempt, [])).toContain("Directory: /isolated-checkout")
+  })
+  test("refuses a budget that cannot hold mandatory task instructions", () => {
+    const task = defaultPlanningPlan("Keep mandatory criteria").tasks[0]!
+    const run = { id: "run-small", objective: "Keep mandatory criteria", directory: process.cwd(), revision: 1, mode: "plan", phase: "planning", criteria: [], config: parseConfig({ limits: { contextChars: 100 } }) } as unknown as Run
+    const attempt = { id: "attempt", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "inherit", ref: { providerID: "fixture", id: "test" }, origin: "captured" } } as Attempt
+    expect(() => renderTaskPrompt(run, task, attempt, [])).toThrow("Mandatory task context")
+  })
+  test("bounds aggregate dependency context without losing immutable requirements", () => {
+    const task = { ...defaultPlanningPlan("Preserve queue ordering").tasks[0]!, dependencies: ["large-review"] }
+    const run = { id: "run-budget", objective: "Preserve queue ordering", directory: process.cwd(), revision: 1, mode: "plan", phase: "planning", criteria: [{ id: "stable", description: "Equal priorities retain insertion order", required: true, kind: "assessment" }], config: parseConfig({ limits: { contextChars: 12_000 } }) } as Run
+    const attempt = { id: "bounded", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "inherit", ref: { providerID: "fixture", id: "test" }, origin: "captured" }, dependencyResults: [{ taskId: "large-review", attemptId: "source", resultHash: "saved-result" }] } as Attempt
+    const result = { summary: "Review summary", findings: [{ id: "large", description: "evidence ".repeat(10_000), blocking: true }] }
+    const rendered = renderTaskPrompt(run, task, attempt, [{ taskId: "large-review", result }])
+    expect(rendered.length).toBeLessThanOrEqual(12_000)
+    expect(rendered).toContain("Equal priorities retain insertion order")
+    expect(rendered).toContain("Preserve queue ordering")
+    expect(rendered).toContain("ultra_dependency")
+    expect(rendered).toContain("large-review")
+    expect(rendered).toContain("saved-result")
+    expect(result.findings[0]!.description).toHaveLength(90_000)
+  })
   test("uses one combined planner by default without compulsory specialist workers", () => {
     const plan = defaultPlanningPlan("Support cancellation")
     expect(plan.tasks.map(task => task.id)).toEqual(["design"])
@@ -188,5 +214,16 @@ describe("default workflows and transparent prompts", () => {
         expect(rendered).toContain("Set passed to false for an observed unmet criterion")
       }
     }
+  })
+
+  test("execution reviewers assess inspected behavior while native completion stays an engine gate", () => {
+    const task = defaultExecutionPlan("Preserve parser behavior", [], []).tasks.find(task => task.role === "reviewer")!
+    const run = { id: "review", objective: "Preserve parser behavior", directory: process.cwd(), revision: 1, mode: "execute", phase: "execution", criteria: [{ id: "request", description: "Preserve parser behavior", required: true, kind: "assessment" }], config: parseConfig({}) } as Run
+    const attempt = { id: "attempt", number: 1, inputHash: "inputs", workspaceHash: "snapshot", model: { requested: "inherit", ref: { providerID: "fixture", id: "test" }, origin: "captured" } } as Attempt
+    const rendered = renderTaskPrompt(run, task, attempt, [])
+    expect(rendered).toContain("Do not withhold a supported behavior assessment")
+    expect(rendered).toContain("The engine separately requires current independent review, approved write scope and fresh native checks")
+    expect(rendered).toContain('"description": "Preserve parser behavior"')
+    expect(rendered).toContain("Set passed to false for an observed unmet criterion")
   })
 })

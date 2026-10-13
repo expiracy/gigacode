@@ -10,6 +10,7 @@ const HOST_VERSION = process.env.OPENCODE_TEST_VERSION ?? "2.0.25"
 const SOURCE_REFERENCES: Record<string, string> = {
   "2.0.25": "b44eea9e204024db2b480a136ece29d790d5f593",
   "2.0.26": "d21b0790a6c146815f28fea604e41e922f009590",
+  "2.0.28": "026b106bc5d41b679ffc413264229c340871e4d3",
 }
 if (!SOURCE_REFERENCES[HOST_VERSION]) throw new Error(`Unsupported compatibility candidate ${HOST_VERSION}`)
 const SOURCE_COMMIT = SOURCE_REFERENCES[HOST_VERSION]!

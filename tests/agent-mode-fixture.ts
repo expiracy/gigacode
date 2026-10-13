@@ -99,6 +99,7 @@ export async function agentModeFixture(options: { system?: string; checks?: Conf
       async hook(name: string, callback: any) { return register(`permission.${name}`, callback) },
       async list() { return [] },
     },
+    shell: { async hook(name: string, callback: any) { return register(`shell.${name}`, callback) } },
     model: { async list() { return { data: [{ providerID: "fixture", id: "test", variants: [], capabilities: { tools: true } }] } } },
     rpc: { async register(_contract: unknown, handlers: any) { hooks.set("rpc", handlers); return { ...await register("rpc"), events: { async emit(name: string, data: any) { feedback.push({ name, data }) } } } } },
     event: { subscribe({ signal }: { signal: AbortSignal }) { return { async *[Symbol.asyncIterator]() { if (!signal.aborted) await new Promise<void>(done => signal.addEventListener("abort", () => done(), { once: true })) } } } },

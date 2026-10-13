@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test"
 import { parseCommand } from "../src/commands.ts"
 
 describe("deterministic ultracode command parsing", () => {
+  test("explicit read-only recipes preserve multiline task scope and reject ambiguous selection", () => {
+    expect(parseCommand('/ultracode plan --recipe deep-review Inspect "quoted" callers\nand errors')).toEqual({ type: "plan", recipe: "deep-review", task: 'Inspect "quoted" callers\nand errors' })
+    for (const text of ["plan --recipe", "plan --recipe deep-review", "plan --recipe unknown Review", "start --recipe deep-review Review", "-- --recipe deep-review Review"]) expect(() => parseCommand(text)).toThrow()
+  })
   test("preserves task text and accepts the explicit start alias", () => {
     expect(parseCommand('plan Fix "quoted  text"\nwith a second line')).toEqual({ type: "plan", task: 'Fix "quoted  text"\nwith a second line' })
     expect(parseCommand("start inspect the status parser")).toEqual({ type: "start", task: "inspect the status parser" })

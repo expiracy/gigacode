@@ -7,6 +7,7 @@ import { SQLiteStore } from "../src/store.ts"
 import type { Config, Plan, Run, TaskSpec } from "../src/types.ts"
 import { NoLaunchError, SettledLaunchError, UnsettledLaunchError } from "../src/types.ts"
 import { FakeHost, invocation } from "./fake-host.ts"
+import { digest } from "../src/workspace.ts"
 
 let path: string, store: SQLiteStore, host: FakeHost, engine: Engine
 const config: Config = {
@@ -340,6 +341,168 @@ test("one writer is admitted per project and inherited execution scope is retain
   await expect(start("execute")).rejects.toThrow(/writer|write|execution/i)
 })
 
+test("parallel writers retain one execution owner for the canonical project", async () => {
+  const parallel = new Engine(store, host, "project", path, { ...config, parallelWrites: true })
+  await parallel.start(requestOptions("execute"))
+  await expect(parallel.start({ ...requestOptions("execute"), parentSessionId: "other-parent" })).rejects.toThrow("project writer reservation")
+  expect(parallel.list()).toHaveLength(1)
+})
+
+test("an enabled parallel option keeps a single writer on the existing native serial path", async () => {
+  const parallel = new Engine(store, host, "project", path, { ...config, parallelWrites: true })
+  const tasks = directTasks()
+  const run = await parallel.start({ ...requestOptions("execute"), workflow: { rationale: "One scoped fix", tasks } })
+  expect(run.parallel).toBeUndefined()
+  expect(run.tasks.map(task => task.spec)).toEqual(tasks)
+  parallel.consumeStartIntent(run.id, run.intentId, "parent"); parallel.bindSupervisor(run.id, run.intentId, "supervisor")
+  await parallel.tick(run.id, invocation())
+  expect(host.launches).toHaveLength(1)
+  expect(host.launches[0]!.attempt.worktree).toBeUndefined()
+})
+
+test("parallel execution inserts serial native integration before final review and checks", async () => {
+  const parallel = new Engine(store, host, "project", path, { ...config, parallelWrites: true })
+  Object.assign(host, { async parallelBaseline() { return { commit: "frozen-commit", hash: host.hash, files: {} } }, async prepareWriter() {}, async captureWriter() { return [] } })
+  const tasks: TaskSpec[] = [
+    { ...task("write-a", true), ownedPaths: ["a.txt"] },
+    { ...task("write-b", true), ownedPaths: ["b.txt"] },
+    { ...task("review", false, ["write-a", "write-b"]), role: "reviewer", stage: "review" },
+    { ...task("verify", false, ["write-a", "write-b"]), role: "verifier", stage: "verification", checkIds: ["test"] },
+  ]
+  const run = await parallel.start({ ...requestOptions("execute"), workflow: { rationale: "Independent files", tasks } })
+  expect(run.parallel?.baseline.commit).toBe("frozen-commit")
+  expect(run.parallel?.preparationTaskId).toBe("preparation.1")
+  expect(run.parallel?.checkouts.map(checkout => checkout.state)).toEqual(["planned", "planned"])
+  const integration = run.tasks.find(item => item.spec.id === run.parallel?.integrationTaskId)!
+  expect(integration.spec).toMatchObject({ role: "implementer", writes: true, dependencies: ["write-a", "write-b"], ownedPaths: ["a.txt", "b.txt"] })
+  expect(run.tasks.find(item => item.spec.id === "review")!.spec.dependencies).toContain(integration.spec.id)
+  expect(run.tasks.find(item => item.spec.id === "verify")!.spec.dependencies).toContain(integration.spec.id)
+  parallel.consumeStartIntent(run.id, run.intentId, "parent"); parallel.bindSupervisor(run.id, run.intentId, "supervisor")
+  await parallel.tick(run.id, invocation())
+  expect(host.launches.map(item => item.task.id)).toEqual(["preparation.1"])
+  const preparation = host.launches[0]!
+  parallel.preparationApplied(preparation.sessionId)
+  parallel.submit(preparation.sessionId, { summary: "Prepared native worktrees" }); host.settle(preparation.sessionId)
+  await parallel.tick(run.id, invocation())
+  expect(host.launches.map(item => item.task.id)).toEqual(["preparation.1", "write-a", "write-b"])
+  expect(host.launches.slice(1).every(item => item.attempt.worktree?.state === "ready")).toBe(true)
+})
+
+test("parallel completion requires applied native integration and fresh root checks after both isolated writers", async () => {
+  host.hash = digest({})
+  Object.assign(host, { async parallelBaseline() { return { commit: "frozen", hash: host.hash, files: {} } }, async prepareWriter(run: Run, attempt: any) {
+    expect(store.get(run.id)!.tasks.flatMap(task => task.attempts).find(item => item.id === attempt.id)!.worktree?.state).toBe("planned")
+  }, async captureWriter(_run: Run, _attempt: any, task: TaskSpec) { const content = task.id; return [{ path: task.ownedPaths![0]!, afterHash: digest(content), content }] } })
+  const parallel = new Engine(store, host, "project", path, { ...config, parallelWrites: true })
+  const tasks: TaskSpec[] = [
+    { ...task("a", true), ownedPaths: ["a.txt"] }, { ...task("b", true), ownedPaths: ["b.txt"] },
+    { ...task("review", false, ["a", "b"]), role: "reviewer", stage: "review" },
+    { ...task("verify", false, ["a", "b"]), role: "verifier", stage: "verification", checkIds: ["test"] },
+  ]
+  const run = await parallel.start({ ...requestOptions("execute"), workflow: { rationale: "Independent files", tasks } })
+  parallel.consumeStartIntent(run.id, run.intentId, "parent"); parallel.bindSupervisor(run.id, run.intentId, "supervisor")
+  await parallel.tick(run.id, invocation())
+  const preparation = host.launches[0]!
+  parallel.preparationApplied(preparation.sessionId)
+  parallel.submit(preparation.sessionId, { summary: "Prepared native worktrees" }); host.settle(preparation.sessionId)
+  await parallel.tick(run.id, invocation())
+  for (const launch of host.launches.slice(1)) { parallel.submit(launch.sessionId, { summary: "Isolated changes" }); host.settle(launch.sessionId) }
+  await parallel.tick(run.id, invocation())
+  expect(host.launches.map(item => item.task.id)).toEqual(["preparation.1", "a", "b", "integration.1"])
+  const integration = host.launches[3]!
+  expect(integration.attempt.worktree).toBeUndefined()
+  host.hash = parallel.get(run.id)!.parallel!.expectedHash!
+  parallel.integrationApplied(integration.sessionId, host.hash)
+  parallel.submit(integration.sessionId, { summary: "Native changes applied" }); host.settle(integration.sessionId)
+  await parallel.tick(run.id, invocation())
+  expect(host.launches.slice(4).every(launch => launch.attempt.workspaceHash === host.hash)).toBe(true)
+  await settleWave(run.id)
+  const saved = parallel.get(run.id)!
+  expect(saved.status).toBe("succeeded")
+  expect(saved.parallel!.integratedHash).toBe(host.hash)
+  expect(saved.tasks.find(task => task.spec.id === "verify")!.attempts[0]!.checks[0]!.workspaceHash).toBe(host.hash)
+})
+
+test("running native workers retain observed usage without inventing missing usage", async () => {
+  const run = await start()
+  install(run, [task("observe")])
+  await engine.tick(run.id, invocation())
+  const sessionId = host.launches[0]!.sessionId
+  host.sessions.set(sessionId, { sessionId, state: "running", tokens: 123, cost: 0.004 })
+  await engine.tick(run.id, invocation())
+  expect(engine.get(run.id)!.tasks[0]!.attempts[0]).toMatchObject({ tokens: 123, cost: 0.004 })
+  host.sessions.set(sessionId, { sessionId, state: "waiting_permission" })
+  await engine.tick(run.id, invocation())
+  expect(engine.get(run.id)!.tasks[0]!.attempts[0]).toMatchObject({ tokens: 123, cost: 0.004 })
+})
+
+test("answering an isolated writer refuses a new generation before recording input or resetting its accepted result", async () => {
+  const run = await start("execute"), spec = task("isolated", true)
+  store.mutate(run.id, saved => {
+    saved.status = "waiting_input"; saved.phase = "execution"
+    saved.parallel = { baseline: { commit: "frozen", hash: host.hash, files: {} }, preparationTaskId: "preparation.1", integrationTaskId: "integration.1", checkouts: [{ taskId: spec.id, directory: path + "/.ultracode/checkout", state: "ready" }] }
+    saved.tasks = [{ spec, status: "succeeded", acceptedAttemptId: "isolated-attempt", attempts: [{ id: "isolated-attempt", taskId: spec.id, number: 1, status: "succeeded", ownerEpoch: 1, inputHash: "input", prompt: "prompt", model: { ref: { providerID: "fixture", id: "test" }, origin: "captured", requested: "inherit" }, createdAt: Date.now(), finishedAt: Date.now(), workspaceHash: host.hash, result: { summary: "Needs a choice", needsInput: "Which implementation?" }, checks: [], steps: 1, worktree: { directory: path + "/.ultracode/checkout", state: "settled", changes: [] } }] }]
+  })
+  const before = engine.get(run.id)!
+  await expect(engine.provideInput(run.id, "Use the first option")).rejects.toThrow("new parallel run")
+  expect(engine.get(run.id)).toEqual(before)
+  expect(host.interruptions).toEqual([])
+})
+
+test("a moved preparation idle stamp still enforces the worker deadline before its first task request", async () => {
+  const run = await start(), spec = task("moved", true)
+  install(run, [spec], "execution")
+  await engine.tick(run.id, invocation())
+  const sessionId = host.launches[0]!.sessionId
+  store.mutate(run.id, saved => {
+    const attempt = saved.tasks[0]!.attempts[0]!
+    attempt.worktree = { directory: path + "/.ultracode/moved", state: "ready" }
+    attempt.startedAt = Date.now() - config.limits.workerMs - 1
+  })
+  host.sessions.set(sessionId, { sessionId, state: "succeeded" })
+  await engine.tick(run.id, invocation())
+  expect(host.interruptions).toContain(sessionId)
+  expect(engine.get(run.id)!.tasks[0]!.attempts[0]!.status).toBe("cancelling")
+})
+
+test("a final review clarification retains accepted native integration at the current root candidate", async () => {
+  const run = await start("execute"), integration = task("integration.1", true), review = { ...task("review", false, [integration.id]), role: "reviewer" as const, stage: "review" as const }
+  store.mutate(run.id, saved => {
+    saved.status = "waiting_input"; saved.phase = "execution"
+    saved.parallel = { baseline: { commit: "frozen", hash: "input-baseline", files: {} }, preparationTaskId: "preparation.1", integrationTaskId: integration.id, checkouts: [], expectedHash: host.hash, integratedHash: host.hash }
+    const attempt = { number: 1, status: "succeeded" as const, ownerEpoch: 1, inputHash: "input", prompt: "prompt", model: { ref: { providerID: "fixture", id: "test" }, origin: "captured", requested: "inherit" }, createdAt: Date.now(), finishedAt: Date.now(), candidateHash: host.hash, checks: [], steps: 1 }
+    saved.tasks = [
+      { spec: integration, status: "succeeded", acceptedAttemptId: "integrated", attempts: [{ ...attempt, id: "integrated", taskId: integration.id, workspaceHash: "input-baseline", integrationAppliedHash: host.hash, result: { summary: "Native integration accepted" } }] },
+      { spec: review, status: "succeeded", acceptedAttemptId: "reviewed", attempts: [{ ...attempt, id: "reviewed", taskId: review.id, workspaceHash: host.hash, result: { summary: "Needs a product choice", needsInput: "Which output label?" } }] },
+    ]
+  })
+  const saved = await engine.provideInput(run.id, "Use the first label")
+  expect(saved.tasks[0]!).toMatchObject({ status: "succeeded", acceptedAttemptId: "integrated" })
+  expect(saved.tasks[1]!.status).toBe("pending")
+  engine.consumeStartIntent(saved.id, saved.intentId, "parent"); engine.bindSupervisor(saved.id, saved.intentId, "supervisor")
+  await engine.tick(saved.id, invocation())
+  expect(host.launches.map(launch => launch.task.id)).toEqual(["review"])
+})
+
+test("a clarification cannot reset frozen isolated writers through stale discovery dependencies", async () => {
+  const run = await start("execute")
+  store.mutate(run.id, saved => {
+    saved.status = "waiting_input"; saved.phase = "execution"
+    saved.parallel = { baseline: { commit: "frozen", hash: "baseline", files: {} }, preparationTaskId: "preparation.1", integrationTaskId: "integration.1", checkouts: [], expectedHash: host.hash, integratedHash: host.hash }
+    const attempt = { number: 1, status: "succeeded" as const, ownerEpoch: 1, inputHash: "input", prompt: "prompt", model: { ref: { providerID: "fixture", id: "test" }, origin: "captured", requested: "inherit" }, createdAt: Date.now(), finishedAt: Date.now(), checks: [], steps: 1, result: { summary: "Accepted" } }
+    saved.tasks = [
+      { spec: task("discover"), status: "succeeded", acceptedAttemptId: "discovered", attempts: [{ ...attempt, id: "discovered", taskId: "discover", workspaceHash: "baseline" }] },
+      { spec: task("writer", true, ["discover"]), status: "succeeded", acceptedAttemptId: "written", attempts: [{ ...attempt, id: "written", taskId: "writer", workspaceHash: "baseline", worktree: { directory: path + "/.ultracode/checkout", state: "settled", changes: [] } }] },
+      { spec: task("integration.1", true, ["writer"]), status: "succeeded", acceptedAttemptId: "integrated", attempts: [{ ...attempt, id: "integrated", taskId: "integration.1", workspaceHash: "baseline", candidateHash: host.hash, integrationAppliedHash: host.hash }] },
+      { spec: { ...task("review", false, ["integration.1"]), role: "reviewer", stage: "review" }, status: "succeeded", acceptedAttemptId: "reviewed", attempts: [{ ...attempt, id: "reviewed", taskId: "review", workspaceHash: host.hash, result: { summary: "Needs label choice", needsInput: "Which label?" } }] },
+    ]
+  })
+  const before = engine.get(run.id)!
+  await expect(engine.provideInput(run.id, "First label")).rejects.toThrow("new parallel run")
+  expect(engine.get(run.id)).toEqual(before)
+  expect(host.interruptions).toEqual([])
+})
+
 test("pause drains active work and prevents further dispatch", async () => {
   const run = await start(); install(run, [task("first"), task("second", false, ["first"])])
   await engine.tick(run.id, invocation()); await engine.pause(run.id)
@@ -586,6 +749,22 @@ test("aborted supervisor records recovering instead of claiming active workers s
   expect(engine.get(run.id)!.tasks[0]!.attempts[0]!.status).toBe("running")
   await engine.recover(run.id)
   expect(engine.get(run.id)!.status).toBe("waiting_input")
+  expect(host.launches).toHaveLength(1)
+})
+
+test("supervisor interruption during reconciliation preserves accepted work without completing the workflow", async () => {
+  const run = await start(); install(run, [task("one")])
+  await engine.tick(run.id, invocation())
+  const worker = host.launches[0]!, controller = new AbortController()
+  engine.submit(worker.sessionId, { summary: "Completed investigation", assessments: [{ criterionId: "request", passed: true, explanation: "Inspected required behavior" }] })
+  host.settle(worker.sessionId)
+  const inspect = host.inspect.bind(host)
+  host.inspect = async id => { controller.abort(new Error("Supervisor interrupted during native inspection")); return inspect(id) }
+  await expect(engine.drive(run.id, { ...invocation(), signal: controller.signal })).rejects.toThrow(/interrupted during native inspection/)
+  const saved = engine.get(run.id)!
+  expect(saved.status).toBe("recovering")
+  expect(saved.tasks[0]!.status).toBe("succeeded")
+  expect(saved.tasks[0]!.acceptedAttemptId).toBe(worker.attempt.id)
   expect(host.launches).toHaveLength(1)
 })
 

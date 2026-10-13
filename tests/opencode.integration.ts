@@ -438,6 +438,46 @@ export async function runOpenCodeIntegration() {
       await rpc.control({ text: `cancel ${admitted.id}`, sessionId: parent.id }, options())
       return { runId: admitted.id, expiredAtInjected: true, nativeTool: last.state, launchedWorkers: 0 }
     })
+    await check("native supervisor interruption resumes accepted work without duplicate workers", async () => {
+      const hold = fixture.holdNext("task", "planner")
+      const objective = "Resume a native supervisor with accepted predecessor evidence."
+      const workflow: Workflow = { rationale: "Accepted investigation feeds a dependent held planner", tasks: [
+        { id: "inspect-prefix", title: "Inspect the project", role: "explorer", stage: "discovery", instructions: "Inspect the project without changes", dependencies: [], writes: false },
+        { id: "design-successor", title: "Design from accepted evidence", role: "planner", stage: "design", instructions: "Use the accepted investigation to propose scoped changes", dependencies: ["inspect-prefix"], writes: false },
+      ] }
+      const initiating = await client.session.create({ location, agent: "ultra", model: { providerID: "fixture", id: "test" } })
+      let runId: string | undefined
+      try {
+        await askPrimary(initiating.id, objective, [{ name: "ultra_task", arguments: { objective, mode: "plan", workflow } }])
+        const before = await waitFor("accepted predecessor and held planner", async () => runs(await rpc.status({}, options())).find(run => run.objective === objective), run => !!run?.supervisorSessionId && !!run.tasks[0]?.acceptedAttemptId && fixture.requests.some(request => request.hold === hold && request.state === "held"), 10_000)
+        assert(before?.supervisorSessionId)
+        runId = before.id
+        const accepted = before.tasks[0]!.acceptedAttemptId!, originalSupervisor = before.supervisorSessionId
+        await waitFor("scheduler continues observing a held native worker", async () => runs(await rpc.status({ runId }, options()))[0], run => !!run && run.generation > before.generation, 3_000)
+        await client.session.interrupt({ sessionID: originalSupervisor, resume: false })
+        await client.session.wait({ sessionID: originalSupervisor }, { signal: AbortSignal.timeout(5_000) })
+        assert.equal((await client.session.get({ sessionID: originalSupervisor })).outcome, "interrupted")
+        const stopped = await waitFor("interrupted scheduler records recovery", async () => runs(await rpc.status({ runId }, options()))[0], run => !!run && ["recovering", "waiting_input"].includes(run.status), 3_000)
+        assert(stopped)
+        assert.equal(stopped.tasks[0]!.acceptedAttemptId, accepted)
+        await rpc.control({ text: `resume ${runId}`, sessionId: initiating.id }, options())
+        const resumed = await waitFor("replacement supervisor reuses the active child", async () => runs(await rpc.status({ runId }, options()))[0], run => !!run?.supervisorSessionId && run.supervisorSessionId !== originalSupervisor && run.status === "planning", 10_000)
+        assert(resumed)
+        fixture.release(hold)
+        const ready = await waitFor("recovered plan completes", async () => runs(await rpc.status({ runId }, options()))[0], run => run?.status === "ready", 15_000)
+        assert(ready)
+        assert.equal(ready.tasks[0]!.acceptedAttemptId, accepted)
+        assert(ready.supervisorHistory?.includes(originalSupervisor))
+        assert(ready.tasks.every(task => task.attempts.filter(attempt => attempt.status === "succeeded").length === 1))
+        assert.equal(fixture.requests.filter(request => request.runId === runId && request.taskId === "inspect-prefix" && request.calls.includes("ultra_submit")).length, 1)
+        await client.session.wait({ sessionID: ready.supervisorSessionId! }, { signal: AbortSignal.timeout(10_000) })
+        const delivered = await waitFor("native completion notice is delivered", async () => runs(await rpc.status({ runId }, options()))[0], run => !!run && run.notifications.length > 0 && run.notifications.every(notice => notice.delivered), 5_000)
+        return { runId, status: ready.status, originalSupervisor, replacementSupervisor: ready.supervisorSessionId, acceptedPredecessor: accepted, notificationsDelivered: delivered!.notifications.length, duplicateSuccessfulAttempts: 0 }
+      } finally {
+        fixture.release(hold)
+        if (runId) await rpc.control({ text: `cancel ${runId}`, sessionId: initiating.id }, options()).catch(() => {})
+      }
+    })
     await check("initiating cancellation interrupts a held native worker", async () => {
       const hold = fixture.holdNext("task", "explorer")
       const prelaunch = fixture.holdPrelaunch("researcher")

@@ -8,6 +8,10 @@ const root = process.cwd()
 const allow: Rule[] = [{ action: "*", resource: "*", effect: "allow" }]
 
 describe("workflow permission intersection", () => {
+  test("protects Git administration from scoped writers even with broad ownership", () => {
+    expect(restrictPermission("allow", allow, "implementer", "write", [".git/config"], ["**"], root)).toBe("deny")
+    expect(restrictPermission("allow", allow, "implementer", "edit", ["nested/.git"], ["**"], root)).toBe("deny")
+  })
   test("evaluates native last-match rules while retaining an explicit default", () => {
     const rules: Rule[] = [{ action: "*", resource: "*", effect: "deny" }, { action: "read", resource: "src/*", effect: "allow" }]
     expect(evaluateRules(rules, "read", "src/a.ts")).toBe("allow")

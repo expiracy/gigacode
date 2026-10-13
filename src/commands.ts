@@ -1,8 +1,9 @@
 import { parseConfig, strictRecord } from "./config.ts"
+import { recipeName, type RecipeName } from "./recipes.ts"
 import type { Limits } from "./types.ts"
 
 export type UltraCommand =
-  | { type: "start" | "plan"; task: string }
+  | { type: "start" | "plan"; task: string; recipe?: RecipeName }
   | { type: "run"; id: string; revision: number }
   | { type: "status"; id?: string }
   | { type: "inspect"; id: string; taskId?: string }
@@ -12,7 +13,7 @@ export type UltraCommand =
   | { type: "budget"; id: string; limits: Partial<Limits> }
   | { type: "config" | "on" | "off" }
 
-export const commandUsage = "Usage: /ultracode start|plan <task>; run <id>@<revision>; status [id]; inspect <id> [task]; pause|resume|cancel|export <id>; retry <id> <task>; input <id> <answer>; budget <id> <limits-json>; config|on|off"
+export const commandUsage = "Usage: /ultracode start|plan <task>; plan --recipe <deep-review|bug-investigation|cross-checked-research> <task>; run <id>@<revision>; status [id]; inspect <id> [task]; pause|resume|cancel|export <id>; retry <id> <task>; input <id> <answer>; budget <id> <limits-json>; config|on|off"
 
 function id(value: string | undefined): string {
   if (!value || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)) throw new Error(`Invalid run/task ID. ${commandUsage}`)
@@ -29,6 +30,12 @@ export function parseCommand(text: string): UltraCommand {
   const rest = match[2] ?? ""
   if (verb === "start" || verb === "plan" || verb === "--") {
     if (!rest.trim()) throw new Error(`A task is required. ${commandUsage}`)
+    if (/^--recipe(?:\s|$)/.test(rest)) {
+      if (verb !== "plan") throw new Error("Recipes permit read-only plan mode only")
+      const selection = /^--recipe\s+(\S+)\s+([\s\S]+)$/.exec(rest)
+      if (!selection || !selection[2]!.trim()) throw new Error(`A recipe and task are required. ${commandUsage}`)
+      return { type: "plan", recipe: recipeName(selection[1]), task: selection[2]! }
+    }
     return { type: verb === "--" ? "start" : verb, task: rest }
   }
   const arguments_ = rest ? rest.split(/\s+/) : []

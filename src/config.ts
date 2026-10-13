@@ -8,7 +8,7 @@ export const stages: Stage[] = ["discovery", "design", "implementation", "review
 
 export const defaultConfig: Config = {
   models: { default: "inherit", roles: {}, stages: {} },
-  limits: { workers: 4, runs: 2, attempts: 24, repairRounds: 2, workerMs: 600_000, runMs: 2_700_000, elapsedMs: 86_400_000, steps: 24 },
+  limits: { workers: 4, runs: 2, attempts: 24, repairRounds: 2, workerMs: 600_000, runMs: 2_700_000, elapsedMs: 86_400_000, steps: 24, contextChars: 64_000 },
   checks: [],
   parallelWrites: false,
   autoThreshold: 80,

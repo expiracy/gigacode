@@ -9,7 +9,7 @@ export interface ModelRef { providerID: string; id: string; variant?: string }
 export interface ModelSelection { ref: ModelRef; origin: string; requested: string }
 export interface ModelOptions { default?: string; roles?: Partial<Record<Role, string>>; stages?: Partial<Record<Stage, string>> }
 export interface AvailableModel extends ModelRef { variants: string[]; tools?: boolean }
-export interface Limits { workers: number; runs: number; attempts: number; repairRounds: number; workerMs: number; runMs: number; elapsedMs: number; steps: number }
+export interface Limits { workers: number; runs: number; attempts: number; repairRounds: number; workerMs: number; runMs: number; elapsedMs: number; steps: number; contextChars?: number }
 export interface CheckSpec { id: string; command: string; criterionIds: string[]; timeoutMs?: number }
 export interface Config { models: ModelOptions; limits: Limits; checks: CheckSpec[]; parallelWrites: boolean; autoThreshold: number; prompts?: Partial<Record<Role, string>> }
 export interface Criterion { id: string; description: string; required: boolean; kind: "check" | "assessment" }
@@ -20,7 +20,11 @@ export interface Workflow { rationale: string; tasks: TaskSpec[] }
 export interface Finding { id: string; description: string; blocking: boolean; disposition?: "fixed" | "rejected" | "deferred"; evidence?: string }
 export interface TaskResult { summary: string; proposal?: Plan; findings?: Finding[]; assessments?: { criterionId: string; passed: boolean; explanation: string }[]; artifacts?: string[]; needsInput?: string; [key: string]: unknown }
 export interface CheckEvidence { id: string; attemptId: string; taskId: string; sessionId: string; callId: string; checkId: string; command: string; criterionIds: string[]; cwd: string; startedAt: number; finishedAt: number; exit: number | null; outcome: "passed" | "failed" | "cancelled" | "unknown"; output: string; workspaceHash: string }
-export interface Attempt { id: string; taskId: string; number: number; status: AttemptStatus; ownerEpoch: number; sessionId?: string; promptId?: string; inputHash: string; prompt: string; model: ModelSelection; createdAt: number; startedAt?: number; finishedAt?: number; result?: TaskResult; resultHash?: string; error?: string; workspaceHash: string; candidateHash?: string; checks: CheckEvidence[]; steps: number; tokens?: number; cost?: number }
+export interface ParallelBaseline { commit: string; hash: string; files: Record<string, string> }
+export interface WorktreeChange { path: string; beforeHash?: string; afterHash: string; content: string }
+export interface WorktreeState { directory: string; state: "planned" | "ready" | "settled" | "quarantined"; changes?: WorktreeChange[]; error?: string }
+export interface DependencyResult { taskId: string; attemptId: string; resultHash: string }
+export interface Attempt { id: string; taskId: string; number: number; status: AttemptStatus; ownerEpoch: number; sessionId?: string; promptId?: string; inputHash: string; prompt: string; model: ModelSelection; createdAt: number; startedAt?: number; finishedAt?: number; result?: TaskResult; resultHash?: string; error?: string; workspaceHash: string; candidateHash?: string; checks: CheckEvidence[]; steps: number; tokens?: number; cost?: number; worktree?: WorktreeState; preparationApplied?: boolean; integrationAppliedHash?: string; dependencyResults?: DependencyResult[] }
 export interface Task { spec: TaskSpec; status: TaskStatus; attempts: Attempt[]; acceptedAttemptId?: string }
 export interface Run {
   id: string
@@ -35,6 +39,8 @@ export interface Run {
   intentExpiresAt: number
   objective: string
   mode: "plan" | "execute"
+  recipe?: "deep-review" | "bug-investigation" | "cross-checked-research"
+  parallel?: { baseline: ParallelBaseline; preparationTaskId: string; checkouts: { taskId: string; directory: string; state: "planned" | "ready" | "quarantined"; error?: string }[]; integrationTaskId: string; expectedHash?: string; integratedHash?: string }
   status: RunStatus
   previousStatus?: RunStatus
   phase: "planning" | "execution"
@@ -98,4 +104,7 @@ export interface HostAdapter {
   inspect(sessionId: string): Promise<WorkerSnapshot>
   interrupt(sessionId: string): Promise<void>
   publish(run: Run, id: string, text: string): Promise<void>
+  parallelBaseline?(directory: string): Promise<ParallelBaseline>
+  prepareWriter?(run: Run, attempt: Attempt): Promise<void>
+  captureWriter?(run: Run, attempt: Attempt, task: TaskSpec): Promise<WorktreeChange[]>
 }

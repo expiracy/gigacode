@@ -1,6 +1,17 @@
 import { Schema } from "effect"
 import { roles, stages } from "./config.ts"
-import type { TaskResult } from "./types.ts"
+import type { Attempt, Run, Task, TaskResult } from "./types.ts"
+
+/** Isolated writer claims refer to their captured changes once native integration incorporates them. */
+export function currentResult(run: Run, task: Task, attempt: Attempt): boolean {
+  if (task.status !== "succeeded" || attempt.status !== "succeeded" || task.acceptedAttemptId !== attempt.id) return false
+  const candidate = run.candidateHash ?? run.workspaceHash
+  if ((task.spec.writes ? attempt.candidateHash : attempt.workspaceHash) === candidate) return true
+  if (!task.spec.writes || attempt.worktree?.state !== "settled" || run.parallel?.integratedHash !== candidate) return false
+  const integration = run.tasks.find(value => value.spec.id === run.parallel!.integrationTaskId)
+  const applied = integration?.attempts.find(value => value.id === integration.acceptedAttemptId)
+  return integration?.status === "succeeded" && applied?.status === "succeeded" && applied.integrationAppliedHash === candidate
+}
 
 const text = Schema.String.check(Schema.isPattern(/\S/), Schema.isPattern(/^[^\0]*$/))
 const identifier = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/))
@@ -13,7 +24,7 @@ export const taskSchema = Schema.Struct({
   dependencies: ids.annotate({ description: "IDs of tasks that must finish before this task starts." }),
   writes: Schema.Boolean,
   ownedPaths: Schema.optionalKey(Schema.Array(text).annotate({ description: "Relative project paths or patterns owned by an implementation writer." })),
-  checkIds: Schema.optionalKey(ids.annotate({ description: "Configured check IDs, available only to verification workers." })),
+  checkIds: Schema.optionalKey(ids.annotate({ description: "Explicit configured check IDs for role verifier and stage verification. Missing or empty IDs authorize no command execution. Assign RED checks as well as final verification." })),
   model: Schema.optionalKey(text.annotate({ description: "An explicitly authorized provider/model#variant reference, or inherit." })),
   acceptsFailures: Schema.optionalKey(Schema.Boolean), comparison: Schema.optionalKey(text),
 })

@@ -10,7 +10,7 @@ Prompts, graph revisions, model selections, native session bindings, attempts, o
 
 ## Install globally
 
-Requires Bun **1.3.10 or newer** and OpenCode **2.0.25 or 2.0.26**, either a CLI installation or an explicitly selected bundled executable. Only these exact host versions are accepted; Windows is verified. Git is optional for normal workflows.
+Requires Bun **1.3.10 or newer** and OpenCode **2.0.25, 2.0.26 or 2.0.28**, either a CLI installation or an explicitly selected bundled executable. Only these exact host versions are accepted. Native 2.0.28 compatibility, production integration and isolated parallel workflows are verified on macOS; earlier Windows verification remains recorded in the design history. Git is optional for normal workflows.
 
 ```powershell
 bun install --frozen-lockfile --ignore-scripts
@@ -101,6 +101,26 @@ The older automatic command mode remains explicit opt-in for other primary agent
 /ultracode resume <run-id>
 ```
 
+## Read-only recipes and live progress
+
+Explicit recipes reuse the same graph engine, model settings and permissions:
+
+| Recipe | Work |
+| --- | --- |
+| `deep-review` | Independent behavior and failure/security reviews, followed by evidence-based reconciliation. |
+| `bug-investigation` | Trace the failing path and alternative causes, then explain the root cause and regression strategy. |
+| `cross-checked-research` | Independently establish the primary contract and counterexamples, then reconcile versions, citations and uncertainty. |
+
+```text
+/ultracode plan --recipe deep-review Review the retry handling
+/ultracode plan --recipe bug-investigation Explain the timeout regression
+/ultracode plan --recipe cross-checked-research Compare the supported API versions
+```
+
+In Ultra mode, explicitly ask for the named recipe, or use `ultra_task` with `mode: "plan"` and `recipe`. Recipes cannot be combined with an authored `workflow` or execute mode. A completed report can reach `ready` without manufacturing an implementation proposal; unresolved blocking findings remain `partial`. A justified worker-authored corrective proposal still requires explicit exact-revision execution. Preview a recipe offline with `bun run ultra render --recipe deep-review "Review the public API"`.
+
+In the OpenCode terminal, `/ultracode status [id]` opens a live searchable workflow dialog. It shows task/model/session identities, dependency and permission waits, accepted results, unresolved findings, native evidence, and observed worker usage. Pause, Resume and Cancel operate through the existing initiating-session ownership checks. Open agent session navigates to the selected native worker. Snapshots refresh every two seconds only while the dialog is open, and immediately after controls or reconnect. Historical checks and repaired findings cannot masquerade as current final evidence. Unknown or partially observed usage is labelled explicitly; worker totals exclude unobserved supervisor and auxiliary costs. OpenChamber still lacks the RPC bridge needed to display this native terminal viewer.
+
 ## Models, checks, and prompts
 
 By default, every role inherits the initiating session's captured model and variant. To configure shared defaults, create a JSON file and pass it to the global installer:
@@ -152,7 +172,7 @@ Ultra's terminal viewer is read-only. OpenCode's built-in **Open settings** acti
 
 Model selection order is authorised task override, run stage, run role, effective project stage, effective project role, run default, effective project default, then inheritance. Effective project mappings include inherited global defaults. Model and variant resolve together. Missing models, invalid variants, and known lack of tool support are rejected without fallback. Each attempt saves its resolved choice and origin.
 
-Versioned task prompts explain the role, scope, criteria, configured checks, and typed submission contract. Handoffs limit each narrative summary to 6,000 characters while retaining complete structured findings, assessments, proposals, and evidence references. The full original result remains saved, and accepted design dependencies are included once. This reduces repeated narrative without selecting behaviour by model name; aggregate context budgeting remains a separate proposal.
+Versioned task prompts explain the role, scope, criteria, configured checks, and typed submission contract. Handoffs limit each narrative summary to 6,000 characters while retaining complete saved structured evidence. The rendered initial task prompt has a default aggregate limit of **64,000 characters**, configurable with `limits.contextChars`. Oversized dependencies become explicit saved-result references; bound workers use the paginated read-only `ultra_dependency` tool to retrieve their immutable captured results. Required instructions and criteria are never clipped. If they cannot fit, dispatch stops in `waiting_budget` without a worker attempt; explicitly increase `contextChars` and resume. This bounds the initial handoff rather than every later native conversation token.
 
 For test-first work, proposal workers see the configured check catalogue and can plan a test-writing worker, a verifier recording the expected failure, an implementation worker, and independent final review and verification. Writers edit their owned files; only assigned verifiers execute configured commands. Historical failures remain inspectable, while completion requires evidence against the final workspace. Pending downstream proof makes no assessment claim; an actual failed assessment still prevents success.
 
@@ -172,7 +192,7 @@ OpenChamber 2.2.0 still does not display Ultra's deterministic native slash-comm
 
 The editor shows that entry's explicit options. Ultra's built-in defaults, discovered checks, and `ultracode.json` overrides still apply in the runtime. A native project entry replaces the entire global entry's options; use `ultracode.json` for project overrides that inherit individual global fields. OpenChamber's plugin-options editor does not edit that override file. Save while workflows are settled, and reload OpenCode from OpenChamber to ensure the new settings apply. Saved runs retain their captured settings.
 
-The released OpenChamber 2.2.0 desktop package pins OpenCode 2.0.25; its inspected development revision pins 2.0.26. Ultra accepts both exact hosts. Install Ultra in the configuration profile used by OpenChamber and OpenCode. If OpenChamber itself is launched with `OPENCODE_CONFIG`, its user plugin editor selects that custom file; otherwise it reads the global configuration directory. OpenChamber's generated child configuration leaves that parent profile intact. Remote settings targeting has not been validated. See the [integration record](docs/design.md#change-client-settings--single-command-and-openchamber-configuration) for tested scope and the remaining proposal for dedicated form controls.
+The released OpenChamber 2.2.0 desktop package pins OpenCode 2.0.25; its inspected development revision pins 2.0.26. Those exact hosts remain supported alongside 2.0.28. Install Ultra in the configuration profile used by OpenChamber and OpenCode. If OpenChamber itself is launched with `OPENCODE_CONFIG`, its user plugin editor selects that custom file; otherwise it reads the global configuration directory. OpenChamber's generated child configuration leaves that parent profile intact. Remote settings targeting has not been validated. See the [integration record](docs/design.md#change-client-settings--single-command-and-openchamber-configuration) for tested scope and the remaining proposal for dedicated form controls.
 
 ## Persistence and limits
 
@@ -180,9 +200,11 @@ State lives under the canonical project's `.ultracode/`: SQLite state and events
 
 Default limits are four workers and two runs per project, 24 worker attempts per run, 24 model steps per worker, two repair rounds, ten minutes per worker, 45 minutes of active run time, and a 24-hour elapsed deadline. Permission waits retain their slots and count towards active worker/run deadlines; pausing stops the run clock once active work settles.
 
-One writer is admitted per project; independent read-only tasks can run concurrently. Candidate fingerprints invalidate stale results. Unknown launch or cancellation outcomes retain reservations until native reconciliation establishes settlement. Multiple locations in one OpenCode server share coordination; use one server to manage concurrent runs in a project. Independent processes are fenced and queued, with limited throughput rather than distributed scheduling.
+One execution run owns a project at a time. Writers run serially by default; independent read-only tasks can run concurrently. Candidate fingerprints invalidate stale results. Unknown launch or cancellation outcomes retain reservations until native reconciliation establishes settlement. Multiple locations in one OpenCode server share canonical state and coordination; use one server to manage concurrent runs in a project. Independent processes are fenced and queued, with limited throughput rather than distributed scheduling.
 
-Parallel worktree integration, an editable native settings UI and workflow dashboard, arbitrary JavaScript workflow builders, and dedicated mixed-model panels remain future extensions. A native terminal configuration viewer and command feedback are available. `parallelWrites: true` is rejected. The worktree primitive is tested in the compatibility spike, but production workflows use the single writer policy.
+Set `"parallelWrites": true` in native options or `ultracode.json` to isolate graphs with at least two independent writers. They require a clean committed canonical Git root without submodules or configured Git filters. A generated preparation worker creates fixed recorded checkouts through native permission-checked Git commands, with repository hooks disabled. This avoids OpenCode's worktree-create startup-command shortcut. Workers move to their recorded locations and receive destination permission hooks before the task prompt. A serial native integration worker applies accepted immutable changes; independent review and configured checks run against the final root. A single-writer graph keeps its normal three-worker path.
+
+The initial parallel mode supports disjoint plain UTF-8 additions and modifications, with a 2 MB captured-text limit per writer. Dependent writing sequences, overlapping paths, deletes, binaries, symlinks, hardlinks, mode changes, and changes omitted by the source manifest are refused; partial worktrees remain inspectable. Retrying or resetting an isolated writer requires a new run. Root freshness is checked before and after native operations; the host's native write primitive does not provide an atomic compare-and-write guarantee against concurrent external edits during permission waits. Keep external edits settled while integrating. Worktrees are never force-removed. Editable native settings, a dedicated graph panel, arbitrary JavaScript builders and mixed-model comparison panels remain future extensions.
 
 The trace covers rendered prompts and supported host observations. It cannot expose private model reasoning or guarantee an exact provider request or complete native event replay: this CLI does not retain native event payload history. Recovery records that gap and reconciles live session snapshots. This implements a similar public workflow pattern to Claude; output quality and feature parity have not been established.
 
@@ -194,13 +216,26 @@ Models submit results through an explicit nested tool schema, with task-specific
 bun run typecheck
 bun run test
 bun run test:integration
+bun run test:parallel
 ```
 
-The native integration suite uses the global installer with isolated configuration, homes, Git roots, databases, and a local scripted model provider, with no paid model calls. Its 21 checks cover global availability, overrides and state isolation across two projects, command feedback, configuration RPC, production registration, plan and execution, role restrictions, native check provenance, export, restart, intents, cancellation, automatic mode, and unavailable models. Ultra-mode checks cover ordinary configuration/status results, duplicate admission, saved-plan execution, ownership, forged child/Build calls, and selection changes before admission. The [agent-mode delivery record](docs/design.md#change-agent-mode--native-primary-workflow-entry) records both native versions, global installation, and the actual OpenChamber picker. Actual terminal rendering has its [separate delivery record](docs/design.md#change-command-feedback--visible-terminal-results-and-configuration). Evidence and logs remain under `.spike/integration-<timestamp>-<id>/`.
+`test:parallel` uses a private scripted-provider host to exercise permission-checked Git preparation, actual moved native subagents, canonical shared state, exact integration and fresh root verification. It deliberately configures a native startup marker and asserts that the preparation path does not run it. Set `OPENCODE_SPIKE_BIN` to the matching installed host as for the production integration suite.
+
+## Opt-in model evaluations
+
+The evaluation runner attaches to an explicitly selected loopback OpenCode server and creates isolated scratch projects. It covers bug fixes, features, conflicting-source research, read-only planning and interruption after accepted predecessor work. Independent code oracles, file-scope checks and native evidence determine automatic results; the generated Markdown rubric leaves prose quality for human review. Reports retain failed attempts, cleanup failures and unavailable accounting.
+
+```text
+bun run test:evaluation --url http://127.0.0.1:4096 --model provider/model#variant --budget '{"attempts":12,"steps":12,"workerMs":60000,"runMs":180000}' --max-cost 1
+```
+
+Replace the endpoint/model with your connected host and set your own runtime bounds and observed-cost allowance. All four arguments are required before any connection or model prompt. `--scenario bugfix|feature|research|planning|interrupted` selects one fixture. Model settings and variants are checked before dispatch. `--max-cost` stops work at observed spend; in-flight and auxiliary requests can exceed that observation, so it is not a hard billing ceiling. Default unit tests and native scripted integration make no paid calls. This change supplies the harness; no new paid-model quality result is claimed.
+
+The native integration suite uses the global installer with isolated configuration, homes, Git roots, databases, and a local scripted model provider, with no paid model calls. Its 23 checks cover global availability, overrides and state isolation across two projects, command feedback, configuration RPC, production registration, plan and execution, role restrictions, native check provenance, export, restart, intents, cancellation, supervisor interruption and recovery, automatic mode, and unavailable models. The recovery check preserves accepted investigation, resumes a held dependent worker without duplicates, and confirms completion-notice delivery. Ultra-mode checks cover ordinary configuration/status results, duplicate admission, saved-plan execution, ownership, forged child/Build calls, and selection changes before admission. The [latest validation record](docs/design.md#change-installed-gpt-validation--opencode-2028-and-live-workflows) records installation, terminal checks, real GPT outcomes and limits. Evidence and logs remain under `.spike/integration-<timestamp>-<id>/`.
 
 `bun run spike` reproduces the earlier 22-probe host compatibility matrix and requires Git. Set `OPENCODE_SPIKE_BIN` if the matching executable is outside the normal Windows npm location or `PATH`.
 
-Set `OPENCODE_TEST_VERSION=2.0.26` together with its matching `OPENCODE_SPIKE_BIN` to run the spike or production integration suite against that host. The default remains 2.0.25. For the optional OpenChamber settings integration, point `OPENCHAMBER_SOURCE` at an OpenChamber source checkout with its dependencies installed, then run `bun run test:openchamber`. This exercises OpenChamber's real plugin-settings reader/writer against an isolated OpenCode host; it does not render the OpenChamber UI.
+Set `OPENCODE_TEST_VERSION=2.0.26` or `2.0.28` together with its matching `OPENCODE_SPIKE_BIN` to run the spike or production integration suite against that host. The default remains 2.0.25. For the optional OpenChamber settings integration, point `OPENCHAMBER_SOURCE` at an OpenChamber source checkout with its dependencies installed, then run `bun run test:openchamber`. This exercises OpenChamber's real plugin-settings reader/writer against an isolated OpenCode host; it does not render the OpenChamber UI.
 
 Offline inspection is also available:
 

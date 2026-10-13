@@ -7,6 +7,8 @@ import { ArtifactStore } from "../src/artifacts.ts"
 import { loadProjectConfig, parseConfigOptions } from "../src/config.ts"
 import { SQLiteStore, sanitizeEventData } from "../src/store.ts"
 import { defaultExecutionPlan, defaultPlanningPlan } from "../src/workflow.ts"
+import { recipeName, recipeWorkflow, type RecipeName } from "../src/recipes.ts"
+import { validatePlan } from "../src/graph.ts"
 import { supportedVersions } from "../src/compatibility.ts"
 import { globalConfigDirectory, parseNativeConfiguration, productionPluginDirectory } from "./install.ts"
 import type { Config, Run } from "../src/types.ts"
@@ -15,7 +17,7 @@ export const localHelp = `Ultra Open Code local CLI
 
 bun scripts/cli.ts help
 bun scripts/cli.ts validate [--config <ultra-options.json>] [--global-config <directory>]
-bun scripts/cli.ts render [--execute] [--global-config <directory>] <objective>
+bun scripts/cli.ts render [--execute | --recipe <name>] [--global-config <directory>] <objective>
 bun scripts/cli.ts list
 bun scripts/cli.ts status [run-id]
 bun scripts/cli.ts inspect <run-id> [task-id]
@@ -25,6 +27,7 @@ Every command accepts --project <directory>. Status reads saved snapshots; it do
 not reconnect, dispatch workers, or modify run state. Use /ultracode inside OpenCode
 to start, pause, resume, cancel, retry, or execute a workflow. validate checks option
 syntax; model availability and native permissions are checked in the live host.
+Read-only recipes: deep-review, bug-investigation, cross-checked-research.
 
 validate and render read global OpenCode plugin options and optional ultracode.json;
 --config is applied last. A native project registration replaces the same global
@@ -95,6 +98,7 @@ export async function executeLocalCommand(args: string[], options: { directory?:
     let globalPath: string | undefined
     let statePath: string | undefined
     let execute = false
+    let recipe: RecipeName | undefined
     for (let index = 0; index < args.length; index++) {
       const value = args[index]!
       if (value === "--project" || value === "--config" || value === "--state" || value === "--global-config") {
@@ -104,11 +108,14 @@ export async function executeLocalCommand(args: string[], options: { directory?:
         else if (value === "--config") configPath = next
         else if (value === "--global-config") globalPath = next
         else statePath = next
+      } else if (value === "--recipe") {
+        recipe = recipeName(args[++index])
       } else if (value === "--execute") execute = true
       else if (value.startsWith("--")) throw new Error(`Unknown local option: ${value}`)
       else input.push(value)
     }
     const [verb = "help", ...arguments_] = input
+    if (recipe && (verb !== "render" || execute)) throw new Error("--recipe is supported only by read-only render")
     if (statePath && !["list", "status", "inspect", "export"].includes(verb)) throw new Error("--state is supported only by list, status, inspect, and export")
     if (verb === "help") return { exitCode: 0, output: localHelp }
     directory = await realpath(resolve(directory))
@@ -121,7 +128,8 @@ export async function executeLocalCommand(args: string[], options: { directory?:
       const objective = arguments_.join(" ")
       const planning = defaultPlanningPlan(objective)
       const config = await configuration(directory, resolve(globalPath ?? options.configDirectory ?? globalConfigDirectory()), configPath)
-      return { exitCode: 0, output: json(execute ? defaultExecutionPlan(objective, planning.criteria, config.checks) : planning) }
+      const rendered = recipe ? validatePlan({ ...recipeWorkflow(recipe, objective), revision: 1, criteria: planning.criteria }, "plan", config) : execute ? defaultExecutionPlan(objective, planning.criteria, config.checks) : planning
+      return { exitCode: 0, output: json(rendered) }
     }
     if (!["list", "status", "inspect", "export"].includes(verb)) throw new Error(`Unknown local command: ${verb}. Start and control workflows through /ultracode inside OpenCode.`)
     if (configPath || globalPath || execute) throw new Error("Snapshot commands accept --project and --state only")

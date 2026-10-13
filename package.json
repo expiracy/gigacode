@@ -24,6 +24,8 @@
     "test": "bun test tests/*.test.ts spike/*.test.ts",
     "test:integration": "bun run tests/opencode.integration.ts",
     "test:openchamber": "bun run tests/openchamber.integration.ts",
+    "test:evaluation": "bun run tests/model-evaluation.ts",
+    "test:parallel": "bun run tests/parallel.integration.ts",
     "install:global": "bun run scripts/install.ts --global",
     "install:project": "bun run scripts/install.ts --local",
     "ultra": "bun run scripts/cli.ts",

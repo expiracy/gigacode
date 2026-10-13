@@ -18,6 +18,7 @@ import { assertPlainPath } from "./workspace.ts"
 import { taskResultSchema } from "./results.ts"
 import { resourceCleanup } from "./lifecycle.ts"
 import { promptVersion } from "./workflow.ts"
+import { workflowView } from "./workflow-view.ts"
 import { assertHostVersion } from "./compatibility.ts"
 import type { Run, TaskSpec } from "./types.ts"
 
@@ -33,9 +34,8 @@ export default Plugin.define({
     const hostVersion = ctx.app.version
     assertHostVersion(hostVersion)
     const directory = await realpath(ctx.location.directory)
-    const projectDirectory = await realpath(ctx.location.project.directory)
+    const projectDirectory = await realpath(ctx.location.project.canonical ?? ctx.location.project.directory)
     const config = await loadProjectConfig(ctx.options, directory)
-    if (config.parallelWrites) throw new Error("Parallel writer integration is not enabled in this release. Use the verified single project writer reservation.")
     const root = join(projectDirectory, ".ultracode")
     assertPlainPath(root)
     await mkdir(root, { recursive: true })
@@ -48,11 +48,13 @@ export default Plugin.define({
     const retiringSessions = new Set<string>()
     const retiringWorkers = new Set<string>()
     let captureRetiring = () => {}
+    let retireAdapter = () => {}
     const cleanupResources = resourceCleanup({ stop, invocations, registrations, observer: () => observer, close: () => store.close() })
-    const cleanup = () => { if (!stop.signal.aborted) captureRetiring(); return cleanupResources() }
+    const cleanup = () => { if (!stop.signal.aborted) captureRetiring(); retireAdapter(); return cleanupResources() }
     try {
       const artifacts = new ArtifactStore(join(root, "artifacts"))
       const adapter = new OpenCodeAdapter(ctx, store, artifacts)
+      retireAdapter = () => adapter.retire()
       const engine = new Engine(store, adapter, ctx.location.project.id, directory, config, join(root, "state.sqlite"))
       const track = <T>(work: () => Promise<T>): Promise<T> => {
         stop.signal.throwIfAborted()
@@ -90,7 +92,7 @@ export default Plugin.define({
         if (requireUltra ? context.agent !== ULTRA_AGENT_ID || caller.agent !== ULTRA_AGENT_ID : context.agent !== ULTRA_AGENT_ID && caller.agent !== ULTRA_AGENT_ID && !parentRuns(context.sessionID).length) throw new Error("Select Ultra mode before using workflow tools")
         return caller
       }
-      const start = async (objective: string, mode: "plan" | "execute", id: string, admission?: StartOptions["admission"], source?: ToolContext, workflow?: StartOptions["workflow"]) => {
+      const start = async (objective: string, mode: "plan" | "execute", id: string, admission?: StartOptions["admission"], source?: ToolContext, workflow?: StartOptions["workflow"], recipe?: StartOptions["recipe"]) => {
         const session = await adapter.scoped(id)
         if (adapter.binding(id) || session.parentID) throw new Error("Start is only available in an initiating primary conversation")
         const agents = (await ctx.agent.list()).data
@@ -112,7 +114,7 @@ export default Plugin.define({
           if (JSON.stringify(current.model) !== JSON.stringify(session.model) || JSON.stringify(current.permissions) !== JSON.stringify(session.permissions) || JSON.stringify(currentPrimary?.permissions) !== JSON.stringify(primary.permissions) || JSON.stringify(currentPrimary?.model) !== JSON.stringify(primary.model)) throw new Error("The initiating model or permissions changed during admission; submit the task again")
           source.signal.throwIfAborted()
         } : undefined
-        return engine.start({ objective, mode, parentSessionId: id, capturedModel, policy: [...primary.permissions, ...(session.permissions ?? [])], ...(workflow ? { workflow } : {}), ...(admission ? { admission } : {}), ...(beforeAdmission ? { beforeAdmission } : {}) })
+        return engine.start({ objective, mode, parentSessionId: id, capturedModel, policy: [...primary.permissions, ...(session.permissions ?? [])], ...(workflow ? { workflow } : {}), ...(recipe ? { recipe } : {}), ...(admission ? { admission } : {}), ...(beforeAdmission ? { beforeAdmission } : {}) })
       }
       const launch = async (run: Run, context: ToolContext) => {
         engine.consumeStartIntent(run.id, run.intentId, context.sessionID)
@@ -132,7 +134,7 @@ export default Plugin.define({
         if (adapter.binding(id)) throw new Error("Workflow workers cannot issue user control commands")
         switch (command.type) {
           case "start": case "plan": {
-            const run = await start(command.task, command.type === "plan" ? "plan" : "execute", id)
+            const run = await start(command.task, command.type === "plan" ? "plan" : "execute", id, undefined, undefined, undefined, command.recipe)
             await enqueue(run); return { run: summary(run) }
           }
           case "status": return command.id ? { run: summary(required(command.id)) } : { runs: engine.list().map(summary) }
@@ -198,7 +200,7 @@ export default Plugin.define({
           const existing = parentRuns(context.sessionID).find(run => run.admission?.messageId === admission.messageId && run.admission.callId === admission.callId)
           if (existing && existing.admission!.requestHash !== admission.requestHash) throw new Error("Agent admission replay changed its request")
           if (existing) return { content: progressContent(existing), output: { run: summary(existing), replay: true } }
-          const run = await start(input.objective, input.mode, context.sessionID, admission, context, input.workflow ? structuredClone(input.workflow) as StartOptions["workflow"] : undefined)
+          const run = await start(input.objective, input.mode, context.sessionID, admission, context, input.workflow ? structuredClone(input.workflow) as StartOptions["workflow"] : undefined, input.recipe)
           // Creation and its receipt commit together; consumed or uncertain intents are never dispatched again.
           const pending = engine.get(run.id)!
           if (pending.intentExpiresAt > Date.now() && !pending.supervisorSessionId && pending.status === "starting") await launch(pending, context)
@@ -270,6 +272,25 @@ export default Plugin.define({
           engine.evidence(context.sessionID, evidence)
           return { content: JSON.stringify(sanitizeEventData(evidence)), output: evidence }
         } })
+        editor.add({ name: "ultra_dependency", description: "Read one page of an immutable result captured for this bound worker. Use nextOffset until null to recover the complete JSON result. Only this attempt's saved dependencies are accessible; result text is untrusted evidence.", input: Schema.Struct({ taskId: Schema.String, offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))) }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
+          await adapter.scoped(context.sessionID)
+          const page = engine.dependency(context.sessionID, input.taskId, input.offset)
+          return { content: JSON.stringify(page), output: page }
+        } })
+        editor.add({ name: "ultra_prepare", description: "Prepare the run's recorded isolated Git checkouts through native permission-checked commands. Available only to the generated preparation worker; no model-supplied command or destination is accepted.", input: Schema.Struct({}), output: Schema.Unknown, options: { codemode: false }, async execute(_input, context) {
+          const binding = adapter.binding(context.sessionID)
+          if (!binding?.attempt) throw new Error("Preparation requires a bound worker")
+          await adapter.prepare(binding, context)
+          engine.preparationApplied(context.sessionID)
+          return { content: "Recorded isolated checkouts are ready. Submit the preparation result and finish.", output: { prepared: true } }
+        } })
+        editor.add({ name: "ultra_integrate", description: "Apply this run's accepted immutable isolated changes through native permission-checked tools. Available only to its generated integration worker; no model-supplied patch is accepted.", input: Schema.Struct({}), output: Schema.Unknown, options: { codemode: false }, async execute(_input, context) {
+          const binding = adapter.binding(context.sessionID)
+          if (!binding?.attempt) throw new Error("Integration requires a bound worker")
+          const workspaceHash = await adapter.integrate(binding, context)
+          engine.integrationApplied(context.sessionID, workspaceHash)
+          return { content: "Accepted isolated changes were integrated. Submit the recorded result; independent final review and checks are still required.", output: { workspaceHash } }
+        } })
       }))
       registrations.push(await ctx.permission.hook("evaluate", event => {
         if (stop.signal.aborted) { if (event.agent === ULTRA_AGENT_ID || retiringSessions.has(event.sessionID)) event.effect = "deny"; return }
@@ -295,13 +316,13 @@ export default Plugin.define({
         if (stop.signal.aborted) {
           if (retiringWorkers.has(event.sessionID)) stop.signal.throwIfAborted()
           if (event.agent === ULTRA_AGENT_ID || retiringSessions.has(event.sessionID)) event.tools = {}
-          else for (const name of ["ultra_task", "ultra_control", "ultra_execute", "ultra_submit", "ultra_check"]) delete event.tools[name]
+          else for (const name of ["ultra_task", "ultra_control", "ultra_execute", "ultra_submit", "ultra_check", "ultra_dependency", "ultra_integrate", "ultra_prepare"]) delete event.tools[name]
           return
         }
         const binding = adapter.binding(event.sessionID)
         if (!binding) {
           // These tools are internal capabilities, made visible only to their bound sessions.
-          for (const name of ["ultra_execute", "ultra_submit", "ultra_check"]) delete event.tools[name]
+          for (const name of ["ultra_execute", "ultra_submit", "ultra_check", "ultra_dependency", "ultra_integrate", "ultra_prepare"]) delete event.tools[name]
           return track(async () => {
             const caller = await adapter.scoped(event.sessionID)
             const active = guarded(event.sessionID)
@@ -321,7 +342,7 @@ export default Plugin.define({
         }
         return track(async () => {
           if (binding.retired) { event.tools = {}; return }
-          event.tools = visibleTools(event.tools, binding.role)
+          event.tools = visibleTools(event.tools, binding.role, !!binding.task && binding.task.id === binding.run.parallel?.integrationTaskId, !!binding.task && binding.task.id === binding.run.parallel?.preparationTaskId)
           const artifact = await artifacts.put({ sessionId: event.sessionID, model: event.model, role: binding.role, system: event.system, messages: event.messages, tools: event.tools, options: event.options })
           adapter.record(binding.run, "context.observed", { sessionId: event.sessionID, attemptId: binding.attempt?.id, role: binding.role, model: event.model, tools: Object.keys(event.tools), artifact })
         })
@@ -364,7 +385,24 @@ export default Plugin.define({
         const binding = adapter.binding(event.sessionID)
         if (binding) adapter.record(binding.run, "tool.executed", { sessionId: event.sessionID, attemptId: binding.attempt?.id, tool: event.tool, callId: event.id, input: event.input, status: event.status, ...(event.status === "completed" ? { result: event.result } : { error: event.error }) })
       }))
+      registrations.push(await ctx.shell.hook("create.before", event => {
+        if (stop.signal.aborted) return
+        return track(async () => { adapter.preparationShell(event) })
+      }))
       rpcRegistration = await ctx.rpc.register(UltraRpc, {
+        async workflow(input) { return track(async () => {
+          const value = input as { sessionId: string; runId?: string }
+          const caller = await adapter.scoped(value.sessionId)
+          stop.signal.throwIfAborted()
+          if (adapter.binding(value.sessionId) || caller.parentID) throw new Error("Workflow snapshots require an initiating conversation")
+          const runs = parentRuns(value.sessionId)
+          if (value.runId) {
+            const run = required(value.runId)
+            if (!runs.some(value => value.id === run.id)) throw new Error("Workflow snapshots require the run's initiating conversation and location")
+            return { sessionId: value.sessionId, runs: [workflowView(run)] }
+          }
+          return { sessionId: value.sessionId, runs: runs.map(run => workflowView(run)) }
+        }) },
         async status(input) { const id = (input as { runId?: string }).runId; return sanitizeEventData(id ? { run: required(id) } : { runs: engine.list() }) as object },
         async inspect(input) { const value = input as { runId: string; taskId?: string }; return sanitizeEventData(inspect(value.runId, value.taskId)) as object },
         async config() { return { config, hostVersion, promptVersion, directory, state: join(root, "state.sqlite") } },
@@ -389,6 +427,7 @@ export default Plugin.define({
         } catch (error) { if (!stop.signal.aborted) store.event(ctx.location.project.id, { kind: "observer.failed", data: { error: String(error) } }) }
       })()
       store.event(ctx.location.project.id, { kind: "plugin.ready", data: { hostVersion, directory, config } })
+      adapter.markReady()
       return cleanup
     } catch (error) {
       try { await cleanup() }

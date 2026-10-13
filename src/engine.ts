@@ -3,7 +3,10 @@ import { resolve } from "node:path"
 import { parseConfig, resolveModel, strictRecord } from "./config.ts"
 import { validateExecutionCoverage, validatePlan } from "./graph.ts"
 import { parseTaskResult } from "./results.ts"
-import { defaultExecutionPlan, defaultPlanningPlan, promptVersion, renderTaskPrompt } from "./workflow.ts"
+import { ContextBudgetError, defaultExecutionPlan, defaultPlanningPlan, promptVersion, renderTaskPrompt } from "./workflow.ts"
+import { integrationChanges, worktreeDirectory } from "./worktrees.ts"
+import { dependencyPage } from "./dependencies.ts"
+import { recipeName, recipeWorkflow } from "./recipes.ts"
 import { NoLaunchError, SettledLaunchError, UnsettledLaunchError } from "./types.ts"
 import type { Attempt, CheckEvidence, Config, HostAdapter, Invocation, Lease, Limits, ModelOptions, ModelRef, Plan, Rule, Run, Store, Task, TaskResult, TaskSpec, Workflow } from "./types.ts"
 
@@ -43,6 +46,7 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 export interface StartOptions {
   objective: string; mode: "plan" | "execute"; parentSessionId: string; capturedModel: ModelRef; policy: Rule[]; modelOptions?: ModelOptions
   workflow?: Workflow
+  recipe?: Run["recipe"]
   admission?: Run["admission"]
   beforeAdmission?: () => Promise<void>
 }
@@ -140,18 +144,22 @@ export class Engine {
   async start(options: StartOptions): Promise<Run> {
     if (!options.objective.trim() || !options.parentSessionId) throw new Error("Objective and initiating session are required")
     const { objective, mode, parentSessionId } = options, admission = structuredClone(options.admission)
+    const recipe = options.recipe === undefined ? undefined : recipeName(options.recipe)
+    if (recipe && (mode !== "plan" || options.workflow !== undefined)) throw new Error("Recipes require plan mode and cannot be combined with workflow")
     const capturedModel = structuredClone(options.capturedModel), modelOptions = structuredClone(options.modelOptions ?? {})
     const config = structuredClone(this.config), policy = structuredClone(options.policy)
     const planning = defaultPlanningPlan(objective)
     const execution = defaultExecutionPlan(objective, planning.criteria, config.checks)
-    const workflow = options.workflow === undefined ? undefined : strictRecord(options.workflow, ["rationale", "tasks"], "workflow")
-    const initial = workflow ? validatePlan({ revision: 1, criteria: execution.criteria, rationale: workflow.rationale, tasks: workflow.tasks }, mode, config, execution.criteria, this.authorizedModels({ capturedModel, modelOptions })) : validatePlan(planning, "plan", config, planning.criteria)
+    const requestedWorkflow = recipe ? recipeWorkflow(recipe, objective) : options.workflow
+    const workflow = requestedWorkflow === undefined ? undefined : strictRecord(requestedWorkflow, ["rationale", "tasks"], "workflow")
+    let initial = workflow ? validatePlan({ revision: 1, criteria: execution.criteria, rationale: workflow.rationale, tasks: workflow.tasks }, mode, config, execution.criteria, this.authorizedModels({ capturedModel, modelOptions })) : validatePlan(planning, "plan", config, planning.criteria)
     if (workflow && mode === "execute") validateExecutionCoverage(initial, config)
     const workspaceHash = await this.host.workspace(this.directory)
     const now = Date.now()
     const run: Run = {
       id: id("run"), projectId: this.projectId, directory: this.directory, parentSessionId,
       ...(admission ? { admission } : {}),
+      ...(recipe ? { recipe } : {}),
       intentId: id("intent"), intentExpiresAt: now + 300_000, objective, mode,
       status: "starting", phase: workflow && mode === "execute" ? "execution" : "planning", revision: initial.revision, plans: [initial],
       tasks: initial.tasks.map(spec => ({ spec, status: "pending", attempts: [] })),
@@ -159,6 +167,10 @@ export class Engine {
       capturedModel, modelOptions, config, policy, workspaceHash,
       createdAt: now, updatedAt: now, activeMs: 0, repairRound: 0, continuation: 0, ownerEpoch: 0, generation: 0,
       errors: [], notifications: [],
+    }
+    if (run.phase === "execution") {
+      const prepared = await this.parallelPlan(run, initial)
+      initial = prepared.plan; run.parallel = prepared.parallel; run.plans = [initial]; run.tasks = initial.tasks.map(spec => ({ spec, status: "pending", attempts: [] }))
     }
     // Resolve every initial selection before admitting work; availability is never guessed or silently changed.
     const catalog = await this.host.models()
@@ -174,7 +186,7 @@ export class Engine {
         if (runs.some(saved => saved.parentSessionId === run.parentSessionId && (!terminalRuns.has(saved.status) || busy(saved)))) throw new Error("This conversation already has an active workflow; inspect or control the existing run")
       }
       if (runs.filter(saved => !terminalRuns.has(saved.status)).length >= config.limits.runs) throw new Error("Active run capacity is exhausted")
-      if (mode === "execute" && !config.parallelWrites && runs.some(saved => saved.mode === "execute" && (!terminalRuns.has(saved.status) || busy(saved)))) {
+      if (mode === "execute" && runs.some(saved => saved.mode === "execute" && (!terminalRuns.has(saved.status) || busy(saved)))) {
         throw new Error("Another execution run owns the project writer reservation")
       }
       runs.push(run)
@@ -182,6 +194,49 @@ export class Engine {
     })
     if (admittedId === run.id) this.audit(run.id, "run.admitted", { mode: run.mode, objective: run.objective, intentId: run.intentId })
     return this.required(admittedId)
+  }
+
+  private async parallelPlan(run: Run, plan: Plan): Promise<{ plan: Plan; parallel?: Run["parallel"] }> {
+    if (!run.config.parallelWrites) return { plan }
+    const writers = plan.tasks.filter(task => task.writes), writerIds = new Set(writers.map(task => task.id)), byId = new Map(plan.tasks.map(task => [task.id, task]))
+    if (writers.length < 2) return { plan }
+    if (!this.host.parallelBaseline || !this.host.prepareWriter || !this.host.captureWriter) throw new Error("The host adapter does not support verified parallel worktrees")
+    const afterWriter = (task: TaskSpec): boolean => task.dependencies.some(id => writerIds.has(id) || afterWriter(byId.get(id)!))
+    if (writers.some(afterWriter)) throw new Error("Parallel writers require independent implementation tasks; use serial mode for dependent writers")
+    const integrationTaskId = `integration.${plan.revision}`, preparationTaskId = `preparation.${plan.revision}`
+    if (byId.has(integrationTaskId) || byId.has(preparationTaskId)) throw new Error("The plan uses a reserved parallel task identity")
+    const baseline = await this.host.parallelBaseline(run.directory)
+    if (baseline.hash !== run.workspaceHash) throw new Error("Parallel baseline changed during admission")
+    const ownedPaths = [...new Set(writers.flatMap(task => task.ownedPaths ?? []))]
+    const preparation: TaskSpec = { id: preparationTaskId, title: "Prepare isolated worktrees", role: "implementer", stage: "implementation", instructions: "Call ultra_prepare({}) exactly once to prepare the recorded isolated worktrees through the fixed permission-checked native Git command. Then submit its recorded outcome through ultra_submit. Do not run commands or edit files directly. Report a denied or failed preparation honestly; partial worktrees are retained.", dependencies: [], writes: true, ownedPaths }
+    const integration: TaskSpec = { id: integrationTaskId, title: "Integrate isolated changes", role: "implementer", stage: "implementation", instructions: "Call ultra_integrate({}) exactly once to apply the accepted immutable writer changes through native tools. Then submit its recorded outcome through ultra_submit. Do not edit files directly. If integration is refused, report the exact conflict or freshness error; the source and worktrees are retained.", dependencies: writers.map(task => task.id), writes: true, ownedPaths }
+    const expanded = { ...plan, tasks: [preparation, ...plan.tasks.map(task => writerIds.has(task.id) ? { ...task, dependencies: [...task.dependencies, preparationTaskId] } : afterWriter(task) ? { ...task, dependencies: [...task.dependencies, integrationTaskId] } : task), integration] }
+    if (expanded.tasks.length > run.config.limits.attempts) throw new Error("Parallel integration exceeds the worker attempt budget")
+    validateExecutionCoverage(expanded, run.config)
+    return { plan: expanded, parallel: { baseline, integrationTaskId, preparationTaskId, checkouts: writers.map(task => ({ taskId: task.id, directory: worktreeDirectory(run, { taskId: task.id, number: 1 }), state: "planned" })) } }
+  }
+
+  preparationApplied(sessionId: string): void {
+    const { run, task, attempt } = this.attribution(sessionId)
+    if (task.spec.id !== run.parallel?.preparationTaskId) throw new Error("Preparation evidence requires the bound preparation worker")
+    this.change(run.id, saved => {
+      saved.tasks.find(task => task.spec.id === attempt.taskId)!.attempts.find(item => item.id === attempt.id)!.preparationApplied = true
+      for (const checkout of saved.parallel!.checkouts) checkout.state = "ready"
+    })
+    this.audit(run.id, "preparation.applied", { directories: run.parallel.checkouts.map(checkout => checkout.directory) }, attempt)
+  }
+
+  integrationApplied(sessionId: string, workspaceHash: string): void {
+    const { run, task, attempt } = this.attribution(sessionId)
+    if (task.spec.id !== run.parallel?.integrationTaskId || workspaceHash !== run.parallel.expectedHash) throw new Error("Integration evidence does not match the accepted writer changes")
+    this.change(run.id, saved => { saved.tasks.find(task => task.spec.id === attempt.taskId)!.attempts.find(item => item.id === attempt.id)!.integrationAppliedHash = workspaceHash })
+    this.audit(run.id, "integration.applied", { workspaceHash }, attempt)
+  }
+
+  dependency(sessionId: string, taskId: string, offset = 0) {
+    const { run, attempt } = this.attribution(sessionId), page = dependencyPage(run, attempt, taskId, offset)
+    this.audit(run.id, "dependency.retrieved", { taskId, sourceAttemptId: page.attemptId, offset, nextOffset: page.nextOffset }, attempt)
+    return page
   }
 
   consumeStartIntent(runId: string, intentId: string, parentSessionId: string): void {
@@ -278,6 +333,7 @@ export class Engine {
       for (;;) {
         invocation.signal.throwIfAborted()
         const run = await this.tick(runId, invocation, this.heldLease)
+        invocation.signal.throwIfAborted()
         if (terminalRuns.has(run.status) || ["paused", "waiting_input", "waiting_budget"].includes(run.status)) return run
         await abortableDelay(100, invocation.signal)
       }
@@ -299,6 +355,7 @@ export class Engine {
       if (terminalRuns.has(run.status) || ["paused", "waiting_input", "waiting_budget"].includes(run.status)) { await this.deliver(runId); return this.required(runId) }
       this.change(runId, saved => { saved.ownerEpoch = lease.epoch }, lease)
       await this.reconcile(runId, lease)
+      invocation.signal.throwIfAborted()
       run = this.required(runId)
       if (run.status === "recovering") {
         // This fresh, bound invocation proves that the old driver has drained and its owner is live.
@@ -338,8 +395,20 @@ export class Engine {
         invocation.signal.throwIfAborted()
         run = this.required(runId)
         const spec = candidate.spec
+        const isolated = !!run.parallel && run.repairRound === 0 && spec.writes && spec.id !== run.parallel.integrationTaskId && spec.id !== run.parallel.preparationTaskId
         const occupied = this.list().flatMap(saved => saved.tasks.flatMap(task => task.attempts.filter(attempt => activeAttempts.has(attempt.status)).map(() => task)))
-        if (occupied.length >= run.config.limits.workers || spec.writes && !run.config.parallelWrites && occupied.some(task => task.spec.writes)) continue
+        if (occupied.length >= run.config.limits.workers || spec.writes && !isolated && occupied.some(task => task.spec.writes)) continue
+        if (run.parallel && spec.id === run.parallel.integrationTaskId) {
+          try {
+            const expected = integrationChanges(run)
+            if (await this.host.workspace(run.directory) !== run.parallel.baseline.hash) throw new Error("Source checkout changed before integration; user changes and worktrees were preserved")
+            this.change(runId, saved => { saved.parallel!.expectedHash = expected.hash }, lease)
+            run = this.required(runId)
+          } catch (error) {
+            this.change(runId, saved => { saved.tasks.find(task => task.spec.id === spec.id)!.status = "blocked"; saved.status = "waiting_input"; saved.errors.push(String(error)) }, lease)
+            this.audit(runId, "integration.blocked", { error: String(error) }); return this.required(runId)
+          }
+        }
         const inputWorkspaceHash = workspaceHash ??= await this.host.workspace(run.directory)
         const model = resolveModel(spec, run, catalog)
         let reservation: Attempt | undefined
@@ -348,7 +417,7 @@ export class Engine {
           if (task.status !== "pending" || !["planning", "running", "starting"].includes(saved.status)) return
           const occupied = runs.flatMap(item => item.tasks.flatMap(task => task.attempts.filter(attempt => activeAttempts.has(attempt.status))))
           if (occupied.length >= saved.config.limits.workers) return
-          if (spec.writes && !saved.config.parallelWrites && runs.some(item => item.tasks.some(task => task.spec.writes && task.attempts.some(attempt => activeAttempts.has(attempt.status))))) return
+          if (spec.writes && !isolated && runs.some(item => item.tasks.some(task => task.spec.writes && task.attempts.some(attempt => activeAttempts.has(attempt.status))))) return
           if (saved.tasks.reduce((total, task) => total + task.attempts.length, 0) >= saved.config.limits.attempts) {
             saved.previousStatus = "waiting_budget"; saved.status = busy(saved) ? "pausing" : "waiting_budget"; if (!busy(saved)) this.stopClock(saved); saved.errors.push("Worker attempt budget exhausted"); return
           }
@@ -361,7 +430,25 @@ export class Engine {
             model, createdAt: Date.now(), workspaceHash: inputWorkspaceHash, inputHash: hash({ objective: saved.objective, mode: saved.mode, revision: saved.revision, spec, model, predecessorResults, workspaceHash: inputWorkspaceHash, clarifications: saved.clarifications ?? [], criteria: saved.criteria, policy: saved.policy, checks: saved.config.checks, promptVersion, customPrompts: saved.config.prompts ?? {} }),
             prompt: "", checks: [], steps: 0, candidateHash: saved.candidateHash,
           }
-          reservation.prompt = renderTaskPrompt(saved, spec, reservation, predecessorResults)
+          if (isolated) {
+            const checkout = saved.parallel!.checkouts.find(checkout => checkout.taskId === spec.id)
+            if (!checkout || checkout.state !== "ready" || reservation.number !== 1) throw new Error("Isolated writer checkout is not prepared; replan this parallel run")
+            reservation.worktree = { directory: checkout.directory, state: "planned" }
+          }
+          reservation.dependencyResults = saved.tasks.flatMap(item => {
+            const direct = spec.dependencies.includes(item.spec.id), design = saved.phase === "execution" && item.spec.stage === "design" && !!item.acceptedAttemptId
+            if (!direct && !design) return []
+            const source = item.attempts.find(attempt => attempt.id === item.acceptedAttemptId) ?? (direct && spec.acceptsFailures ? latest(item) : undefined)
+            return source?.result && source.resultHash ? [{ taskId: item.spec.id, attemptId: source.id, resultHash: source.resultHash }] : []
+          })
+          try { reservation.prompt = renderTaskPrompt(saved, spec, reservation, predecessorResults) }
+          catch (error) {
+            if (!(error instanceof ContextBudgetError)) throw error
+            reservation = undefined; saved.previousStatus = "waiting_budget"; saved.status = busy(saved) ? "pausing" : "waiting_budget"
+            if (!busy(saved)) this.stopClock(saved)
+            saved.errors.push(error.message)
+            return
+          }
           task.attempts.push(reservation); task.status = "running"; saved.ownerEpoch = lease.epoch
           if (!saved.activeSince) saved.activeSince = Date.now()
         }, lease)
@@ -369,7 +456,12 @@ export class Engine {
         const attempt = reservation as Attempt
         this.audit(runId, "attempt.reserved", { model: attempt.model, inputHash: attempt.inputHash, prompt: attempt.prompt }, attempt)
         try {
-          const admitted = await this.host.launch(this.required(runId), attempt, spec, invocation, async sessionId => {
+          if (attempt.worktree) {
+            await this.host.prepareWriter!(this.required(runId), attempt)
+            this.change(runId, saved => { saved.tasks.find(task => task.spec.id === spec.id)!.attempts.find(item => item.id === attempt.id)!.worktree!.state = "ready" }, lease)
+          }
+          const preparedAttempt = this.required(runId).tasks.find(task => task.spec.id === spec.id)!.attempts.find(item => item.id === attempt.id)!
+          const admitted = await this.host.launch(this.required(runId), preparedAttempt, spec, invocation, async sessionId => {
             this.change(runId, saved => {
               const current = saved.tasks.find(task => task.spec.id === spec.id)!.attempts.find(item => item.id === attempt.id)!
               if (current.status !== "reserved" || current.sessionId || saved.ownerEpoch !== lease.epoch || saved.status === "cancelling") throw new Error("Dispatch ownership changed before native prelaunch")
@@ -413,6 +505,7 @@ export class Engine {
           this.change(runId, saved => {
             const task = saved.tasks.find(item => item.spec.id === spec.id)!, current = task.attempts.find(item => item.id === attempt.id)!
             current.status = "ambiguous"; current.error = String(error); task.status = saved.status === "cancelling" ? "cancelling" : "blocked"
+            if (current.worktree) { current.worktree.state = "quarantined"; current.worktree.error = String(error) }
             if (saved.status !== "cancelling") saved.status = "waiting_input"
             saved.errors.push(`Ambiguous launch ${current.id}: ${String(error)}; reconcile before retrying`)
           }, lease)
@@ -444,8 +537,16 @@ export class Engine {
         this.change(runId, saved => { if (saved.status !== "cancelling") saved.status = "waiting_input" }, lease)
         this.audit(runId, "snapshot.gap", { sessionId: attempt.sessionId }, attempt); continue
       }
+      // Moving an unprompted child has its own idle outcome, before the task's model request.
+      if (attempt.worktree && snapshot.state === "succeeded" && current.steps === 0 && !current.result && current.status !== "cancelling" && run.status !== "cancelling") snapshot = { ...snapshot, state: "running" }
       if (["running", "waiting_permission"].includes(snapshot.state)) {
-        if (lease) this.change(runId, saved => { const current = saved.tasks.find(item => item.spec.id === task.spec.id)!.attempts.find(item => item.id === attempt.id)!; current.ownerEpoch = lease.epoch }, lease)
+        this.change(runId, saved => {
+          const current = saved.tasks.find(item => item.spec.id === task.spec.id)!.attempts.find(item => item.id === attempt.id)!
+          if (!activeAttempts.has(current.status)) return
+          if (lease) current.ownerEpoch = lease.epoch
+          if (snapshot.tokens !== undefined && Number.isFinite(snapshot.tokens) && snapshot.tokens >= 0) current.tokens = snapshot.tokens
+          if (snapshot.cost !== undefined && Number.isFinite(snapshot.cost) && snapshot.cost >= 0) current.cost = snapshot.cost
+        }, lease)
         const expired = current.startedAt !== undefined && Date.now() - current.startedAt >= run.config.limits.workerMs
         const exhausted = current.steps >= run.config.limits.steps
         if (expired || exhausted || run.status === "cancelling" && current.status !== "cancelling") {
@@ -456,25 +557,37 @@ export class Engine {
         }
         continue
       }
-      const workspaceHash = snapshot.workspaceHash ?? await this.host.workspace(run.directory)
+      const workspaceHash = snapshot.workspaceHash ?? await this.host.workspace(attempt.worktree?.directory ?? run.directory)
+      let changes: Awaited<ReturnType<NonNullable<HostAdapter["captureWriter"]>>> | undefined, captureError: string | undefined
+      if (snapshot.state === "succeeded" && current.result && current.status !== "cancelling" && run.status !== "cancelling") {
+        if (attempt.worktree) {
+          try { changes = await this.host.captureWriter!(run, attempt, task.spec) } catch (error) { captureError = String(error) }
+        } else if (task.spec.id === run.parallel?.preparationTaskId && !current.preparationApplied) captureError = "Native preparation did not establish the recorded worktree checkouts"
+        else if (task.spec.id === run.parallel?.integrationTaskId && (current.integrationAppliedHash !== run.parallel.expectedHash || workspaceHash !== run.parallel.expectedHash)) captureError = "Native integration did not establish the exact captured writer candidate"
+      }
       const settled = this.change(runId, saved => {
         const currentTask = saved.tasks.find(item => item.spec.id === task.spec.id)!, current = currentTask.attempts.find(item => item.id === attempt.id)!
         if (!activeAttempts.has(current.status) || current.sessionId !== attempt.sessionId) return false
         if (lease) current.ownerEpoch = lease.epoch
         current.finishedAt = Date.now(); current.candidateHash = workspaceHash
-        if (snapshot.tokens !== undefined) current.tokens = snapshot.tokens
-        if (snapshot.cost !== undefined) current.cost = snapshot.cost
-        if (snapshot.state === "succeeded" && current.result && current.status !== "cancelling" && saved.status !== "cancelling") {
+        if (snapshot.tokens !== undefined && Number.isFinite(snapshot.tokens) && snapshot.tokens >= 0) current.tokens = snapshot.tokens
+        if (snapshot.cost !== undefined && Number.isFinite(snapshot.cost) && snapshot.cost >= 0) current.cost = snapshot.cost
+        if (snapshot.state === "succeeded" && current.result && !captureError && current.status !== "cancelling" && saved.status !== "cancelling") {
           current.status = "succeeded"; currentTask.status = "succeeded"; currentTask.acceptedAttemptId = current.id
-          if (currentTask.spec.writes) saved.candidateHash = workspaceHash
+          if (current.worktree) { current.worktree.state = "settled"; current.worktree.changes = changes }
+          else if (currentTask.spec.writes) saved.candidateHash = workspaceHash
+          if (currentTask.spec.id === saved.parallel?.integrationTaskId) saved.parallel.integratedHash = workspaceHash
           if (current.result.needsInput) { saved.status = "waiting_input"; saved.errors.push(current.result.needsInput) }
         } else {
           current.status = snapshot.state === "interrupted" || current.status === "cancelling" ? "cancelled" : "failed"
-          currentTask.status = current.status; current.error ??= snapshot.error ?? (current.result ? "Native worker did not succeed" : "Native success has no attributable task result")
+          currentTask.status = current.status; current.error ??= captureError ?? snapshot.error ?? (current.result ? "Native worker did not succeed" : "Native success has no attributable task result")
+          if (current.worktree) { current.worktree.state = "quarantined"; current.worktree.error = current.error }
+          if (currentTask.spec.id === saved.parallel?.preparationTaskId) for (const checkout of saved.parallel.checkouts) { checkout.state = "quarantined"; checkout.error = current.error }
         }
         return true
       }, lease)
       if (settled) this.audit(runId, "attempt.settled", { sessionId: attempt.sessionId, state: snapshot.state, workspaceHash }, attempt)
+      if (captureError) this.audit(runId, "worktree.quarantined", { directory: attempt.worktree?.directory, error: captureError }, attempt)
     }
     return gap
   }
@@ -501,11 +614,14 @@ export class Engine {
       const assessment = planningCriteria.length > 0 && planningCriteria.every(criterion => assessments.some(value => value.criterionId === criterion.id && value.passed) && !assessments.some(value => value.criterionId === criterion.id && !value.passed))
       const blockers = results.flatMap(item => item.attempt.result?.findings ?? []).some(unresolved)
       if (!assessment || blockers) return this.terminal(runId, "partial", "Proposal lacks a passing requirement assessment or has blocking critique", lease)
+      if (refreshed.recipe && !proposed) return this.terminal(runId, "ready", `Read-only ${refreshed.recipe} report ready; no implementation proposal was requested`, lease)
+      const prepared = refreshed.mode === "execute" ? await this.parallelPlan({ ...refreshed, workspaceHash }, { ...proposal, revision: Math.max(refreshed.revision + 1, proposal.revision) }) : { plan: proposal, parallel: undefined }
+      proposal = prepared.plan
       this.change(runId, saved => {
         const revision = Math.max(saved.revision + 1, proposal.revision)
         proposal = { ...proposal, revision }; saved.proposal = proposal; saved.plans.push(proposal); saved.revision = revision; saved.workspaceHash = workspaceHash
         if (saved.mode === "plan") { this.stopClock(saved); saved.status = "ready" }
-        else { saved.phase = "execution"; saved.status = "running"; saved.criteria = proposal.criteria; this.addExecutionTasks(saved, proposal) }
+        else { saved.phase = "execution"; saved.status = "running"; saved.criteria = proposal.criteria; saved.parallel = prepared.parallel; this.addExecutionTasks(saved, proposal) }
       }, lease)
       this.audit(runId, "proposal.saved", { revision: proposal.revision, workspaceHash });
       if (this.required(runId).status === "ready") {
@@ -514,6 +630,7 @@ export class Engine {
       }
       return
     }
+    if (refreshed.parallel && !refreshed.parallel.integratedHash) return this.terminal(runId, "partial", "Parallel integration remains unresolved; source changes and isolated worktrees are retained", lease)
     const plan = refreshed.plans.at(-1)!
     // A repair revision appends its graph to history; only that revision's new tasks provide final proof.
     const historicalIds = new Set(refreshed.repairRound > 0 ? refreshed.plans.at(-2)?.tasks.map(task => task.id) : [])
@@ -552,7 +669,7 @@ export class Engine {
     await this.terminal(runId, "partial", "Required verification or review remains unresolved", lease)
   }
   private async terminal(runId: string, status: Run["status"], text: string, lease?: Lease) {
-    this.change(runId, saved => { this.stopClock(saved); saved.status = status; if (status !== "succeeded") saved.errors.push(text); saved.notifications.push({ id: id("notification"), text, delivered: false }) }, lease)
+    this.change(runId, saved => { this.stopClock(saved); saved.status = status; if (status !== "succeeded" && status !== "ready") saved.errors.push(text); saved.notifications.push({ id: id("notification"), text, delivered: false }) }, lease)
     this.audit(runId, "run.terminal", { status, text })
     await this.deliver(runId)
   }
@@ -623,12 +740,29 @@ export class Engine {
       return question && !run.clarifications?.some(item => item.taskId === task.spec.id && item.question === question && item.at >= (attempt!.finishedAt ?? attempt!.createdAt)) ? [{ task, attempt: attempt!, question }] : []
     })
   }
+  private inputReset(run: Run, taskId: string, interrupted: Iterable<string>, workspaceHash: string) {
+    const seeds = new Set([taskId, ...interrupted])
+    for (const task of run.tasks) {
+      const attempt = task.attempts.find(attempt => attempt.id === task.acceptedAttemptId)
+      if (!attempt || attempt.worktree || task.spec.id === run.parallel?.preparationTaskId || attempt.workspaceHash === workspaceHash) continue
+      if (task.spec.id === run.parallel?.integrationTaskId && attempt.integrationAppliedHash === workspaceHash && attempt.candidateHash === workspaceHash) continue
+      seeds.add(task.spec.id)
+    }
+    return this.dependencyClosure(run, seeds)
+  }
+  private frozenReset(run: Run, reset: Set<string>) {
+    return !!run.parallel && run.tasks.some(task => reset.has(task.spec.id) && (task.spec.id === run.parallel!.preparationTaskId || task.attempts.some(attempt => attempt.worktree) || task.spec.id === run.parallel!.integrationTaskId && task.attempts.some(attempt => attempt.integrationAppliedHash)))
+  }
   async provideInput(runId: string, answer: string): Promise<Run> {
     if (typeof answer !== "string" || !answer.trim()) throw new Error("A nonempty user answer is required")
     const lease = this.acquire()
     try {
       const run = this.required(runId), question = this.questions(run)[0]
       if (run.status !== "waiting_input" || !question) throw new Error("This run has no unanswered worker question")
+      if (run.parallel) {
+        const reset = this.inputReset(run, question.task.spec.id, run.tasks.filter(task => task.attempts.some(attempt => activeAttempts.has(attempt.status))).map(task => task.spec.id), await this.host.workspace(run.directory))
+        if (this.frozenReset(run, reset)) throw new Error("Answering this question would restart isolated preparation, writers, or applied integration; start a new parallel run. Your answer was not recorded; accepted work was preserved.")
+      }
       const interrupted = new Set<string>()
       for (const task of run.tasks) for (const attempt of task.attempts) if (activeAttempts.has(attempt.status) && attempt.sessionId) {
         interrupted.add(task.spec.id)
@@ -649,13 +783,8 @@ export class Engine {
       this.project(runs => {
         const saved = runs.find(item => item.id === runId)!
         if (saved.status !== "waiting_input" || this.questions(saved)[0]?.attempt.id !== question.attempt.id) throw new Error("Worker question changed before the answer could be recorded")
-        const reset = new Set([question.task.spec.id, ...interrupted])
-        for (const task of saved.tasks) if (task.attempts.some(attempt => attempt.id === task.acceptedAttemptId && attempt.workspaceHash !== workspaceHash)) reset.add(task.spec.id)
-        let changed = true
-        while (changed) {
-          changed = false
-          for (const task of saved.tasks) if (!reset.has(task.spec.id) && task.spec.dependencies.some(id => reset.has(id))) { reset.add(task.spec.id); changed = true }
-        }
+        const reset = this.inputReset(saved, question.task.spec.id, interrupted, workspaceHash)
+        if (this.frozenReset(saved, reset)) throw new Error("Changed inputs require a new parallel run; your answer was not recorded and accepted work was preserved")
         saved.clarifications ??= []
         saved.clarifications.push({ taskId: question.task.spec.id, question: question.question, answer: answer.trim(), at: Date.now() })
         for (const task of saved.tasks) if (reset.has(task.spec.id)) { task.status = "pending"; task.acceptedAttemptId = undefined }
@@ -668,7 +797,7 @@ export class Engine {
   }
   setBudget(runId: string, overrides: Partial<Limits>): Run {
     const run = this.required(runId), limits = parseConfig({ limits: { ...run.config.limits, ...overrides } }).limits
-    for (const key of Object.keys(run.config.limits) as (keyof Limits)[]) if (limits[key] < run.config.limits[key]) throw new Error("Explicit budget updates may only increase limits")
+    for (const key of Object.keys(limits) as (keyof Limits)[]) if ((limits[key] ?? 64_000) < (run.config.limits[key] ?? 64_000)) throw new Error("Explicit budget updates may only increase limits")
     this.change(runId, saved => {
       if (!["waiting_budget", "paused", "waiting_input"].includes(saved.status)) throw new Error("Budgets can only be updated while a run is waiting or paused")
       saved.config.limits = limits
@@ -747,12 +876,14 @@ export class Engine {
     if (run.status !== "ready" || !run.proposal || run.proposal.revision !== revision) throw new Error("Saved proposal revision is not ready for execution")
     const workspaceHash = await this.host.workspace(run.directory)
     if (workspaceHash !== run.workspaceHash) throw new Error("Saved proposal workspace is stale")
-    const plan = validatePlan(run.proposal, "execute", run.config, run.criteria, this.authorizedModels(run))
+    const validated = validatePlan(run.proposal, "execute", run.config, run.criteria, this.authorizedModels(run))
+    const prepared = await this.parallelPlan(run, run.config.parallelWrites ? { ...validated, revision: run.revision + 1 } : validated), plan = prepared.plan
     this.project(runs => {
       const saved = runs.find(item => item.id === runId)!
       if (saved.status !== "ready" || saved.proposal?.revision !== revision || saved.workspaceHash !== workspaceHash) throw new Error("Saved proposal changed before execution admission")
       this.readmission(runs, saved, true)
-      saved.mode = "execute"; saved.phase = "execution"; this.addExecutionTasks(saved, plan); saved.criteria = plan.criteria
+      saved.mode = "execute"; saved.phase = "execution"; saved.parallel = prepared.parallel; this.addExecutionTasks(saved, plan); saved.criteria = plan.criteria
+      if (prepared.parallel) { saved.revision = plan.revision; saved.plans.push(plan) }
       this.newIntent(saved); saved.status = "starting"
     })
     this.audit(runId, "proposal.executing", { revision }); return this.required(runId)
@@ -760,6 +891,7 @@ export class Engine {
   async retry(runId: string, taskId: string): Promise<Run> {
     const run = this.required(runId), task = run.tasks.find(item => item.spec.id === taskId), attempt = task && latest(task)
     if (!task || !attempt || !settledAttempts.has(attempt.status) || !["failed", "cancelled", "blocked"].includes(task.status)) throw new Error("Retry requires a settled failed attempt")
+    if (attempt.worktree || taskId === run.parallel?.preparationTaskId) throw new Error("Retrying isolated worktree preparation or writers requires a new parallel run; existing changes were retained")
     const affected = this.dependencyClosure(run, [taskId]), snapshots = new Map<string, string | undefined>()
     for (const affectedTask of run.tasks.filter(item => affected.has(item.spec.id))) {
       if (affectedTask.attempts.some(attempt => activeAttempts.has(attempt.status))) throw new Error("Dependent workers must be settled before retry invalidates their inputs")
@@ -767,7 +899,7 @@ export class Engine {
       snapshots.set(affectedTask.spec.id, before?.id)
       if (before?.sessionId && !["succeeded", "failed", "interrupted"].includes((await this.host.inspect(before.sessionId)).state)) throw new Error("Old worker or dependent worker has not settled")
     }
-    if (await this.host.workspace(run.directory) !== (attempt.candidateHash ?? attempt.workspaceHash)) throw new Error("Retry inputs are stale")
+    if (await this.host.workspace(run.directory) !== (attempt.worktree ? run.parallel?.baseline.hash : attempt.candidateHash ?? attempt.workspaceHash)) throw new Error("Retry inputs are stale")
     this.project(runs => {
       const saved = runs.find(item => item.id === runId)!
       this.readmission(runs, saved)
@@ -795,7 +927,7 @@ export class Engine {
   }
   private readmission(runs: Run[], run: Run, execution = run.mode === "execute") {
     if (runs.filter(saved => saved.id !== run.id && !terminalRuns.has(saved.status)).length >= run.config.limits.runs) throw new Error("Active run capacity is exhausted")
-    if (execution && !run.config.parallelWrites && runs.some(saved => saved.id !== run.id && saved.mode === "execute" && (!terminalRuns.has(saved.status) || busy(saved)))) throw new Error("Another execution owns the project writer reservation")
+    if (execution && runs.some(saved => saved.id !== run.id && saved.mode === "execute" && (!terminalRuns.has(saved.status) || busy(saved)))) throw new Error("Another execution owns the project writer reservation")
   }
   private addExecutionTasks(run: Run, plan: Plan): void {
     for (const spec of plan.tasks) {

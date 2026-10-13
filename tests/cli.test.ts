@@ -24,6 +24,19 @@ async function fixture() {
 }
 
 describe("project installer and local CLI", () => {
+  test("renders an explicit read-only recipe offline without creating workflow state", async () => {
+    const { directory } = await fixture()
+    const result = await executeLocalCommand(["render", "--recipe", "bug-investigation", "Inspect zero-duration behavior"], { directory })
+    expect(result.exitCode).toBe(0)
+    const plan = JSON.parse(result.output)
+    expect(plan.tasks.map((task: any) => task.role)).toEqual(["explorer", "explorer", "planner"])
+    expect(plan.tasks.every((task: any) => !task.writes)).toBe(true)
+    expect(plan.criteria).toEqual([{ id: "request", description: "Inspect zero-duration behavior", required: true, kind: "assessment" }])
+    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    for (const args of [["render", "--recipe", "unknown", "Inspect"], ["render", "--recipe", "deep-review", "--execute", "Inspect"], ["validate", "--recipe", "deep-review"]]) {
+      expect((await executeLocalCommand(args, { directory })).exitCode).toBe(1)
+    }
+  })
   test("validates global defaults with partial native and Ultra project overrides without a project installation", async () => {
     const { directory } = await fixture()
     const configDirectory = join(directory, "global")

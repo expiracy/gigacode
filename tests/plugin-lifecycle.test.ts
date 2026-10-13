@@ -28,11 +28,12 @@ function fixture(options: { failRegistration?: string; failDisposal?: string; fa
   }
   const context = {
     app: { version: "2.0.25" },
-    location: { directory, project: { id: "project", directory } },
+    location: { directory, project: { id: "project", directory, canonical: directory } },
     options: options.configuration ?? { checks: [] },
     command: { async transform(callback: any) { callback({ add(command: any) { commands.set(command.name, command) } }); return register("command") } },
     tool: { async transform(callback: any) { callback({ add() {} }); return register("tools") }, async hook(name: string, callback: unknown) { return register(`tool.${name}`, callback) } },
     permission: { async hook(name: string, callback: unknown) { return register(`permission.${name}`, callback) } },
+    shell: { async hook(name: string, callback: unknown) { return register(`shell.${name}`, callback) } },
     session: {
       async hook(name: string, callback: unknown) { return register(`session.${name}`, callback) },
       async get({ sessionID }: any) { return { id: sessionID, projectID: "project", location: { directory }, agent: "build", permissions: [], model: { providerID: "fixture", id: "test" } } },
@@ -58,6 +59,75 @@ afterEach(() => {
 })
 
 describe("plugin lifecycle", () => {
+  test("registers the native preparation environment guard without changing unrelated shell calls", async () => {
+    const value = fixture(), cleanup = await plugin.setup(value.context as any)
+    try {
+      expect(value.hooks.has("shell.create.before")).toBe(true)
+      const event = { command: "echo unrelated", cwd: value.directory, env: { GIT_DIR: "unchanged" }, timeout: 1000, shell: "sh" }
+      await value.hooks.get("shell.create.before")(event)
+      expect(event.env.GIT_DIR).toBe("unchanged")
+    } finally { await cleanup!() }
+  })
+  test("worktree locations share state at the host's canonical project root", async () => {
+    const source = fixture(), cleanupSource = await plugin.setup(source.context as any)
+    let cleanupDestination: (() => void | Promise<void>) | void = undefined
+    try {
+      const admitted = await source.hooks.get("rpc").control({ text: "plan Inspect the canonical project", sessionId: "parent" })
+      const destination = mkdtempSync(join(source.directory, "destination-"))
+      const context = { ...source.context, location: { directory: destination, project: { id: "project", directory: destination, canonical: source.directory } } }
+      cleanupDestination = await plugin.setup(context as any)
+      expect((await source.hooks.get("rpc").status({})).runs.map((run: any) => run.id)).toEqual([admitted.run.id])
+      expect(existsSync(join(destination, ".ultracode", "state.sqlite"))).toBe(false)
+    } finally { await cleanupDestination?.(); await cleanupSource!() }
+  })
+  test("explicit native recipe commands preserve their read-only graph and original objective", async () => {
+    const value = fixture()
+    const cleanup = await plugin.setup(value.context as any)
+    try {
+      const admitted = await value.hooks.get("rpc").control({ text: "plan --recipe deep-review Review queue ordering", sessionId: "parent" })
+      const run = value.store!.get(admitted.run.id)!
+      expect(run.recipe).toBe("deep-review")
+      expect(run.objective).toBe("Review queue ordering")
+      expect(run.tasks.filter(task => task.spec.role === "reviewer")).toHaveLength(2)
+      expect(run.tasks.every(task => !task.spec.writes)).toBe(true)
+    } finally { await cleanup!() }
+  })
+  test("shutdown drains an in-flight workflow snapshot before closing its state", async () => {
+    const value = fixture()
+    const cleanup = await plugin.setup(value.context as any)
+    let release!: () => void, entered!: () => void
+    const hold = new Promise<void>(done => { release = done }), entry = new Promise<void>(done => { entered = done })
+    const original = value.context.session.get
+    value.context.session.get = async input => { entered(); await hold; return original(input) }
+    const request = value.hooks.get("rpc").workflow({ sessionId: "parent" })
+    await entry
+    const draining = Promise.resolve(cleanup!())
+    expect(value.close).not.toHaveBeenCalled()
+    release()
+    await expect(request).rejects.toThrow()
+    await draining
+    expect(value.close).toHaveBeenCalledTimes(1)
+  })
+  test("live workflow snapshots include only the initiating conversation's runs", async () => {
+    const value = fixture()
+    const cleanup = await plugin.setup(value.context as any)
+    try {
+      const rpc = value.hooks.get("rpc")
+      const admitted = await rpc.control({ text: "plan Inspect queue ordering", sessionId: "parent" })
+      expect(typeof rpc.workflow).toBe("function")
+      const before = value.synthetics.length
+      const snapshot = await rpc.workflow({ sessionId: "parent" })
+      expect(snapshot.sessionId).toBe("parent")
+      expect(snapshot.runs.map((run: any) => run.id)).toEqual([admitted.run.id])
+      expect(snapshot.runs[0].objective).toBe("Inspect queue ordering")
+      expect(snapshot.runs[0].usage.tokens).toBeNull()
+      expect(snapshot.runs[0]).not.toHaveProperty("policy")
+      expect(snapshot.runs[0]).not.toHaveProperty("config")
+      expect(await rpc.workflow({ sessionId: "other" })).toEqual({ sessionId: "other", runs: [] })
+      await expect(rpc.workflow({ sessionId: "other", runId: admitted.run.id })).rejects.toThrow("initiating")
+      expect(value.synthetics).toHaveLength(before)
+    } finally { await cleanup!() }
+  })
   test.each(["2.0.25", "2.0.26"])("reports the actual supported host %s through config and command feedback", async version => {
     const value = fixture()
     value.context.app.version = version
@@ -112,7 +182,7 @@ describe("plugin lifecycle", () => {
     const first = Promise.resolve(cleanup!()), second = Promise.resolve(cleanup!())
     const results = await Promise.allSettled([first, second])
     expect(results.every(result => result.status === "rejected")).toBe(true)
-    expect(value.disposals).toEqual(["rpc", "tool.execute.after", "tool.execute.before", "session.prompt", "session.model.request", "session.context", "permission.evaluate", "tools", "command", "agents"])
+    expect(value.disposals).toEqual(["rpc", "shell.create.before", "tool.execute.after", "tool.execute.before", "session.prompt", "session.model.request", "session.context", "permission.evaluate", "tools", "command", "agents"])
     expect(value.close).toHaveBeenCalledTimes(1)
     expect(() => value.store!.list("project")).toThrow(/closed/i)
   })
