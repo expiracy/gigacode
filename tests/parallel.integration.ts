@@ -6,7 +6,7 @@ import { Rpc } from "@opencode/plugin"
 import { EXPECTED_VERSION, startHost, waitFor, type IsolatedHost } from "../spike/host.ts"
 import { createWorkflowFixture } from "./workflow-fixture.ts"
 import { manifest } from "../src/workspace.ts"
-import { sanitizeEventData } from "../src/store.ts"
+import { sanitizeEventData } from "../src/redaction.ts"
 import type { Run, Workflow } from "../src/types.ts"
 
 const object = { type: "object", additionalProperties: true } as const

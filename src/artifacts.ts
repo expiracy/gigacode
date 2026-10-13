@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs"
 import { writeFile, rename, mkdir } from "node:fs/promises"
 import { join, resolve } from "node:path"
-import { sanitizeEventData } from "./store.ts"
+import { sanitizeEventData } from "./redaction.ts"
 import { assertPlainPath, digest, inside } from "./workspace.ts"
 import type { Run, StoredEvent } from "./types.ts"
 

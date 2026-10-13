@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import { parseCommand, type UltraCommand } from "./commands.ts"
-import { sanitizeEventData } from "./store.ts"
+import { sanitizeEventData } from "./redaction.ts"
 import { currentResult, taskSchema } from "./results.ts"
 import { recipeNames } from "./recipes.ts"
 import type { Attempt, CheckEvidence, Run, Task } from "./types.ts"

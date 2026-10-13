@@ -2,13 +2,15 @@ import { createHash, randomUUID } from "node:crypto"
 import { resolve } from "node:path"
 import { parseConfig, resolveModel, strictRecord } from "./config.ts"
 import { validateExecutionCoverage, validatePlan } from "./graph.ts"
+import { acquireProjectLease, projectCoordination, ProjectOwnershipError, releaseProjectLease, type ProjectCoordination } from "./coordination.ts"
+import { acceptedResults, executionCompletion, planningEvidenceComplete } from "./completion.ts"
 import { parseTaskResult } from "./results.ts"
 import { ContextBudgetError, defaultExecutionPlan, defaultPlanningPlan, promptVersion, renderTaskPrompt } from "./workflow.ts"
 import { integrationChanges, worktreeDirectory } from "./worktrees.ts"
 import { dependencyPage } from "./dependencies.ts"
 import { recipeName, recipeWorkflow } from "./recipes.ts"
 import { NoLaunchError, SettledLaunchError, UnsettledLaunchError } from "./types.ts"
-import type { Attempt, CheckEvidence, Config, HostAdapter, Invocation, Lease, Limits, ModelOptions, ModelRef, Plan, Rule, Run, Store, Task, TaskResult, TaskSpec, Workflow } from "./types.ts"
+import type { Attempt, CheckEvidence, Config, HostAdapter, Invocation, Lease, Limits, ModelOptions, ModelRef, Plan, Rule, Run, Store, Task, TaskSpec, Workflow } from "./types.ts"
 
 const terminalRuns = new Set<Run["status"]>(["ready", "succeeded", "partial", "failed", "cancelled"])
 const activeAttempts = new Set<Attempt["status"]>(["reserved", "running", "waiting_permission", "cancelling", "ambiguous"])
@@ -17,23 +19,6 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 const latest = (task: Task) => task.attempts.at(-1)
 const busy = (run: Run) => run.tasks.some(task => task.attempts.some(attempt => activeAttempts.has(attempt.status)))
 const id = (prefix: string) => `${prefix}_${randomUUID().replaceAll("-", "")}`
-const unresolved = (finding: NonNullable<TaskResult["findings"]>[number]) => finding.blocking && !(finding.evidence?.trim() && ["fixed", "rejected"].includes(finding.disposition ?? ""))
-class ProjectOwnershipError extends Error {
-  constructor() { super("Project scheduler is owned by another process") }
-}
-interface Coordinator {
-  owner: string; lease?: Lease; users: number; heartbeat?: ReturnType<typeof setInterval>; failure?: unknown; stores: Map<Store, number>; driving: Set<string>
-}
-const coordinatorSymbol = Symbol.for("ultra.open-code.project-coordination.v1")
-const coordinatorMap: Map<string, Coordinator> = Reflect.get(globalThis, coordinatorSymbol) ?? new Map<string, Coordinator>()
-Reflect.set(globalThis, coordinatorSymbol, coordinatorMap)
-function coordinator(projectId: string, key?: string): Coordinator {
-  const identity = key ? `${projectId}:${process.platform === "win32" ? resolve(key).toLowerCase() : resolve(key)}` : undefined
-  if (identity && coordinatorMap.has(identity)) return coordinatorMap.get(identity)!
-  const value: Coordinator = { owner: id("owner"), users: 0, stores: new Map(), driving: new Set() }
-  if (identity) coordinatorMap.set(identity, value)
-  return value
-}
 function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((done, fail) => {
     const finish = () => { clearTimeout(timer); signal.removeEventListener("abort", aborted); done() }
@@ -53,14 +38,13 @@ export interface StartOptions {
 
 /** Deterministic policy. Host side effects occur only through the permission-preserving adapter. */
 export class Engine {
-  private readonly coordination: Coordinator
-  private get owner() { return this.coordination.owner }
+  private readonly coordination: ProjectCoordination
   private get heldLease() { return this.coordination.lease }
   private set heldLease(value: Lease | undefined) { this.coordination.lease = value }
   private get leaseFailure() { return this.coordination.failure }
   private get driving() { return this.coordination.driving }
   constructor(private readonly store: Store, private readonly host: HostAdapter, readonly projectId: string, readonly directory: string, private readonly config: Config, coordinationKey?: string) {
-    this.coordination = coordinator(projectId, coordinationKey)
+    this.coordination = projectCoordination(projectId, coordinationKey)
   }
 
   get(runId: string) { return this.store.get(runId) }
@@ -86,36 +70,8 @@ export class Engine {
     const acquired = this.acquire()
     try { return this.store.project(this.projectId, fn, acquired) } finally { this.release() }
   }
-  private acquire(): Lease {
-    if (this.heldLease) {
-      this.heldLease = this.store.renew(this.heldLease, Date.now(), 30_000)
-      this.coordination.users++
-      this.coordination.stores.set(this.store, (this.coordination.stores.get(this.store) ?? 0) + 1)
-      return this.heldLease
-    }
-    const lease = this.store.lease(this.projectId, this.owner, Date.now(), 30_000)
-    if (!lease) throw new ProjectOwnershipError()
-    this.heldLease = lease; this.coordination.users++
-    this.coordination.stores.set(this.store, (this.coordination.stores.get(this.store) ?? 0) + 1)
-    this.coordination.failure = undefined
-    const shared = this.coordination
-    shared.heartbeat = setInterval(() => {
-      if (!shared.lease || shared.failure) return
-      const activeStore = shared.stores.keys().next().value
-      try { if (activeStore) shared.lease = activeStore.renew(shared.lease, Date.now(), 30_000) } catch (error) { shared.failure = error }
-    }, 5_000)
-    shared.heartbeat.unref()
-    return lease
-  }
-  private release() {
-    const shared = this.coordination, count = shared.stores.get(this.store) ?? 0
-    if (count <= 1) shared.stores.delete(this.store)
-    else shared.stores.set(this.store, count - 1)
-    if (--shared.users === 0 && this.heldLease) {
-      clearInterval(shared.heartbeat); shared.heartbeat = undefined
-      this.store.release(this.heldLease); this.heldLease = undefined; shared.failure = undefined
-    }
-  }
+  private acquire(): Lease { return acquireProjectLease(this.coordination, this.store, this.projectId) }
+  private release(): void { releaseProjectLease(this.coordination, this.store) }
   private async acquireWhenFree(signal: AbortSignal, runId?: string): Promise<void> {
     let waiting = false
     for (;;) {
@@ -601,7 +557,7 @@ export class Engine {
     }, lease)
     const refreshed = this.required(runId)
     if (refreshed.tasks.some(task => task.status === "pending")) return
-    const results = refreshed.tasks.filter(task => task.status === "succeeded").map(task => ({ task, attempt: task.attempts.find(attempt => attempt.id === task.acceptedAttemptId)! }))
+    const results = acceptedResults(refreshed)
     const failed = refreshed.tasks.some(task => ["failed", "blocked", "cancelled"].includes(task.status))
     if (refreshed.phase === "planning") {
       if (failed) return this.terminal(runId, "partial", "Planning did not obtain every required result", lease)
@@ -609,11 +565,7 @@ export class Engine {
       let proposal = proposed ?? defaultExecutionPlan(refreshed.objective, refreshed.criteria, refreshed.config.checks)
       // A plan-only run stores an execution proposal but never admits writers by itself.
       proposal = validatePlan(proposal, "execute", refreshed.config, refreshed.criteria, this.authorizedModels(refreshed))
-      const planningCriteria = refreshed.plans[0]!.criteria.filter(criterion => criterion.required && criterion.kind === "assessment")
-      const assessments = results.flatMap(item => item.attempt.result?.assessments ?? [])
-      const assessment = planningCriteria.length > 0 && planningCriteria.every(criterion => assessments.some(value => value.criterionId === criterion.id && value.passed) && !assessments.some(value => value.criterionId === criterion.id && !value.passed))
-      const blockers = results.flatMap(item => item.attempt.result?.findings ?? []).some(unresolved)
-      if (!assessment || blockers) return this.terminal(runId, "partial", "Proposal lacks a passing requirement assessment or has blocking critique", lease)
+      if (!planningEvidenceComplete(refreshed, results)) return this.terminal(runId, "partial", "Proposal lacks a passing requirement assessment or has blocking critique", lease)
       if (refreshed.recipe && !proposed) return this.terminal(runId, "ready", `Read-only ${refreshed.recipe} report ready; no implementation proposal was requested`, lease)
       const prepared = refreshed.mode === "execute" ? await this.parallelPlan({ ...refreshed, workspaceHash }, { ...proposal, revision: Math.max(refreshed.revision + 1, proposal.revision) }) : { plan: proposal, parallel: undefined }
       proposal = prepared.plan
@@ -630,43 +582,9 @@ export class Engine {
       }
       return
     }
-    if (refreshed.parallel && !refreshed.parallel.integratedHash) return this.terminal(runId, "partial", "Parallel integration remains unresolved; source changes and isolated worktrees are retained", lease)
-    const plan = refreshed.plans.at(-1)!
-    // A repair revision appends its graph to history; only that revision's new tasks provide final proof.
-    const historicalIds = new Set(refreshed.repairRound > 0 ? refreshed.plans.at(-2)?.tasks.map(task => task.id) : [])
-    const currentSpecs = plan.tasks.filter(task => !historicalIds.has(task.id))
-    const currentIds = new Set(currentSpecs.map(task => task.id)), writers = currentSpecs.filter(task => task.writes).map(task => task.id)
-    const currentResults = results.filter(item => currentIds.has(item.task.spec.id))
-    const byId = new Map(refreshed.tasks.map(task => [task.spec.id, task.spec]))
-    const afterWriters = (task: TaskSpec) => {
-      const ancestors = new Set<string>()
-      const visit = (id: string) => { if (ancestors.has(id)) return; ancestors.add(id); for (const dependency of byId.get(id)?.dependencies ?? []) visit(dependency) }
-      for (const dependency of task.dependencies) visit(dependency)
-      return writers.every(id => ancestors.has(id))
-    }
-    const currentReviews = currentResults.filter(item => item.task.spec.role === "reviewer" && item.task.spec.stage === "review" && item.attempt.workspaceHash === workspaceHash && afterWriters(item.task.spec))
-    // Contract findings can remain relevant after a writer changes files; a hash change does not resolve them.
-    const blocking = currentResults.filter(item => !item.task.spec.writes).flatMap(item => item.attempt.result?.findings ?? []).filter(unresolved)
-    const candidateHash = refreshed.candidateHash ?? refreshed.workspaceHash
-    const freshChecks = currentResults.filter(item => item.task.spec.role === "verifier" && item.task.spec.stage === "verification" && afterWriters(item.task.spec)).flatMap(item => item.attempt.checks.filter(check => item.task.spec.checkIds?.includes(check.checkId))).filter(check => check.workspaceHash === candidateHash && candidateHash === workspaceHash)
-    const lastChecks = new Map<string, CheckEvidence>()
-    for (const check of freshChecks.toSorted((left, right) => left.finishedAt - right.finishedAt)) lastChecks.set(check.checkId, check)
-    const checks = [...lastChecks.values()].filter(check => check.outcome === "passed" && check.exit === 0)
-    const failedCheck = [...lastChecks.values()].some(check => check.outcome !== "passed" || check.exit !== 0)
-    const requiredChecks = refreshed.config.checks.filter(check => check.criterionIds.some(id => refreshed.criteria.some(criterion => criterion.id === id && criterion.required)) || refreshed.tasks.some(task => task.spec.checkIds?.includes(check.id)))
-    const nativeChecksCovered = requiredChecks.length > 0 && requiredChecks.every(check => lastChecks.get(check.id)?.outcome === "passed" && lastChecks.get(check.id)?.exit === 0)
-    const assessments = currentResults.filter(item => !item.task.spec.writes && item.attempt.workspaceHash === workspaceHash).flatMap(item => item.attempt.result?.assessments ?? [])
-    const covered = refreshed.criteria.filter(item => item.required).every(criterion => criterion.kind === "check" ? checks.some(check => check.criterionIds.includes(criterion.id)) : assessments.some(item => item.criterionId === criterion.id && item.passed) && !assessments.some(item => item.criterionId === criterion.id && !item.passed))
-    if (!requiredChecks.length && !failed && currentReviews.length > 0 && !blocking.length && covered) {
-      return this.terminal(runId, "partial", "No configured native checks establish completion; the reviewed candidate is retained without unnecessary repair", lease)
-    }
-    if (!failed && !failedCheck && nativeChecksCovered && currentReviews.length > 0 && !blocking.length && covered && refreshed.criteria.some(item => item.required && item.kind === "check")) {
-      return this.terminal(runId, "succeeded", "Required assessments and fresh native checks passed", lease)
-    }
-    if (refreshed.repairRound < refreshed.config.limits.repairRounds && (failed || failedCheck || !nativeChecksCovered || blocking.length || !covered)) {
-      await this.repair(runId, workspaceHash, lease); return
-    }
-    await this.terminal(runId, "partial", "Required verification or review remains unresolved", lease)
+    const decision = executionCompletion(refreshed, workspaceHash)
+    if (decision.type === "repair") await this.repair(runId, workspaceHash, lease)
+    else await this.terminal(runId, decision.status, decision.text, lease)
   }
   private async terminal(runId: string, status: Run["status"], text: string, lease?: Lease) {
     this.change(runId, saved => { this.stopClock(saved); saved.status = status; if (status !== "succeeded" && status !== "ready") saved.errors.push(text); saved.notifications.push({ id: id("notification"), text, delivered: false }) }, lease)

@@ -220,6 +220,25 @@ Models submit results through an explicit nested tool schema, with task-specific
 
 ## Verification and source map
 
+`plugin.ts` assembles the native tools, hooks and lifecycle. `engine.ts` owns run transitions and host calls so every mutation uses the same project lease and generation checks. Shared ownership and pure completion decisions live in separate modules; they do not create another scheduler or storage layer.
+
+| Responsibility | Modules |
+| --- | --- |
+| OpenCode entry points and native operations | `index.ts`, `tui.ts`, `src/plugin.ts`, `src/opencode.ts`, `src/rpc.ts` |
+| Scheduling, controls and recovery | `src/engine.ts` |
+| Shared project leases and heartbeat | `src/coordination.ts` |
+| Completion criteria, fresh checks and repair decisions | `src/completion.ts` |
+| Graph admission, capabilities and scoped writes | `src/graph.ts`, `src/policy.ts` |
+| Native model selection and limits | `src/config.ts`, `src/context.ts` |
+| Primary guidance, worker handoffs and recipes | `src/agents.ts`, `src/workflow.ts`, `src/recipes.ts` |
+| Typed results and captured dependency retrieval | `src/results.ts`, `src/dependencies.ts` |
+| Durable state and redaction | `src/store.ts`, `src/redaction.ts` |
+| Model-facing controls, inspection and user reports | `src/agent-control.ts`, `src/workflow-view.ts`, `src/artifacts.ts` |
+| Workspace fingerprints and isolated Git changes | `src/workspace.ts`, `src/worktrees.ts` |
+| Installation and offline tools | `scripts/install.ts`, `scripts/cli.ts` |
+
+Completion decisions consume saved run snapshots without database or host access. Coordination depends on the `Store` interface; SQLite transactions and audit persistence remain in `store.ts`. Redaction is pure shared code used by persistence, reports and model-facing views. The native adapter retains command provenance and permission checks. Persisted state, RPC shapes and existing command entry points stay stable across these module boundaries.
+
 ```powershell
 bun run typecheck
 bun run test

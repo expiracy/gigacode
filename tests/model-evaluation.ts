@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url"
 import { OpenCode } from "@opencode/client"
 import { assertHostVersion } from "../src/compatibility.ts"
 import { UltraRpc } from "../src/rpc.ts"
-import { sanitizeEventData } from "../src/store.ts"
+import { sanitizeEventData } from "../src/redaction.ts"
 
 export function evaluationUsage(sessions: EvaluationSession[]): { cost: number | null; knownCost: number; tokens: number | null; unknownCostSessions: string[] } {
   const unique = [...new Map(sessions.map(session => [session.id, session])).values()]

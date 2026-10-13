@@ -1,5 +1,5 @@
 import type { CheckEvidence, Finding, ModelSelection, Run, TaskStatus } from "./types.ts"
-import { sanitizeEventData } from "./store.ts"
+import { sanitizeEventData } from "./redaction.ts"
 import { currentResult } from "./results.ts"
 
 export interface WorkflowTask {

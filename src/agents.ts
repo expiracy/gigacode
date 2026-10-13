@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto"
+import { sanitizeEventData } from "./redaction.ts"
+import type { CheckSpec } from "./types.ts"
 
 export const ULTRA_AGENT_ID = "ultra"
 export const ULTRA_AGENT_NAME = "Ultra"
@@ -27,4 +29,12 @@ When authoring a workflow, only tasks with role verifier, stage verification and
 export function primarySystem(system?: string): string {
   const previousDefaults = ["c9041270f6b2b0bb24b3ed08fa1507ff08824c940b7c25ed1b37be3b905946a3", "4f6ea9801e19e25cf67e28721e74b0d3b6fd32e7e0ad47080bb700b03097fc24", "14b5b40b9f54730465065eadd25f54791dc861eb8a34cb3bcf6dc3e381b71400"]
   return system === undefined || previousDefaults.includes(createHash("sha256").update(system).digest("hex")) ? ULTRA_PRIMARY_SYSTEM : system
+}
+
+export function workflowGuidance(checks: readonly CheckSpec[]): string {
+  return `Choose the smallest useful workflow for the actual request. Answer explanations, lookups and settings questions with available read tools without spawning workers. For bounded design work, one planning worker can inspect and propose; add exploration, research or critique only when each has distinct useful work. For a small authorized implementation, inspect enough relevant code yourself and supply ultra_task.workflow to start directly with a scoped implementer, independent review, and final configured verification. Larger requests may need more tasks and dependencies; task purposes and rationale should explain why they help. Do not add research, reconciliation or reporting workers by habit; you can present accepted results yourself. The engine supplies the exact request assessment criterion "request" and configured required check criteria. Planning graphs are read-only. In execution graphs every writer must own relative paths; at least one reviewer and each final configured verifier must depend, directly or transitively, on every writer. Earlier TDD RED verification does not replace final verification. Use a separate test-writing and RED-check sequence when a regression or behavior change warrants TDD. Role/stage model settings and explicitly authorized model overrides remain available; otherwise inherit the initiating model. Configured checks for checkIds: ${JSON.stringify(sanitizeEventData(checks))}. Missing checks cannot be invented as proof. Omit workflow when more investigation is needed: the fallback starts one combined planning worker, whose proposal can choose execution tasks.`
+}
+
+export function projectGuidance(runs: readonly unknown[], active: boolean): string {
+  return `Ultra project context. Explain concrete technical findings and changes; use ultra_control to inspect actual progress and accepted results before reporting them. At kickoff, briefly describe the task-specific investigation or changes you intend to make using the objective and saved task purposes, then return to the user. Intended work is not a finding. The native background completion message will bring results back to this conversation; do not repeatedly poll unchanged status. Routine absence of results does not need a progress report; report actual blockers and meaningful developments. A planning-only request ends with a design. The run control executes a saved proposal and requires user authorization to implement; never call it to obtain planning results. ${JSON.stringify(sanitizeEventData({ runs: runs }))}\n${active ? "The requested work is in progress. Continue answering the user; reuse its existing run rather than starting another. Switching agents does not cancel workers." : "No work is active. Use ultra_task for a new authorized project task."} Project edits, commands and delegation go through the workflow tools. Config and general questions do not authorize a new task. Internal identifiers and scheduling details belong in the audit unless requested or needed to explain a problem.`
 }

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { dependencyPage } from "../src/dependencies.ts"
 import { modelInputBudget } from "../src/context.ts"
-import { sanitizeEventData } from "../src/store.ts"
+import { sanitizeEventData } from "../src/redaction.ts"
 import { digest } from "../src/workspace.ts"
 import type { Attempt, ModelLimits, Run, TaskResult } from "../src/types.ts"
 

@@ -1,6 +1,6 @@
 import type { Attempt, Run } from "./types.ts"
 import { digest } from "./workspace.ts"
-import { sanitizeEventData } from "./store.ts"
+import { sanitizeEventData } from "./redaction.ts"
 import { modelInputBudget } from "./context.ts"
 
 /** Only the immutable results captured for this attempt are readable through this tool. */
