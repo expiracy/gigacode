@@ -198,13 +198,13 @@ test("native ultracode config is the only terminal configuration entry point", a
   } finally { await cleanup!() }
 })
 
-test("settings starts with only scope choices and help, without read-only copies of editable values", async () => {
+test("settings offers separate help and about destinations beside scope choices", async () => {
   const f = fixture(), cleanup = await plugin.setup(f.context as any)
   try {
     f.route({ type: "session", sessionID: "parent" })
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     expect(f.dialogs[0].title).toBe("Ultra settings")
-    expect(f.dialogs[0].options.map((option: any) => option.title)).toEqual(["This project", "Global defaults", "Help & about"])
+    expect(f.dialogs[0].options.map((option: any) => option.title)).toEqual(["This project", "Global defaults", "Help", "About Ultra"])
     expect(f.settingsReads).toHaveLength(0)
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
@@ -225,8 +225,67 @@ test("advanced configuration lives in the chosen scope and uses its actual value
     expect(advanced?.options.find((option: any) => option.value === "prompts").description).toContain("1 custom")
     expect(advanced?.options.find((option: any) => option.value === "threshold").description).toContain("45 characters")
     expect(JSON.stringify(advanced?.options)).not.toContain("Project-specific instructions")
-    const help = f.dialogs.find(dialog => dialog.title === "Help & about")
-    expect(help?.options.map((option: any) => option.value)).toEqual(["usage", "about", "back"])
+    const help = f.dialogs.find(dialog => dialog.title === "Ultra help")
+    expect(help?.options.map((option: any) => option.value)).not.toContain("about")
+    expect(f.settingsSaves).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("help offers focused guides and returns to the topic list before settings", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("help", "scopes", "saving", "advanced", "workflows", "back", "about", undefined)
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    const help = f.dialogs.filter(dialog => dialog.title === "Ultra help")
+    expect(help[0]?.options.map((option: any) => option.title)).toEqual(["Scopes & inheritance", "Editing & saving", "Advanced controls", "Workflow commands", "Back to settings"])
+    expect(help.map(dialog => dialog.current)).toEqual([undefined, "scopes", "saving", "advanced", "workflows"])
+    const guides = f.dialogs.filter(dialog => dialog.kind === "alert")
+    expect(guides.map(dialog => dialog.title)).toEqual(["Scopes & inheritance", "Editing & saving", "Advanced controls", "Workflow commands", "About Ultra"])
+    expect(guides[0].message).toContain("Project overrides take precedence")
+    expect(guides[1].message).toContain("Reload OpenCode")
+    expect(guides[2].message).toContain("/ultracode on")
+    expect(guides[3].message).toContain("/ultracode status")
+    expect(f.settingsReads).toHaveLength(0)
+    expect(f.settingsSaves).toHaveLength(0)
+    expect(f.calls).toBe(0)
+  } finally { await cleanup!() }
+})
+
+test("about opens directly and returns focus to its settings entry with unknown metadata labelled", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  Object.assign(f.response, { hostVersion: undefined, promptVersion: undefined, directory: undefined, state: undefined })
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("about", undefined)
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.dialogs.map(dialog => dialog.title)).toEqual(["Ultra settings", "About Ultra", "Ultra settings"])
+    expect(f.dialogs[1].message).toContain("durable, multi-agent coding workflows")
+    expect(f.dialogs[1].message).toContain("OpenCode: Unknown")
+    expect(f.dialogs[1].message).toContain("Prompt version: Unknown")
+    expect(f.dialogs[1].message).toContain("Project directory: Unknown")
+    expect(f.dialogs[1].message).toContain("State database: Unknown")
+    expect(f.dialogs[2].current).toBe("about")
+    expect(f.settingsReads).toHaveLength(0)
+    expect(f.settingsSaves).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("navigation retires a pending help guide before it can open an alert", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  const select = f.context.ui.dialog.select
+  let release!: (value: string) => void
+  f.context.ui.dialog.select = options => options.title === "Ultra help" ? new Promise(resolve => { release = resolve }) : select(options)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("help")
+    const opening = f.event({ sessionId: "parent", command: "config", result: f.response })
+    await settle()
+    f.route({ type: "home" })
+    release("saving")
+    await opening
+    expect(f.dialogs.map(dialog => dialog.title)).toEqual(["Ultra settings"])
+    expect(f.settingsReads).toHaveLength(0)
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
 })
@@ -393,14 +452,14 @@ test("advanced configuration and support have separate destinations", async () =
   const cleanup = await plugin.setup(f.context as any)
   try {
     f.route({ type: "session", sessionID: "parent" })
-    f.choose("Configuration/Edit project settings", "advanced", "back", "back", "help", "about", "back", undefined)
+    f.choose("Configuration/Edit project settings", "advanced", "back", "back", "about", undefined)
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     const advanced = f.dialogs.find(dialog => dialog.title === "Advanced configuration")
     expect(advanced.options.find((option: any) => option.value === "prompts").description).toContain("1 custom")
     expect(advanced.options.find((option: any) => option.value === "threshold").description).toContain("80 characters")
     const about = f.dialogs.find(dialog => dialog.title === "About Ultra")
     for (const text of ["2.0.25", "ultra/2", "C:/project", "state.sqlite"]) expect(about.message).toContain(text)
-    expect(f.dialogs.filter(dialog => dialog.title === "Help & about")).toHaveLength(2)
+    expect(f.dialogs.filter(dialog => dialog.title === "Ultra help")).toHaveLength(0)
     expect(f.settingsReads).toHaveLength(1)
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
