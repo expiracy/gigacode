@@ -220,6 +220,8 @@ Models submit results through an explicit nested tool schema, with task-specific
 
 ## Verification and source map
 
+See [Agent coding architecture](docs/architecture.md) for runtime boundaries, data ownership and extension points, and [Agent coding workflows](docs/agent-workflows.md) for the request lifecycle, graph examples, verification and recovery.
+
 `plugin.ts` assembles the native tools, hooks and lifecycle. `engine.ts` owns run transitions and host calls so every mutation uses the same project lease and generation checks. Shared ownership and pure completion decisions live in separate modules; they do not create another scheduler or storage layer.
 
 | Responsibility | Modules |
