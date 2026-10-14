@@ -6,15 +6,13 @@ interface Configuration { config: Config; hostVersion?: string; promptVersion?: 
 
 async function help(ctx: Context, value: Configuration, active: () => boolean) {
   while (active()) {
-    const selected = await ctx.ui.dialog.select({ title: "Help & advanced", options: [
+    const selected = await ctx.ui.dialog.select({ title: "Help & about", placeholder: "Guidance and diagnostics", options: [
       { title: "Using settings", value: "usage", description: "Scopes, inheritance, reset and saving" },
-      { title: "Advanced options (JSON)", value: "advanced", description: "Role instructions, writer policy and automatic-mode threshold" },
       { title: "About Ultra", value: "about", description: "Versions, project directory and runtime state" },
       { title: "Back to settings", value: "back" },
     ] })
     if (!active() || !selected || selected === "back") return
     if (selected === "usage") await ctx.ui.dialog.alert({ title: "Using settings", message: "Choose This project or Global defaults, then Models, Limits or Checks. Select a value to edit it. Project overrides take precedence over global defaults. In Limits, Ctrl+R restores the inherited or built-in value; deadlines use seconds. Changes stay in a draft until Save and confirmation. Change scope or close the editor only after saving or explicitly discarding changes. Project saves apply to new workflows immediately; global saves require an OpenCode reload." })
-    else if (selected === "advanced") await ctx.ui.dialog.alert({ title: "Advanced options (JSON)", message: `These options are edited in JSON configuration. Models, limits and checks are edited in the scoped settings pages.\n\n${JSON.stringify({ prompts: value.config.prompts, parallelWrites: value.config.parallelWrites, autoThreshold: value.config.autoThreshold }, null, 2)}` })
     else if (selected === "about") await ctx.ui.dialog.alert({ title: "About Ultra", message: `OpenCode: ${value.hostVersion ?? "Unknown"}\nPrompt version: ${value.promptVersion ?? "Unknown"}\nProject directory: ${value.directory ?? "Unknown"}\nState database: ${value.state ?? "Unknown"}` })
     else return
   }
@@ -29,7 +27,7 @@ export async function openSettingsMenu(ctx: Context, value: unknown, sessionId: 
     const selected = await ctx.ui.dialog.select({ title: "Ultra settings", placeholder: "Choose where changes apply", options: [
       { title: "This project", value: "Configuration/Edit project settings", description: configuration.directory ? `${configuration.directory} · overrides global defaults` : "Override global defaults for this project" },
       { title: "Global defaults", value: "Configuration/Edit global defaults", description: "All projects using this profile; project overrides still apply" },
-      { title: "Help & advanced", value: "help", description: "Usage, JSON-only options and installation details" },
+      { title: "Help & about", value: "help", description: "Guidance, versions and diagnostics" },
     ] })
     if (!active() || !selected) return
     if (selected === "help") { await help(ctx, configuration, active); continue }

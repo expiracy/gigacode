@@ -3,7 +3,7 @@ import type { EditableSettings, SettingsScope, SettingsView } from "./settings.t
 import { editModel } from "./settings-models-ui.ts"
 import { editLimit } from "./settings-limits-ui.ts"
 import { editChecks } from "./settings-checks-ui.ts"
-import { changes } from "./settings-presentation.ts"
+import { changes, scopeLabel } from "./settings-presentation.ts"
 
 export interface SettingsRpc {
   settings(input: { sessionId: string; scope?: SettingsScope }, options: { location: { directory: string }; signal: AbortSignal }): Promise<unknown>
@@ -30,6 +30,7 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
         { title: "Models", value: "models", description: "Default model, roles, stages and variants" },
         { title: "Limits", value: "limits", description: "Concurrency, attempts, deadlines and context" },
         { title: "Checks", value: "checks", description: "Configured verification commands" },
+        { title: "Advanced configuration", value: "advanced", description: "Role instructions, writer policy and automatic mode · JSON" },
         { title: "Review changes", value: "review", disabled: !changed },
         { title: saveTitle, value: "save", description: view.blocked ?? (scope === "global" ? "All projects; reload OpenCode after saving" : "Applies to new workflows; global defaults stay unchanged"), disabled: !changed || !!view.blocked },
         { title: "Change scope", value: "back", description: "Choose project settings or global defaults" },
@@ -46,6 +47,7 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
       if (selected === "models") await editModel(ctx, view, draft, active)
       else if (selected === "limits") await editLimit(ctx, view, draft, active)
       else if (selected === "checks") await editChecks(ctx, view, draft, active)
+      else if (selected === "advanced") await ctx.ui.dialog.alert({ title: "Advanced configuration", message: `${scopeLabel(view)}\n${view.path}\n\nThese effective options are edited in JSON configuration:\n\n${JSON.stringify({ prompts: view.effective.prompts, parallelWrites: view.effective.parallelWrites, autoThreshold: view.effective.autoThreshold }, null, 2)}` })
       else if (selected === "review") await ctx.ui.dialog.alert({ title: "Setting changes", message: `${impact}\n\n${changes(view, draft) || "No changes"}` })
       else if (selected === "save") {
         if (!changed || view.blocked) continue

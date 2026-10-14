@@ -204,9 +204,44 @@ test("settings starts with only scope choices and help, without read-only copies
     f.route({ type: "session", sessionID: "parent" })
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     expect(f.dialogs[0].title).toBe("Ultra settings")
-    expect(f.dialogs[0].options.map((option: any) => option.title)).toEqual(["This project", "Global defaults", "Help & advanced"])
+    expect(f.dialogs[0].options.map((option: any) => option.title)).toEqual(["This project", "Global defaults", "Help & about"])
     expect(f.settingsReads).toHaveLength(0)
     expect(f.settingsSaves).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("advanced configuration lives in the chosen scope and uses its actual values", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.globalSettingsView.effective.prompts = { reviewer: "Global review instructions" }
+  f.globalSettingsView.effective.autoThreshold = 45
+  f.response.config.prompts = { reviewer: "Project-specific instructions" }
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit global defaults", "advanced", "back", "help", "back", undefined)
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    const advanced = f.dialogs.find(dialog => dialog.kind === "alert" && dialog.title === "Advanced configuration")
+    expect(advanced?.message).toContain("C:/profile/opencode.jsonc")
+    expect(advanced?.message).toContain("Global review instructions")
+    expect(advanced?.message).toContain('"autoThreshold": 45')
+    expect(advanced?.message).not.toContain("Project-specific instructions")
+    const help = f.dialogs.find(dialog => dialog.title === "Help & about")
+    expect(help?.options.map((option: any) => option.value)).toEqual(["usage", "about", "back"])
+    expect(f.settingsSaves).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("viewing advanced configuration preserves an unsaved draft without duplicating editable settings", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "limits", "workers", "back", "advanced", "save")
+    f.enter("1"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    const advanced = f.dialogs.find(dialog => dialog.kind === "alert" && dialog.title === "Advanced configuration")
+    expect(advanced.message).toContain("C:/project/ultracode.json")
+    for (const editable of ['"models"', '"limits"', '"checks"']) expect(advanced.message).not.toContain(editable)
+    expect(f.settingsSaves).toHaveLength(1)
+    expect(f.settingsSaves[0].input.options).toEqual({ limits: { workers: 1 } })
   } finally { await cleanup!() }
 })
 
@@ -238,21 +273,21 @@ test("scope selection identifies the initiating session's project", async () => 
   } finally { await cleanup!() }
 })
 
-test("JSON-only options and diagnostics remain available through help without duplicate editable values", async () => {
+test("advanced configuration and support have separate destinations", async () => {
   const f = fixture()
-  f.response.config.prompts!.reviewer = "Inspect backwards compatibility."
+  f.settingsView.effective.prompts!.reviewer = "Inspect backwards compatibility."
   const cleanup = await plugin.setup(f.context as any)
   try {
     f.route({ type: "session", sessionID: "parent" })
-    f.choose("help", "advanced", "about", "back", undefined)
+    f.choose("Configuration/Edit project settings", "advanced", "back", "help", "about", "back", undefined)
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    const advanced = f.dialogs.find(dialog => dialog.title === "Advanced options (JSON)")
+    const advanced = f.dialogs.find(dialog => dialog.title === "Advanced configuration")
     expect(advanced.message).toContain("Inspect backwards compatibility.")
     expect(advanced.message).toContain('"autoThreshold": 80')
     const about = f.dialogs.find(dialog => dialog.title === "About Ultra")
     for (const text of ["2.0.25", "ultra/2", "C:/project", "state.sqlite"]) expect(about.message).toContain(text)
-    expect(f.dialogs.filter(dialog => dialog.title === "Help & advanced")).toHaveLength(3)
-    expect(f.settingsReads).toHaveLength(0)
+    expect(f.dialogs.filter(dialog => dialog.title === "Help & about")).toHaveLength(2)
+    expect(f.settingsReads).toHaveLength(1)
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
 })
