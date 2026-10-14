@@ -7,7 +7,7 @@ const guides = [
   },
   {
     title: "Editing & saving", value: "saving", description: "Edit, reset, review and apply a draft",
-    message: "Choose a scope, then Models, Limits, Checks or Advanced configuration. Select a value to edit it. Deadlines use seconds; context budgets use characters. In Limits, Ctrl+R restores the inherited or built-in value.\n\nChanges stay in a draft. Review changes shows what will change; Save asks for confirmation before writing. Leaving an edited draft asks whether to discard it. Escape returns one level.\n\nProject saves apply to new workflows immediately. Reload OpenCode after saving global defaults. Existing runs keep their captured settings. Saving is blocked while workflows are active; finish or stop them before saving.",
+    message: "Choose a scope, then Models, Limits, Checks or Advanced configuration. Select a value to edit it. Deadlines use seconds; context budgets use characters. In Limits, Ctrl+R restores the inherited or built-in value.\n\nChanges stay in a draft. Review changes shows what will change; Save asks for confirmation before writing. Leaving an edited draft asks whether to discard it. Back or Escape returns one menu level and preserves your place.\n\nProject saves apply to new workflows immediately. Reload OpenCode after saving global defaults. Existing runs keep their captured settings. Saving is blocked while workflows are active; finish or cancel them, then use Recheck save availability to keep editing the same draft.",
   },
   {
     title: "Advanced controls", value: "advanced", description: "Role instructions, writer policy and automatic mode",
@@ -24,7 +24,7 @@ export async function showSettingsHelp(ctx: Context, active: () => boolean) {
   while (active()) {
     const selected = await ctx.ui.dialog.select({ title: "Ultra help", placeholder: "Choose a guide", current, options: [
       ...guides.map(({ message, ...option }) => option),
-      { title: "Back to settings", value: "back" },
+      { title: "Back to Ultra settings", value: "back", category: "Navigation" },
     ] })
     if (!active() || !selected || selected === "back") return
     const guide = guides.find(guide => guide.value === selected)

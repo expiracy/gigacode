@@ -3,10 +3,12 @@ import type { CheckSpec, Limits, ModelOptions } from "./types.ts"
 import type { EditableSettings, SettingsView } from "./settings.ts"
 
 export function scopeLabel(view: SettingsView): string { return view.scope === "global" ? "Global defaults" : "This project" }
+export function settingsBack(view: SettingsView) { return { title: view.scope === "global" ? "Back to global defaults" : "Back to project settings", value: "back", category: "Navigation" } }
 export function settingSource(view: SettingsView, overridden: boolean): string {
   return overridden ? view.scope === "global" ? "global default" : "project override" : view.scope === "global" ? "built-in default" : "inherited"
 }
 export function writerPolicy(parallel: boolean): string { return parallel ? "Isolated parallel writers" : "Serial writers" }
+export function modelText(reference: string | undefined): string { return reference === "inherit" ? "Chat model" : reference ?? "Other model rules" }
 
 export const modelFields = [{ title: "Workflow default", value: "default", category: "Default" },
   ...roles.map(role => ({ title: `Role: ${role}`, value: `roles.${role}`, category: "Roles" })),
@@ -40,6 +42,9 @@ export function modelValue(models: ModelOptions | undefined, path: string): stri
 }
 export function changes(view: SettingsView, draft: EditableSettings): string {
   const fallback = view.scope === "global" ? "built-in default" : "inherited"
+  const model = (options: EditableSettings, path: string) => modelValue(options.models, path) === undefined
+    ? `${fallback} (${modelText(modelValue(view.inherited.models, path))})`
+    : modelText(modelValue(options.models, path))
   const limit = (options: EditableSettings, field: typeof limitFields[number]) => options.limits?.[field.value] === undefined
     ? `${fallback} (${limitText(view.inherited.limits[field.value], field.seconds)})`
     : limitText(options.limits[field.value], field.seconds)
@@ -48,7 +53,7 @@ export function changes(view: SettingsView, draft: EditableSettings): string {
   const threshold = (value: number | undefined) => value === undefined ? `${fallback} (${view.inherited.autoThreshold} characters)` : `${value} characters`
   const instructions = (options: EditableSettings, role: typeof roles[number]) => options.prompts?.[role] ?? `${fallback}:\n${view.inherited.prompts?.[role] ?? "Built-in role guidance"}`
   return [...modelFields.filter(field => modelValue(view.overrides.models, field.value) !== modelValue(draft.models, field.value))
-    .map(field => `${field.title}: ${modelValue(view.overrides.models, field.value) ?? "inherited"} → ${modelValue(draft.models, field.value) ?? "inherited"}`),
+    .map(field => `${field.title}: ${model(view.overrides, field.value)} → ${model(draft, field.value)}`),
     ...limitFields.filter(field => view.overrides.limits?.[field.value] !== draft.limits?.[field.value])
       .map(field => `${field.title}: ${limit(view.overrides, field)} → ${limit(draft, field)}`),
     ...(view.overrides.parallelWrites === draft.parallelWrites ? [] : [`Writer policy: ${writer(view.overrides.parallelWrites)} → ${writer(draft.parallelWrites)}`]),

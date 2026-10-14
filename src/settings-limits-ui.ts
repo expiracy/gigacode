@@ -1,7 +1,7 @@
 import type { Context } from "@opencode/plugin/tui/context"
 import type { EditableSettings, SettingsView } from "./settings.ts"
 import { parseConfigOptions } from "./config.ts"
-import { limitFields, limitText, scopeLabel, settingSource } from "./settings-presentation.ts"
+import { limitFields, limitText, scopeLabel, settingSource, settingsBack } from "./settings-presentation.ts"
 
 function resetLimit(draft: EditableSettings, key: typeof limitFields[number]["value"]) {
   if (draft.limits) { delete draft.limits[key]; if (!Object.keys(draft.limits).length) delete draft.limits }
@@ -15,8 +15,8 @@ export async function editLimit(ctx: Context, view: SettingsView, draft: Editabl
       ...limitFields.map(field => ({ title: field.title, value: field.value,
         description: `${limitText(draft.limits?.[field.value] ?? view.inherited.limits[field.value], field.seconds)} · ${settingSource(view, draft.limits?.[field.value] !== undefined)}. ${field.description}`,
       })),
-      { title: "Back to settings", value: "back" },
-    ], actions: [{ bind: "ctrl+r", title: view.scope === "global" ? "Reset to built-in default" : "Use inherited value", onTrigger(key) {
+      settingsBack(view),
+    ], actions: [{ bind: "ctrl+r", title: view.scope === "global" ? "Use built-in default" : "Use inherited value", onTrigger(key) {
       if (!active()) return
       const field = limitFields.find(field => field.value === key)
       if (!field) return

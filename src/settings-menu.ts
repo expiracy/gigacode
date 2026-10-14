@@ -12,7 +12,7 @@ export async function openSettingsMenu(ctx: Context, value: unknown, sessionId: 
   const configuration = value as Configuration
   let selection: string | undefined
   while (active()) {
-    const selected = await ctx.ui.dialog.select({ title: "Ultra settings", placeholder: "Choose where changes apply", current: selection, options: [
+    const selected = await ctx.ui.dialog.select({ title: "Ultra settings", placeholder: "Choose a scope, Help or About", current: selection, options: [
       { title: "This project", value: "Configuration/Edit project settings", description: configuration.directory ? `${configuration.directory} · overrides global defaults` : "Override global defaults for this project" },
       { title: "Global defaults", value: "Configuration/Edit global defaults", description: "All projects using this profile; project overrides still apply" },
       { title: "Help", value: "help", description: "Guides to settings and workflows" },

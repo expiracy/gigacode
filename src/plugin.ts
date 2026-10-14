@@ -62,7 +62,7 @@ export default Plugin.define({
       const adapter = new OpenCodeAdapter(ctx, store, artifacts)
       retireAdapter = () => adapter.retire()
       const engine = new Engine(store, adapter, ctx.location.project.id, directory, config, join(root, "state.sqlite"))
-      const settingsBlocked = () => engine.list().some(run => !terminal.has(run.status) || busy(run)) ? "Finish or cancel active workflows before saving project settings." : undefined
+      const settingsBlocked = () => engine.list().some(run => !terminal.has(run.status) || busy(run)) ? "Finish or cancel active workflows before saving settings." : undefined
       const guardSettings = () => {
         stop.signal.throwIfAborted()
         const blocked = settingsBlocked()

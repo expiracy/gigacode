@@ -16,7 +16,7 @@ export async function editInstructions(ctx: Context, view: SettingsView, draft: 
     let resetting = false
     const selected = await ctx.ui.dialog.select<string>({ title: "Role instructions", placeholder: `${scopeLabel(view)} · select a role to edit`, current, options: [
       ...roles.map(role => ({ title: role[0]!.toUpperCase() + role.slice(1), value: role, description: `${(draft.prompts?.[role] ?? view.inherited.prompts?.[role] ?? "Built-in role guidance").replaceAll(/\s+/g, " ").slice(0, 90)} · ${settingSource(view, draft.prompts?.[role] !== undefined)}` })),
-      { title: "Back to advanced settings", value: "back" },
+      { title: "Back to advanced configuration", value: "back", category: "Navigation" },
     ], actions: [{ bind: "ctrl+r", title: view.scope === "global" ? "Use built-in instructions" : "Use inherited instructions", onTrigger(key) {
       const role = roles.find(role => role === key)
       if (!active() || !role) return
