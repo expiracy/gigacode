@@ -60,6 +60,21 @@ afterEach(() => {
 })
 
 describe("plugin lifecycle", () => {
+  test("advanced reset RPC is explicit, and new runs capture the saved advanced defaults", async () => {
+    const value = fixture({ configuration: { prompts: { reviewer: "Inherited review" }, autoThreshold: 90, checks: [] } })
+    writeFileSync(join(value.directory, "ultracode.json"), '{"prompts":{"reviewer":"Project review"},"parallelWrites":true,"autoThreshold":120}')
+    const cleanup = await plugin.setup(value.context as any)
+    try {
+      const rpc = value.hooks.get("rpc"), before = await rpc.settings({ sessionId: "parent" })
+      const saved = await rpc.saveSettings({ sessionId: "parent", revision: before.revision, replaceAdvanced: true, options: { autoThreshold: 150 } })
+      expect(saved.effective.prompts.reviewer).toBe("Inherited review")
+      expect(saved.effective.parallelWrites).toBe(false)
+      expect(saved.effective.autoThreshold).toBe(150)
+      const admitted = await rpc.control({ text: "plan Inspect advanced settings", sessionId: "parent" })
+      expect(value.store!.get(admitted.run.id)!.config.autoThreshold).toBe(150)
+      expect(value.store!.get(admitted.run.id)!.config.prompts?.reviewer).toBe("Inherited review")
+    } finally { await cleanup!() }
+  })
   test("global guided RPC edits the active shared profile without changing project overrides", async () => {
     const value = fixture({ configuration: { limits: { workers: 2 }, checks: [] } })
     const profile = join(value.directory, "profile.json")

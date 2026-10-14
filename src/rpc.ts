@@ -11,7 +11,7 @@ export const UltraRpc = Rpc.define({ id: "ultra.open-code", methods: {
   inspect: { input: input({ runId: string, taskId: string }, ["runId"]), output: object },
   config: { input: input({}), output: object },
   settings: { input: input({ sessionId: string, scope }, ["sessionId"]), output: object },
-  saveSettings: { input: input({ sessionId: string, scope, revision: string, options: object }, ["sessionId", "revision", "options"]), output: object },
+  saveSettings: { input: input({ sessionId: string, scope, revision: string, options: object, replaceAdvanced: { type: "boolean" } }, ["sessionId", "revision", "options"]), output: object },
   control: { input: input({ text: string, sessionId: string }, ["text", "sessionId"]), output: object },
   export: { input: input({ runId: string }, ["runId"]), output: object },
 }, events: {

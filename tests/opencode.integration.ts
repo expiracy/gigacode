@@ -278,6 +278,38 @@ export async function runOpenCodeIntegration() {
       assert.equal(fixture.requests.length, requests)
       return { profile: shared.path, inheritedWorkersAfterReload: 3, projectOverrideWorkers: 1, originalDefaultsRestored: true, providerRequests: 0 }
     })
+    await check("advanced settings save and reset in both scopes while legacy saves retain them", async () => {
+      const requests = fixture.requests.length
+      const before = await rpc.settings({ sessionId: parent.id }, options()) as unknown as SettingsView
+      const localText = "Review project contracts.\nCheck integer boundaries."
+      const saved = await rpc.saveSettings({ sessionId: parent.id, revision: before.revision, replaceAdvanced: true, options: { ...before.overrides, prompts: { reviewer: localText }, parallelWrites: true, autoThreshold: 130 } }, options()) as unknown as SettingsView
+      assert.equal(saved.effective.prompts?.reviewer, localText)
+      assert.equal(saved.effective.parallelWrites, true)
+      assert.equal(saved.effective.autoThreshold, 130)
+      const legacy = await rpc.saveSettings({ sessionId: parent.id, revision: saved.revision, options: { limits: { workers: 1 } } }, options()) as unknown as SettingsView
+      assert.equal(legacy.effective.prompts?.reviewer, localText)
+      assert.equal(legacy.effective.parallelWrites, true)
+      await rpc.saveSettings({ sessionId: parent.id, revision: legacy.revision, replaceAdvanced: true, options: before.overrides }, options())
+      const projectSource = await readFile(before.path, "utf8")
+      const shared = await rpc.settings({ sessionId: parent.id, scope: "global" }, options()) as unknown as SettingsView
+      const globalText = "Review shared contracts.\nPreserve public interfaces."
+      const globalSaved = await rpc.saveSettings({ sessionId: parent.id, scope: "global", revision: shared.revision, replaceAdvanced: true, options: { ...shared.overrides, prompts: { ...shared.overrides.prompts, reviewer: globalText }, parallelWrites: true, autoThreshold: 150 } }, options()) as unknown as SettingsView
+      assert.equal(globalSaved.reloadRequired, true)
+      assert.equal(await readFile(before.path, "utf8"), projectSource)
+      await host!.restart()
+      const active = await rpc.config({}, options()) as { config: Run["config"] }
+      assert.equal(active.config.prompts?.reviewer, globalText)
+      assert.equal(active.config.parallelWrites, true)
+      assert.equal(active.config.autoThreshold, 150)
+      const current = await rpc.settings({ sessionId: parent.id, scope: "global" }, options()) as unknown as SettingsView
+      await rpc.saveSettings({ sessionId: parent.id, scope: "global", revision: current.revision, replaceAdvanced: true, options: shared.overrides }, options())
+      await host!.restart()
+      const restored = await rpc.config({}, options()) as { config: Run["config"] }
+      assert.equal(restored.config.parallelWrites, false)
+      assert.equal(restored.config.autoThreshold, 80)
+      assert.equal(fixture.requests.length, requests)
+      return { bothScopes: true, legacyAdvancedValuesPreserved: true, multilineInstructionsPreserved: true, originalDefaultsRestored: true, providerRequests: 0 }
+    })
     await check("one global installation supplies isolated project overrides and state", async () => {
       for (const directory of [host!.project, host!.otherProject]) for (const file of ["opencode.json", "opencode.jsonc"]) assert.equal(existsSync(join(directory, file)), false)
       const installed = JSON.parse(await readFile(join(host!.root, "config", "opencode.json"), "utf8"))

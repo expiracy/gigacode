@@ -20,7 +20,7 @@ test("global settings expose only Ultra options and built-in defaults, never nat
   await writeFile(f.path, source)
   const view = await f.settings.read()
   expect(view.path).toBe(f.path)
-  expect(view.overrides).toEqual({ limits: { workers: 2 } })
+  expect(view.overrides).toEqual({ limits: { workers: 2 }, prompts: { reviewer: "Keep contracts" } })
   expect(view.inherited.limits.workers).toBe(4)
   expect(view.effective.limits.workers).toBe(2)
   expect(JSON.stringify(view)).not.toContain("fixture-secret")
@@ -49,6 +49,39 @@ test("global saves change only Ultra editable fields and preserve JSONC comments
   expect(changed).toContain('"other-plugin", // Keep this comment too.')
   expect(changed).toContain('"apiKey": "fixture-secret"')
   expect(await readFile(saved.backup!, "utf8")).toBe(source)
+})
+
+test("editing global writer policy and threshold leaves instruction comments untouched", async () => {
+  const f = await fixture()
+  const source = `{"plugins":[{"package":${JSON.stringify(f.packagePath)},"options":{
+    "prompts": {
+      // Keep the review rationale.
+      "reviewer": "Preserve contracts"
+    },
+    "parallelWrites": false, "autoThreshold": 80
+  }}]}`
+  await writeFile(f.path, source)
+  const before = await f.settings.read()
+  const saved = await f.settings.save(before.revision, { ...before.overrides, parallelWrites: true, autoThreshold: 120 }, [])
+  expect(saved.effective.parallelWrites).toBe(true)
+  expect(saved.effective.autoThreshold).toBe(120)
+  expect(saved.effective.prompts?.reviewer).toBe("Preserve contracts")
+  expect(await readFile(f.path, "utf8")).toContain("// Keep the review rationale.")
+  expect(await readFile(saved.backup!, "utf8")).toBe(source)
+})
+
+test("editing one global role preserves comments and instructions on the other roles", async () => {
+  const f = await fixture()
+  const source = `{"plugins":[{"package":${JSON.stringify(f.packagePath)},"options":{"prompts":{
+    // Keep the planner explanation.
+    "planner":"Plan carefully","reviewer":"Review carefully"
+  }}}]}`
+  await writeFile(f.path, source)
+  const before = await f.settings.read()
+  const saved = await f.settings.save(before.revision, { ...before.overrides, prompts: { ...before.overrides.prompts, reviewer: "Review boundary cases" } }, [])
+  expect(saved.effective.prompts?.planner).toBe("Plan carefully")
+  expect(saved.effective.prompts?.reviewer).toBe("Review boundary cases")
+  expect(await readFile(f.path, "utf8")).toContain("// Keep the planner explanation.")
 })
 
 test("an explicit shared profile resolves relative plugin paths beside that file", async () => {

@@ -214,19 +214,132 @@ test("advanced configuration lives in the chosen scope and uses its actual value
   const f = fixture(), cleanup = await plugin.setup(f.context as any)
   f.globalSettingsView.effective.prompts = { reviewer: "Global review instructions" }
   f.globalSettingsView.effective.autoThreshold = 45
+  f.globalSettingsView.overrides = { prompts: { reviewer: "Global review instructions" }, autoThreshold: 45 }
   f.response.config.prompts = { reviewer: "Project-specific instructions" }
   try {
     f.route({ type: "session", sessionID: "parent" })
-    f.choose("Configuration/Edit global defaults", "advanced", "back", "help", "back", undefined)
+    f.choose("Configuration/Edit global defaults", "advanced", "back", "back", "help", "back", undefined)
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    const advanced = f.dialogs.find(dialog => dialog.kind === "alert" && dialog.title === "Advanced configuration")
-    expect(advanced?.message).toContain("C:/profile/opencode.jsonc")
-    expect(advanced?.message).toContain("Global review instructions")
-    expect(advanced?.message).toContain('"autoThreshold": 45')
-    expect(advanced?.message).not.toContain("Project-specific instructions")
+    const advanced = f.dialogs.find(dialog => dialog.title === "Advanced configuration")
+    expect(advanced?.placeholder).toContain("C:/profile/opencode.jsonc")
+    expect(advanced?.options.find((option: any) => option.value === "prompts").description).toContain("1 custom")
+    expect(advanced?.options.find((option: any) => option.value === "threshold").description).toContain("45 characters")
+    expect(JSON.stringify(advanced?.options)).not.toContain("Project-specific instructions")
     const help = f.dialogs.find(dialog => dialog.title === "Help & about")
     expect(help?.options.map((option: any) => option.value)).toEqual(["usage", "about", "back"])
     expect(f.settingsSaves).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("writer policy is editable in the advanced draft and saved only after confirmation", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "advanced", "writer", "parallel", "back", "save"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.settingsSaves[0]?.input.options).toEqual({ parallelWrites: true })
+    expect(f.settingsSaves[0]?.input.replaceAdvanced).toBe(true)
+    expect(f.dialogs.find(dialog => dialog.kind === "confirm")?.message).toContain("Isolated parallel writers")
+  } finally { await cleanup!() }
+})
+
+test("automatic-mode threshold edits explain opt-in behavior and preview the chosen value", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "advanced", "threshold", "back", "save")
+    f.enter("120"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    const prompt = f.dialogs.find(dialog => dialog.kind === "prompt")
+    expect(prompt?.value).toBe("80")
+    expect(prompt?.description).toContain("/ultracode on")
+    expect(f.dialogs.find(dialog => dialog.kind === "confirm")?.message).toContain("120 characters")
+    expect(f.settingsSaves[0]?.input.options).toEqual({ autoThreshold: 120 })
+  } finally { await cleanup!() }
+})
+
+test("role instructions edit inherited multiline text and include the full change in the save preview", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  const inherited = "Review public contracts.\nCheck edge cases."
+  const edited = "Review public contracts.\nCheck edge cases and integer limits."
+  f.settingsView.inherited.prompts = { reviewer: inherited }
+  f.settingsView.overrides.prompts = { planner: "Keep the implementation small." }
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "advanced", "prompts", "reviewer", "back", "back", "save")
+    f.enter(edited); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.dialogs.find(dialog => dialog.kind === "prompt")?.value).toBe(inherited)
+    expect(f.dialogs.find(dialog => dialog.kind === "confirm")?.message).toContain(edited)
+    expect(f.settingsSaves[0]?.input.options).toEqual({ prompts: { planner: "Keep the implementation small.", reviewer: edited } })
+  } finally { await cleanup!() }
+})
+
+test("advanced overrides can all return to inherited values without copying them into the project", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.settingsView.overrides = { prompts: { reviewer: "Project review" }, parallelWrites: true, autoThreshold: 120 }
+  f.settingsView.inherited.prompts = { reviewer: "Global review" }
+  f.settingsView.inherited.autoThreshold = 90
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "advanced", "writer", "reset", "threshold", "prompts", "reviewer", "back", "back", "save")
+    f.enter("inherit", ""); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.settingsSaves[0]?.input.options).toEqual({})
+    expect(f.settingsSaves[0]?.input.replaceAdvanced).toBe(true)
+    const preview = f.dialogs.find(dialog => dialog.kind === "confirm")?.message
+    expect(preview).toContain("Global review")
+    expect(preview).toContain("90 characters")
+    expect(preview).toContain("Serial writers")
+  } finally { await cleanup!() }
+})
+
+test("invalid advanced thresholds stay available for correction and cannot enter the draft", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "advanced", "threshold", "back", "save")
+    f.enter("0", "120.5", "100"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.dialogs.filter(dialog => dialog.title === "Invalid automatic-mode threshold")).toHaveLength(2)
+    expect(f.dialogs.filter(dialog => dialog.kind === "prompt").map(dialog => dialog.value)).toEqual(["80", "0", "120.5"])
+    expect(f.settingsSaves[0]?.input.options).toEqual({ autoThreshold: 100 })
+  } finally { await cleanup!() }
+})
+
+test("resetting one role keeps other custom instructions and previews its inherited text", async () => {
+  const f = fixture(), select = f.context.ui.dialog.select
+  f.settingsView.overrides.prompts = { planner: "Plan narrowly", reviewer: "Project review" }
+  f.settingsView.inherited.prompts = { reviewer: "Global review" }
+  let reset = false
+  f.context.ui.dialog.select = async options => {
+    if (options.title === "Role instructions" && !reset) {
+      reset = true
+      options.actions[0].onTrigger("reviewer")
+      return undefined
+    }
+    return select(options)
+  }
+  const cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "advanced", "prompts", "back", "back", "save"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.settingsSaves[0]?.input.options).toEqual({ prompts: { planner: "Plan narrowly" } })
+    expect(f.dialogs.find(dialog => dialog.kind === "confirm")?.message).toContain("Global review")
+  } finally { await cleanup!() }
+})
+
+test("cancelling an instruction edit preserves its text and other staged advanced changes", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.settingsView.overrides.prompts = { reviewer: "Keep the original review instructions." }
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "advanced", "writer", "parallel", "prompts", "reviewer", "back", "back", "save")
+    f.enter(undefined); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.settingsSaves[0]?.input.options).toEqual({ prompts: { reviewer: "Keep the original review instructions." }, parallelWrites: true })
+    expect(f.dialogs.find(dialog => dialog.kind === "confirm")?.message).not.toContain("Role instructions (reviewer)")
   } finally { await cleanup!() }
 })
 
@@ -234,12 +347,12 @@ test("viewing advanced configuration preserves an unsaved draft without duplicat
   const f = fixture(), cleanup = await plugin.setup(f.context as any)
   try {
     f.route({ type: "session", sessionID: "parent" })
-    f.choose("Configuration/Edit project settings", "limits", "workers", "back", "advanced", "save")
+    f.choose("Configuration/Edit project settings", "limits", "workers", "back", "advanced", "back", "save")
     f.enter("1"); f.confirm()
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    const advanced = f.dialogs.find(dialog => dialog.kind === "alert" && dialog.title === "Advanced configuration")
-    expect(advanced.message).toContain("C:/project/ultracode.json")
-    for (const editable of ['"models"', '"limits"', '"checks"']) expect(advanced.message).not.toContain(editable)
+    const advanced = f.dialogs.find(dialog => dialog.title === "Advanced configuration")
+    expect(advanced.placeholder).toContain("C:/project/ultracode.json")
+    expect(advanced.options.map((option: any) => option.value)).toEqual(["prompts", "writer", "threshold", "back"])
     expect(f.settingsSaves).toHaveLength(1)
     expect(f.settingsSaves[0].input.options).toEqual({ limits: { workers: 1 } })
   } finally { await cleanup!() }
@@ -276,14 +389,15 @@ test("scope selection identifies the initiating session's project", async () => 
 test("advanced configuration and support have separate destinations", async () => {
   const f = fixture()
   f.settingsView.effective.prompts!.reviewer = "Inspect backwards compatibility."
+  f.settingsView.overrides.prompts = { reviewer: "Inspect backwards compatibility." }
   const cleanup = await plugin.setup(f.context as any)
   try {
     f.route({ type: "session", sessionID: "parent" })
-    f.choose("Configuration/Edit project settings", "advanced", "back", "help", "about", "back", undefined)
+    f.choose("Configuration/Edit project settings", "advanced", "back", "back", "help", "about", "back", undefined)
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     const advanced = f.dialogs.find(dialog => dialog.title === "Advanced configuration")
-    expect(advanced.message).toContain("Inspect backwards compatibility.")
-    expect(advanced.message).toContain('"autoThreshold": 80')
+    expect(advanced.options.find((option: any) => option.value === "prompts").description).toContain("1 custom")
+    expect(advanced.options.find((option: any) => option.value === "threshold").description).toContain("80 characters")
     const about = f.dialogs.find(dialog => dialog.title === "About Ultra")
     for (const text of ["2.0.25", "ultra/2", "C:/project", "state.sqlite"]) expect(about.message).toContain(text)
     expect(f.dialogs.filter(dialog => dialog.title === "Help & about")).toHaveLength(2)
@@ -356,7 +470,7 @@ test("the global editor previews all-project scope and saves only to the shared 
     expect(confirmation?.message).toContain("All projects")
     expect(confirmation?.message).toContain("Project overrides")
     expect(confirmation?.message).toContain("C:/profile/opencode.jsonc")
-    expect(f.settingsSaves[0]?.input).toEqual({ sessionId: "parent", scope: "global", revision: "global-revision", options: { models: { default: "inherit" } } })
+    expect(f.settingsSaves[0]?.input).toEqual({ sessionId: "parent", scope: "global", revision: "global-revision", replaceAdvanced: true, options: { models: { default: "inherit" } } })
     expect(f.toasts.at(-1)?.message).toContain("Reload OpenCode")
   } finally { await cleanup!() }
 })
@@ -559,7 +673,7 @@ test("guided model selection stages a variant and saves only after a concrete co
     expect(confirmation).toBeDefined()
     expect(confirmation.message).toContain("fixture/model#fast")
     expect(f.settingsSaves).toHaveLength(1)
-    expect(f.settingsSaves[0].input).toEqual({ sessionId: "parent", revision: "settings-revision", options: { models: { default: "fixture/model#fast" } } })
+    expect(f.settingsSaves[0].input).toEqual({ sessionId: "parent", revision: "settings-revision", replaceAdvanced: true, options: { models: { default: "fixture/model#fast" } } })
     expect(f.settingsSaves[0].options.location.directory).toBe("C:/plugin-project")
   } finally { await cleanup!() }
 })

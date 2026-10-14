@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { applyEdits, modify, visit } from "jsonc-parser"
-import { parseConfig, parseConfigOptions } from "./config.ts"
+import { parseConfig, parseConfigOptions, roles } from "./config.ts"
 import { packageMatches, parseNativeConfiguration } from "./native-config.ts"
 import { assertPlainPath, digest } from "./workspace.ts"
 import type { EditableSettings, SettingsSnapshot } from "./settings.ts"
@@ -50,14 +50,14 @@ export class GlobalSettings {
     const { path, revision, options } = await this.document()
     return { path, revision, overrides: editableSettings(options), inherited: parseConfig({}), effective: parseConfig(options) }
   }
-  async save(revision: string, overrides: EditableSettings, models: readonly AvailableModel[], signal?: AbortSignal): Promise<SettingsSnapshot & { backup?: string }> {
+  async save(revision: string, overrides: EditableSettings, models: readonly AvailableModel[], signal?: AbortSignal, replaceAdvanced = false): Promise<SettingsSnapshot & { backup?: string }> {
     const initial = await this.document()
     return serializeSettingsWrite(initial.path, async () => {
       signal?.throwIfAborted()
       this.beforeWrite()
       const before = await this.document()
       if (before.revision !== revision) throw new Error("Global defaults changed. Reopen the editor before saving.")
-      const options = editSettings(before.options, overrides, models)
+      const options = editSettings(before.options, overrides, models, replaceAdvanced)
       if (isDeepStrictEqual(options, before.options)) return this.read()
       const entry = before.native.plugins[before.index]
       let source = before.source
@@ -65,7 +65,14 @@ export class GlobalSettings {
       const set = (path: (string | number)[], value: unknown) => { source = applyEdits(source, modify(source, path, value, { formattingOptions })) }
       if (typeof entry === "string") set(["plugins", before.index], { package: entry, options })
       else if (entry.options === undefined) set(["plugins", before.index, "options"], options)
-      else for (const key of editableKeys) set(["plugins", before.index, "options", key], options[key])
+      else for (const key of editableKeys) {
+        if (isDeepStrictEqual(before.options[key], options[key])) continue
+        if (key === "prompts" && before.options.prompts && options.prompts) {
+          for (const role of roles) {
+            if (before.options.prompts[role] !== options.prompts[role]) set(["plugins", before.index, "options", key, role], options.prompts[role])
+          }
+        } else set(["plugins", before.index, "options", key], options[key])
+      }
       const backup = await replaceSettingsFile({
         path: before.path, previous: before.source, source,
         backupDirectory: join(dirname(before.path), ".ultracode", "settings-backups"),

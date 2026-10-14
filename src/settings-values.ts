@@ -1,8 +1,9 @@
 import { modelRef, parseConfigOptions, strictRecord, type ConfigOptions } from "./config.ts"
 import type { AvailableModel, ModelOptions } from "./types.ts"
 
-export type EditableSettings = Pick<ConfigOptions, "models" | "limits" | "checks">
-export const editableKeys = ["models", "limits", "checks"] as const
+const basicEditableKeys = ["models", "limits", "checks"] as const
+export const editableKeys = [...basicEditableKeys, "prompts", "parallelWrites", "autoThreshold"] as const
+export type EditableSettings = Pick<ConfigOptions, typeof editableKeys[number]>
 
 export function editableSettings(options: ConfigOptions): EditableSettings {
   const result: EditableSettings = {}
@@ -19,7 +20,7 @@ function modelReferences(models: ModelOptions | undefined): Map<string, string> 
   return references
 }
 
-export function editSettings(previous: ConfigOptions, overrides: unknown, catalog: readonly AvailableModel[]): ConfigOptions {
+export function editSettings(previous: ConfigOptions, overrides: unknown, catalog: readonly AvailableModel[], replaceAdvanced = false): ConfigOptions {
   const edited = parseConfigOptions(strictRecord(overrides, editableKeys, "editable settings"))
   const before = modelReferences(previous.models)
   for (const [key, reference] of modelReferences(edited.models)) {
@@ -29,6 +30,7 @@ export function editSettings(previous: ConfigOptions, overrides: unknown, catalo
     if (ref.variant && !model.variants.includes(ref.variant)) throw new Error(`Variant ${ref.variant} is not available for ${ref.providerID}/${ref.id}`)
   }
   const options = { ...previous }
-  for (const key of editableKeys) delete options[key]
+  // Older core-only clients do not own omitted advanced overrides.
+  for (const key of replaceAdvanced ? editableKeys : basicEditableKeys) delete options[key]
   return Object.assign(options, edited)
 }

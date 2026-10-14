@@ -6,6 +6,7 @@ export function scopeLabel(view: SettingsView): string { return view.scope === "
 export function settingSource(view: SettingsView, overridden: boolean): string {
   return overridden ? view.scope === "global" ? "global default" : "project override" : view.scope === "global" ? "built-in default" : "inherited"
 }
+export function writerPolicy(parallel: boolean): string { return parallel ? "Isolated parallel writers" : "Serial writers" }
 
 export const modelFields = [{ title: "Workflow default", value: "default", category: "Default" },
   ...roles.map(role => ({ title: `Role: ${role}`, value: `roles.${role}`, category: "Roles" })),
@@ -43,10 +44,17 @@ export function changes(view: SettingsView, draft: EditableSettings): string {
     ? `${fallback} (${limitText(view.inherited.limits[field.value], field.seconds)})`
     : limitText(options.limits[field.value], field.seconds)
   const checks = (value: CheckSpec[] | undefined) => value === undefined && view.scope === "global" ? "Automatic discovery in each project, unless overridden." : checkText(value ?? view.inherited.checks)
+  const writer = (value: boolean | undefined) => value === undefined ? `${fallback} (${writerPolicy(view.inherited.parallelWrites)})` : writerPolicy(value)
+  const threshold = (value: number | undefined) => value === undefined ? `${fallback} (${view.inherited.autoThreshold} characters)` : `${value} characters`
+  const instructions = (options: EditableSettings, role: typeof roles[number]) => options.prompts?.[role] ?? `${fallback}:\n${view.inherited.prompts?.[role] ?? "Built-in role guidance"}`
   return [...modelFields.filter(field => modelValue(view.overrides.models, field.value) !== modelValue(draft.models, field.value))
     .map(field => `${field.title}: ${modelValue(view.overrides.models, field.value) ?? "inherited"} → ${modelValue(draft.models, field.value) ?? "inherited"}`),
     ...limitFields.filter(field => view.overrides.limits?.[field.value] !== draft.limits?.[field.value])
       .map(field => `${field.title}: ${limit(view.overrides, field)} → ${limit(draft, field)}`),
+    ...(view.overrides.parallelWrites === draft.parallelWrites ? [] : [`Writer policy: ${writer(view.overrides.parallelWrites)} → ${writer(draft.parallelWrites)}`]),
+    ...(view.overrides.autoThreshold === draft.autoThreshold ? [] : [`Automatic-mode threshold: ${threshold(view.overrides.autoThreshold)} → ${threshold(draft.autoThreshold)}`]),
+    ...roles.filter(role => view.overrides.prompts?.[role] !== draft.prompts?.[role])
+      .map(role => `Role instructions (${role})\nBefore:\n${instructions(view.overrides, role)}\nAfter:\n${instructions(draft, role)}`),
     ...(JSON.stringify(view.overrides.checks) === JSON.stringify(draft.checks) ? [] : [`Checks before:\n${checks(view.overrides.checks)}\nChecks after:\n${checks(draft.checks)}${draft.checks === undefined ? "" : view.scope === "global" ? "\nGlobal check list applies unless a project overrides it." : "\nProject check list replaces inherited checks."}`]),
   ].join("\n")
 }

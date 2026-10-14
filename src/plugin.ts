@@ -450,12 +450,12 @@ export default Plugin.define({
         async saveSettings(input, request) { return track(async () => {
           const signal = request ? AbortSignal.any([stop.signal, request.signal]) : stop.signal
           signal.throwIfAborted()
-          const value = input as { sessionId: string; scope?: SettingsScope; revision: string; options: EditableSettings }, scope = value.scope ?? "project"
+          const value = input as { sessionId: string; scope?: SettingsScope; revision: string; options: EditableSettings; replaceAdvanced?: boolean }, scope = value.scope ?? "project"
           await settingsCaller(value.sessionId)
           const models = await settingsModels()
           return engine.withOwnership(signal, async () => {
             await settingsCaller(value.sessionId)
-            const saved = await (await settingsStore(scope)).save(value.revision, value.options, models, signal)
+            const saved = await (await settingsStore(scope)).save(value.revision, value.options, models, signal, value.replaceAdvanced === true)
             if (scope === "project") Object.assign(config, saved.effective)
             return { ...saved, scope, models, ...(scope === "global" ? { reloadRequired: true } : {}) }
           })

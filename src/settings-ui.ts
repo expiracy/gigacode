@@ -3,11 +3,12 @@ import type { EditableSettings, SettingsScope, SettingsView } from "./settings.t
 import { editModel } from "./settings-models-ui.ts"
 import { editLimit } from "./settings-limits-ui.ts"
 import { editChecks } from "./settings-checks-ui.ts"
-import { changes, scopeLabel } from "./settings-presentation.ts"
+import { editAdvanced } from "./settings-advanced-ui.ts"
+import { changes } from "./settings-presentation.ts"
 
 export interface SettingsRpc {
   settings(input: { sessionId: string; scope?: SettingsScope }, options: { location: { directory: string }; signal: AbortSignal }): Promise<unknown>
-  saveSettings(input: { sessionId: string; scope?: SettingsScope; revision: string; options: EditableSettings }, options: { location: { directory: string }; signal: AbortSignal }): Promise<unknown>
+  saveSettings(input: { sessionId: string; scope?: SettingsScope; revision: string; options: EditableSettings; replaceAdvanced?: boolean }, options: { location: { directory: string }; signal: AbortSignal }): Promise<unknown>
 }
 
 export async function editSettings(ctx: Context, sessionId: string, rpc: SettingsRpc, current: () => boolean, signal: AbortSignal, scope: SettingsScope = "project"): Promise<"back" | void> {
@@ -30,7 +31,7 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
         { title: "Models", value: "models", description: "Default model, roles, stages and variants" },
         { title: "Limits", value: "limits", description: "Concurrency, attempts, deadlines and context" },
         { title: "Checks", value: "checks", description: "Configured verification commands" },
-        { title: "Advanced configuration", value: "advanced", description: "Role instructions, writer policy and automatic mode · JSON" },
+        { title: "Advanced configuration", value: "advanced", description: "Role instructions, writer policy and automatic mode" },
         { title: "Review changes", value: "review", disabled: !changed },
         { title: saveTitle, value: "save", description: view.blocked ?? (scope === "global" ? "All projects; reload OpenCode after saving" : "Applies to new workflows; global defaults stay unchanged"), disabled: !changed || !!view.blocked },
         { title: "Change scope", value: "back", description: "Choose project settings or global defaults" },
@@ -47,7 +48,7 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
       if (selected === "models") await editModel(ctx, view, draft, active)
       else if (selected === "limits") await editLimit(ctx, view, draft, active)
       else if (selected === "checks") await editChecks(ctx, view, draft, active)
-      else if (selected === "advanced") await ctx.ui.dialog.alert({ title: "Advanced configuration", message: `${scopeLabel(view)}\n${view.path}\n\nThese effective options are edited in JSON configuration:\n\n${JSON.stringify({ prompts: view.effective.prompts, parallelWrites: view.effective.parallelWrites, autoThreshold: view.effective.autoThreshold }, null, 2)}` })
+      else if (selected === "advanced") await editAdvanced(ctx, view, draft, active)
       else if (selected === "review") await ctx.ui.dialog.alert({ title: "Setting changes", message: `${impact}\n\n${changes(view, draft) || "No changes"}` })
       else if (selected === "save") {
         if (!changed || view.blocked) continue
@@ -55,7 +56,7 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
         if (!active()) return
         if (!confirmed) continue
         try {
-          await rpc.saveSettings({ sessionId, ...scopeInput, revision: view.revision, options: draft }, { location, signal })
+          await rpc.saveSettings({ sessionId, ...scopeInput, revision: view.revision, options: draft, replaceAdvanced: true }, { location, signal })
           if (active()) ctx.ui.toast.show({ title: "Ultra settings saved", message: scope === "global" ? "Global defaults saved. Reload OpenCode to apply them across projects. Project overrides still take precedence." : "Project settings apply to new workflows in this location. Global defaults are unchanged.", variant: "success", sessionID: sessionId })
         } catch (error) {
           if (active()) await ctx.ui.dialog.alert({ title: "Unable to confirm settings save", message: `${error instanceof Error ? error.message : "Save request failed"}\nReopen the editor to read current settings before trying again.` })

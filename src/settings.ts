@@ -33,13 +33,13 @@ export class ProjectSettings {
     const { path, revision, options, inherited, effective } = await this.document()
     return { path, revision, overrides: editableSettings(options), inherited, effective }
   }
-  save(revision: string, overrides: EditableSettings, models: readonly AvailableModel[], signal?: AbortSignal): Promise<SettingsSnapshot & { backup?: string }> {
+  save(revision: string, overrides: EditableSettings, models: readonly AvailableModel[], signal?: AbortSignal, replaceAdvanced = false): Promise<SettingsSnapshot & { backup?: string }> {
     return serializeSettingsWrite(join(this.directory, "ultracode.json"), async () => {
       signal?.throwIfAborted()
       this.beforeWrite()
       const before = await this.document()
       if (before.revision !== revision) throw new Error("Project settings changed. Reopen the editor before saving.")
-      const options = editSettings(before.options, overrides, models)
+      const options = editSettings(before.options, overrides, models, replaceAdvanced)
       if (isDeepStrictEqual(options, before.options)) return this.read()
       const effective = await resolveProjectConfig(this.nativeOptions, this.directory, options)
       const source = JSON.stringify(options, null, 2) + "\n"

@@ -24,9 +24,36 @@ test("settings show inherited values, project overrides and detected checks with
   expect(snapshot.inherited.limits.workers).toBe(2)
   expect(snapshot.effective.limits.workers).toBe(1)
   expect(snapshot.effective.prompts?.reviewer).toBe("Keep the public API")
-  expect(snapshot.overrides).toEqual({ limits: { workers: 1 } })
+  expect(snapshot.overrides).toEqual({ limits: { workers: 1 }, prompts: { reviewer: "Keep the public API" } })
   expect(snapshot.inherited.checks).toEqual([{ id: "test", command: "npm run test", criterionIds: ["verification"] }])
   expect(await readFile(snapshot.path, "utf8")).toBe(source)
+})
+
+test("project settings can save validated advanced options through the same settings writer", async () => {
+  const directory = await fixture(), settings = new ProjectSettings(directory, {})
+  const before = await settings.read()
+  const options = { prompts: { reviewer: "Review contracts.\nKeep boundary cases." }, parallelWrites: true, autoThreshold: 120 }
+  const saved = await settings.save(before.revision, options, [])
+  expect(JSON.parse(await readFile(saved.path, "utf8"))).toEqual(options)
+  expect(saved.overrides).toEqual(options)
+  expect(saved.effective.prompts?.reviewer).toBe(options.prompts.reviewer)
+  expect(saved.effective.parallelWrites).toBe(true)
+  expect(saved.effective.autoThreshold).toBe(120)
+})
+
+test("an explicit advanced reset restores inherited values while core-only saves preserve them", async () => {
+  const directory = await fixture(), settings = new ProjectSettings(directory, { prompts: { reviewer: "Global review" }, parallelWrites: true, autoThreshold: 90 })
+  await writeFile(join(directory, "ultracode.json"), '{"prompts":{"reviewer":"Project review"},"parallelWrites":false,"autoThreshold":120}')
+  const before = await settings.read()
+  const kept = await settings.save(before.revision, { limits: { workers: 1 } }, [])
+  expect(kept.effective.prompts?.reviewer).toBe("Project review")
+  expect(kept.effective.parallelWrites).toBe(false)
+  expect(kept.effective.autoThreshold).toBe(120)
+  const reset = await settings.save(kept.revision, { limits: { workers: 1 } }, [], undefined, true)
+  expect(reset.effective.prompts?.reviewer).toBe("Global review")
+  expect(reset.effective.parallelWrites).toBe(true)
+  expect(reset.effective.autoThreshold).toBe(90)
+  expect(JSON.parse(await readFile(reset.path, "utf8"))).toEqual({ limits: { workers: 1 } })
 })
 
 test("saving models, limits and checks backs up the file and preserves other project settings", async () => {
