@@ -4,6 +4,7 @@ import { createEffect, createRoot, createSignal } from "solid-js"
 import { UltraRpc } from "./src/rpc.ts"
 import type { Config } from "./src/types.ts"
 import type { WorkflowRun, WorkflowSnapshot } from "./src/workflow-view.ts"
+import { editProjectSettings } from "./src/settings-ui.ts"
 
 interface Configuration { config: Config; hostVersion?: string; promptVersion?: string; directory?: string; state?: string }
 interface CommandResult { sessionId: string; command: string; result?: object; error?: string }
@@ -53,13 +54,14 @@ async function hydrateFamily(ctx: Context, sessionID: string, signal: AbortSigna
   await children(root, "ultra-supervisor", supervisor => children(supervisor, "ultra-worker", async () => {}))
 }
 
-/** A searchable, read-only view of effective settings, with full values on selection. */
+/** Effective settings and the single entry point to the guided project editor. */
 function configurationOptions(value: unknown): Setting[] {
   if (!value || typeof value !== "object" || !("config" in value)) throw new Error("Ultra returned no effective configuration. Check the installation and restart OpenCode.")
   const { config, hostVersion, promptVersion, directory, state } = value as Configuration
   const options: Setting[] = []
   const add = (title: string, detail: string, category: string, description = detail) => options.push({ title, value: `${category}/${title}`, detail, category, description: description.replaceAll(/\s+/g, " ").slice(0, 100) })
-  add("How to edit settings", "This view is read-only. In OpenChamber, open Settings → Plugins, select the Ultra package entry, and edit its Options (JSON). Edit global options for shared defaults; a native project entry replaces those options. For field-by-field project inheritance, use ultracode.json in the directory where OpenCode runs. You can also set global defaults with bun run install:global --config <options.json> from the Ultra checkout. Save settings while workflows are settled; reload or restart OpenCode to apply them. Saved runs retain their captured settings.", "Configuration", "OpenChamber plugin options or configuration files")
+  add("Edit project settings", "Configure workflow models, limits and checks for this project. Global defaults remain unchanged.", "Configuration", "Guided editor for models, limits and checks")
+  add("How to edit settings", "Choose Edit project settings to configure workflow models, limits and checks in this location's ultracode.json. Review the changes, then explicitly save; existing files are backed up. Use inherited value removes that project override. Follow the initiating chat model explicitly sets inherit. Saves require settled workflows and apply to new runs in this location without a restart. Saved runs retain captured settings; saved plans may need fresh planning. For shared global defaults, use OpenChamber Settings → Plugins → the Ultra package → Options (JSON), or bun run install:global --config <options.json>. Manual file and global edits require a reload or restart. Prompts and other options remain available through JSON configuration.", "Configuration", "Guided project editor, shared defaults and configuration files")
   if (hostVersion) add("Supported OpenCode", hostVersion, "Configuration")
   if (promptVersion) add("Prompt version", promptVersion, "Configuration")
   add("Default model", config.models.default ?? "inherit", "Models")
@@ -112,8 +114,10 @@ export default Plugin.define({
     let disposed = false
     let workflowRefresh: ((force?: boolean) => Promise<void>) | undefined
     let workflowStop: (() => void) | undefined
+    let settingsController: AbortController | undefined
     let sessionID: string | undefined, loading: AbortController | undefined
     const refresh = (id: string | undefined) => {
+      if (id !== sessionID) settingsController?.abort()
       if (id !== sessionID) workflowStop?.()
       loading?.abort()
       sessionID = id
@@ -132,11 +136,18 @@ export default Plugin.define({
       })
       return dispose
     })
-    const reconnect = ctx.data.on("server.connected", () => { refresh(sessionID); void workflowRefresh?.(true) })
-    const configuration = async (value: unknown) => {
+    const reconnect = ctx.data.on("server.connected", () => { settingsController?.abort(); refresh(sessionID); void workflowRefresh?.(true) })
+    const configuration = async (value: unknown, id: string) => {
+      const current = () => { const route = ctx.ui.router.current(); return !disposed && route.type === "session" && route.sessionID === id }
       const settings = configurationOptions(value)
       const options = settings.map(({ detail, ...option }) => option)
       const selected = await ctx.ui.dialog.select({ title: "Ultra configuration", placeholder: "Search settings; select one for details", options })
+      if (selected === "Configuration/Edit project settings" && current()) {
+        settingsController?.abort()
+        const controller = settingsController = new AbortController()
+        await editProjectSettings(ctx, id, rpc, current, controller.signal)
+        return
+      }
       const setting = settings.find(option => option.value === selected)
       if (setting && !disposed) await ctx.ui.dialog.alert({ title: setting.title, message: setting.detail })
     }
@@ -235,12 +246,13 @@ export default Plugin.define({
       const data = event.data as unknown as CommandResult
       const route = ctx.ui.router.current()
       if (route.type !== "session" || route.sessionID !== data.sessionId) return
+      settingsController?.abort()
       workflowStop?.()
       if (data.error) { await ctx.ui.dialog.alert({ title: "Ultra command error", message: data.error }); return }
-      if (data.command.trim() === "config") await configuration(data.result)
+      if (data.command.trim() === "config") await configuration(data.result, data.sessionId)
       else if (/^status(?:\s|$)/.test(data.command.trim())) void workflow(data.sessionId, data.command.trim().split(/\s+/)[1])
       else await ctx.ui.dialog.alert({ title: "Ultra command result", message: json(data.result) })
     })
-    return () => { if (!disposed) { disposed = true; workflowStop?.(); loading?.abort(); disposeRoot(); reconnect(); unsubscribe() } }
+    return () => { if (!disposed) { disposed = true; settingsController?.abort(); workflowStop?.(); loading?.abort(); disposeRoot(); reconnect(); unsubscribe() } }
   },
 })

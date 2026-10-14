@@ -11,6 +11,7 @@ import { ULTRA_PRIMARY_SYSTEM } from "../src/agents.ts"
 import { LEGACY_PRIMARY_SYSTEM } from "./legacy-primary-system.ts"
 import { manifest } from "../src/workspace.ts"
 import { SQLiteStore } from "../src/store.ts"
+import type { SettingsView } from "../src/settings.ts"
 import { createWorkflowFixture, fixtureExecutionWorkflow, fixturePlanningWorkflow } from "./workflow-fixture.ts"
 
 const object = { type: "object", additionalProperties: true } as const
@@ -18,6 +19,7 @@ const object = { type: "object", additionalProperties: true } as const
 const WorkflowRpc = Rpc.define({ id: "ultra.open-code", methods: {
   status: { input: object, output: object }, inspect: { input: object, output: object },
   config: { input: object, output: object }, control: { input: object, output: object }, export: { input: object, output: object },
+  settings: { input: object, output: object }, saveSettings: { input: object, output: object },
 }, events: { commandResult: { schema: {
   type: "object", properties: { sessionId: { type: "string", minLength: 1 }, command: { type: "string" }, result: object, error: { type: "string", minLength: 1 } },
   required: ["sessionId", "command"], additionalProperties: false,
@@ -229,6 +231,27 @@ export async function runOpenCodeIntegration() {
       } finally {
         unsubscribe(); subscription.abort(); await readiness.return?.()
       }
+    })
+    await check("guided project settings persist without model requests or changing global options", async () => {
+      const before = await rpc.settings({ sessionId: parent.id }, options()) as unknown as SettingsView
+      const requests = fixture.requests.length
+      const globalSource = await readFile(installedPath, "utf8")
+      assert.equal(before.inherited.limits.workers, 2)
+      assert(before.models.some(model => model.providerID === "fixture" && model.id === "test"))
+      const changed = { models: { roles: { reviewer: "fixture/test" } }, limits: { workers: 1 }, checks: [{ id: "settings-check", command: "echo settingsverified", criterionIds: ["verification"], timeoutMs: 1000 }] }
+      const saved = await rpc.saveSettings({ sessionId: parent.id, revision: before.revision, options: changed }, options()) as unknown as SettingsView
+      assert.deepEqual(JSON.parse(await readFile(before.path, "utf8")), changed)
+      assert.equal(saved.effective.models.roles?.reviewer, "fixture/test")
+      assert.equal(saved.effective.models.roles?.planner, "fixture/alternate")
+      assert.equal((await rpc.config({}, options()) as { config: Run["config"] }).config.limits.workers, 1)
+      await assert.rejects(rpc.saveSettings({ sessionId: parent.id, revision: before.revision, options: {} }, options()))
+      const reset = await rpc.saveSettings({ sessionId: parent.id, revision: saved.revision, options: {} }, options()) as unknown as SettingsView & { backup: string }
+      assert.equal(reset.effective.limits.workers, 2)
+      assert.equal(reset.effective.checks[0]?.id, "fixture-check")
+      assert.deepEqual(JSON.parse(await readFile(reset.backup, "utf8")), changed)
+      assert.equal(await readFile(installedPath, "utf8"), globalSource)
+      assert.equal(fixture.requests.length, requests)
+      return { path: saved.path, backup: reset.backup, staleSaveRejected: true, inheritedChecksRestored: true, providerRequests: 0, nativeRenderingVerified: false }
     })
     await check("one global installation supplies isolated project overrides and state", async () => {
       for (const directory of [host!.project, host!.otherProject]) for (const file of ["opencode.json", "opencode.jsonc"]) assert.equal(existsSync(join(directory, file)), false)

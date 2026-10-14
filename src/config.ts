@@ -163,7 +163,12 @@ export async function loadProjectConfig(options: unknown, directory: string, ove
       throw new Error(`Cannot load project configuration ${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
     }
   }
-  const merged = mergeConfigOptions(base, project, overrides)
+  return resolveProjectConfig(base, directory, project, overrides)
+}
+
+/** Resolve already selected layers without reading or writing the project override file. */
+export async function resolveProjectConfig(options: unknown, directory: string, project?: unknown, overrides?: unknown): Promise<Config> {
+  const merged = mergeConfigOptions(options, project, overrides)
   const config = parseConfig(merged)
   if (merged.checks !== undefined) return config
   try {

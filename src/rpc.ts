@@ -9,6 +9,8 @@ export const UltraRpc = Rpc.define({ id: "ultra.open-code", methods: {
   status: { input: input({ runId: string }), output: object },
   inspect: { input: input({ runId: string, taskId: string }, ["runId"]), output: object },
   config: { input: input({}), output: object },
+  settings: { input: input({ sessionId: string }, ["sessionId"]), output: object },
+  saveSettings: { input: input({ sessionId: string, revision: string, options: object }, ["sessionId", "revision", "options"]), output: object },
   control: { input: input({ text: string, sessionId: string }, ["text", "sessionId"]), output: object },
   export: { input: input({ runId: string }, ["runId"]), output: object },
 }, events: {

@@ -23,7 +23,7 @@ flowchart TD
     Plugin --> Artifacts["artifacts.ts: redacted exports"]
 ```
 
-`plugin.ts` is the composition root: it creates the store, engine and adapter, registers tools and hooks, and owns their disposal. It checks the supported host version before creating runtime state. `index.ts` exports this plugin; `tui.ts` is the separate terminal companion and reads the plugin through RPC.
+`plugin.ts` is the composition root: it creates the store, engine and adapter, registers tools and hooks, and owns their disposal. It checks the supported host version before creating runtime state. `index.ts` exports this plugin; `tui.ts` is the separate terminal companion and uses the plugin's RPC control plane.
 
 `engine.ts` owns state transitions and calls the `HostAdapter` interface. Its mutations use project ownership and store generation checks. Keeping these transitions together makes admission, cancellation, repair and recovery use the same concurrency rules.
 
@@ -92,6 +92,10 @@ Repairs preserve history and append a bounded writer, reviewer and verifier grap
 
 [Configuration](../src/config.ts) resolves models from authorized task overrides, stage and role settings, defaults, then the initiating model. Model and variant are captured together. Unavailable models, invalid variants and known lack of tool support are rejected without selecting another model.
 
+[The guided editor](../src/settings-ui.ts) uses native terminal dialogs to draft project model mappings, limits and checks. It sends a concrete save only after confirmation. [Project settings persistence](../src/settings.ts) resolves inherited and project layers through the shared configuration parser, validates changed model choices against the live catalogue, preserves other options, and rejects stale revisions. It backs up the original file and atomically replaces `ultracode.json`; temporary files live outside the fingerprinted source tree. Cancellation is checked before replacement. Optimistic revision checks detect competing editor saves and observed external edits; they do not lock independent external editors.
+
+The plugin validates the initiating primary session and uses project ownership during saves. A final synchronous guard refuses saves while any workflow is active or unsettled, including paused workflows. The existing engine configuration object updates after a successful save, so future admissions in that location capture the new values without restarting; persisted run snapshots remain unchanged. A changed configuration file can invalidate a saved plan's candidate fingerprint. These RPC methods are UI controls and are not exposed as model tools. The editor makes no model calls or global configuration writes.
+
 [Worker prompts](../src/workflow.ts) retain the objective, criteria, clarifications, task instructions, capabilities and check assignments. Generated task purposes avoid repeating the objective. Submission schemas expose only relevant fields: implementers omit assessments, other roles receive actual assessment IDs, and only eligible design roles receive the proposal schema.
 
 The handoff must fit both `limits.contextChars` and, when metadata is available, [an estimated model allowance](../src/context.ts). The allowance uses UTF-8 bytes conservatively against advertised token capacities, reserving output and native overhead. It is not a tokenizer measurement or a bound on all later native conversation history.
@@ -130,5 +134,6 @@ The [validation record](design.md) distinguishes native runtime tests from real-
 | New lifecycle or scheduling rule | `engine.ts`, `coordination.ts`, `completion.ts`; engine, store, lifecycle and recovery tests. |
 | Persistence or report changes | `store.ts`, `redaction.ts`, `artifacts.ts`, `workflow-view.ts`; store, artifact and view tests. |
 | Client controls or terminal views | `rpc.ts`, `agent-control.ts`, `tui.ts`; RPC/schema, agent-mode and terminal tests. |
+| Guided models, limits or checks | `config.ts` for resolution and validation, `settings.ts` for persistence, `settings-ui.ts` for native dialogs; settings, terminal, lifecycle and native integration tests. |
 
 Use the [README verification commands](../README.md#verification-and-source-map). Unit tests cover deterministic policy; native integration exercises actual tool and session behavior; opt-in model evaluations check a selected model separately. On macOS, canonical temporary paths such as `TMPDIR=/private/tmp` avoid the runtime metadata guard rejecting `/var` aliases in fixtures.

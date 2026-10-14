@@ -22,6 +22,7 @@ import { resourceCleanup } from "./lifecycle.ts"
 import { promptVersion } from "./workflow.ts"
 import { workflowView } from "./workflow-view.ts"
 import { assertHostVersion } from "./compatibility.ts"
+import { ProjectSettings, type EditableSettings, type SettingsModel } from "./settings.ts"
 import type { Run, TaskSpec } from "./types.ts"
 
 const supervisorSpec: TaskSpec = { id: "supervisor", title: "Coordinate workflow", role: "supervisor", stage: "design", instructions: "", writes: false, dependencies: [] }
@@ -58,6 +59,19 @@ export default Plugin.define({
       const adapter = new OpenCodeAdapter(ctx, store, artifacts)
       retireAdapter = () => adapter.retire()
       const engine = new Engine(store, adapter, ctx.location.project.id, directory, config, join(root, "state.sqlite"))
+      const settingsBlocked = () => engine.list().some(run => !terminal.has(run.status) || busy(run)) ? "Finish or cancel active workflows before saving project settings." : undefined
+      const projectSettings = new ProjectSettings(directory, ctx.options, join(root, "settings-backups"), () => {
+        stop.signal.throwIfAborted()
+        const blocked = settingsBlocked()
+        if (blocked) throw new Error(blocked)
+      })
+      const settingsCaller = async (id: string) => {
+        const caller = await adapter.scoped(id)
+        if (caller.parentID || adapter.binding(id)) throw new Error("Settings require an initiating primary conversation in this location")
+      }
+      const settingsModels = async (): Promise<SettingsModel[]> => (await ctx.model.list()).data
+        .filter(model => model.enabled !== false && model.capabilities.tools)
+        .map(model => ({ providerID: model.providerID, id: model.id, name: model.name ?? model.id, variants: model.variants.map(variant => variant.id), tools: true, ...(model.limit ? { limit: { ...model.limit } } : {}) }))
       const track = <T>(work: () => Promise<T>): Promise<T> => {
         stop.signal.throwIfAborted()
         const operation = work()
@@ -409,6 +423,27 @@ export default Plugin.define({
         async status(input) { const id = (input as { runId?: string }).runId; return sanitizeEventData(id ? { run: required(id) } : { runs: engine.list() }) as object },
         async inspect(input) { const value = input as { runId: string; taskId?: string }; return sanitizeEventData(inspect(value.runId, value.taskId)) as object },
         async config() { return { config, hostVersion, promptVersion, directory, state: join(root, "state.sqlite") } },
+        async settings(input, request) { return track(async () => {
+          request?.signal.throwIfAborted()
+          await settingsCaller((input as { sessionId: string }).sessionId)
+          const [snapshot, models] = await Promise.all([projectSettings.read(), settingsModels()])
+          request?.signal.throwIfAborted()
+          const blocked = settingsBlocked()
+          return { ...snapshot, models, ...(blocked ? { blocked } : {}) }
+        }) },
+        async saveSettings(input, request) { return track(async () => {
+          const signal = request ? AbortSignal.any([stop.signal, request.signal]) : stop.signal
+          signal.throwIfAborted()
+          const value = input as { sessionId: string; revision: string; options: EditableSettings }
+          await settingsCaller(value.sessionId)
+          const models = await settingsModels()
+          return engine.withOwnership(signal, async () => {
+            await settingsCaller(value.sessionId)
+            const saved = await projectSettings.save(value.revision, value.options, models, signal)
+            Object.assign(config, saved.effective)
+            return { ...saved, models }
+          })
+        }) },
         async control(input) { const value = input as { text: string; sessionId: string }; return sanitizeEventData(await control(value.text, value.sessionId)) as object },
         async export(input) { return track(async () => { const run = required((input as { runId: string }).runId); return artifacts.export(run, store.events(run.projectId, run.id)) }) },
       })

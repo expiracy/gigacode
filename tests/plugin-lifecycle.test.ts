@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test"
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { basename, isAbsolute, join, relative } from "node:path"
 import { tmpdir } from "node:os"
 import { Schema, SchemaRepresentation } from "effect"
@@ -59,6 +59,70 @@ afterEach(() => {
 })
 
 describe("plugin lifecycle", () => {
+  test("guided settings RPC omits absent values so native JSON validation accepts the snapshot", async () => {
+    const value = fixture(), cleanup = await plugin.setup(value.context as any)
+    try {
+      const settings = await value.hooks.get("rpc").settings({ sessionId: "parent" })
+      expect(Object.hasOwn(settings, "blocked")).toBe(false)
+      expect(JSON.parse(JSON.stringify(settings))).toEqual(settings)
+    } finally { await cleanup!() }
+  })
+  test("guided model choices include enabled beta models and omit disabled or tool-less entries", async () => {
+    const value = fixture()
+    value.context.model.list = async () => ({ data: [
+      { providerID: "fixture", id: "beta", enabled: true, status: "beta", variants: [], capabilities: { tools: true } },
+      { providerID: "fixture", id: "disabled", enabled: false, status: "active", variants: [], capabilities: { tools: true } },
+      { providerID: "fixture", id: "no-tools", enabled: true, status: "active", variants: [], capabilities: { tools: false } },
+    ] })
+    const cleanup = await plugin.setup(value.context as any)
+    try { expect((await value.hooks.get("rpc").settings({ sessionId: "parent" })).models.map((model: any) => model.id)).toEqual(["beta"]) }
+    finally { await cleanup!() }
+  })
+  test("cancelled guided RPC requests cannot save project settings", async () => {
+    const value = fixture(), cleanup = await plugin.setup(value.context as any)
+    try {
+      const rpc = value.hooks.get("rpc"), settings = await rpc.settings({ sessionId: "parent" })
+      const controller = new AbortController(); controller.abort()
+      await expect(rpc.saveSettings({ sessionId: "parent", revision: settings.revision, options: { limits: { workers: 1 } } }, { signal: controller.signal })).rejects.toThrow()
+      expect(existsSync(settings.path)).toBe(false)
+      expect((await rpc.config({})).config.limits.workers).toBe(4)
+    } finally { await cleanup!() }
+  })
+  test("guided settings RPC saves project values and applies them to future admissions", async () => {
+    const value = fixture(), cleanup = await plugin.setup(value.context as any)
+    try {
+      const rpc = value.hooks.get("rpc")
+      const settings = await rpc.settings({ sessionId: "parent" })
+      expect(settings.models).toEqual([expect.objectContaining({ providerID: "fixture", id: "test", variants: [] })])
+      expect(settings.effective.limits.workers).toBe(4)
+      await rpc.saveSettings({ sessionId: "parent", revision: settings.revision, options: { limits: { workers: 1 }, checks: [] } })
+      expect(JSON.parse(readFileSync(join(value.directory, "ultracode.json"), "utf8"))).toEqual({ limits: { workers: 1 }, checks: [] })
+      expect((await rpc.config({})).config.limits.workers).toBe(1)
+      const admitted = await rpc.control({ text: "plan Inspect this project", sessionId: "parent" })
+      expect(value.store!.get(admitted.run.id)!.config.limits.workers).toBe(1)
+    } finally { await cleanup!() }
+  })
+  test("guided settings refuse writes while a workflow owns the project and preserve its captured config", async () => {
+    const value = fixture(), cleanup = await plugin.setup(value.context as any)
+    try {
+      const rpc = value.hooks.get("rpc"), settings = await rpc.settings({ sessionId: "parent" })
+      const admitted = await rpc.control({ text: "plan Inspect this project", sessionId: "parent" })
+      expect((await rpc.settings({ sessionId: "parent" })).blocked).toContain("active workflows")
+      await expect(rpc.saveSettings({ sessionId: "parent", revision: settings.revision, options: { limits: { workers: 1 } } })).rejects.toThrow("active workflows")
+      expect(existsSync(settings.path)).toBe(false)
+      expect(value.store!.get(admitted.run.id)!.config.limits.workers).toBe(4)
+    } finally { await cleanup!() }
+  })
+  test("a child session cannot use the guided settings read or write endpoint", async () => {
+    const value = fixture(), cleanup = await plugin.setup(value.context as any)
+    try {
+      const rpc = value.hooks.get("rpc"), get = value.context.session.get
+      value.context.session.get = async input => ({ ...await get(input), parentID: "parent" })
+      await expect(rpc.settings({ sessionId: "child" })).rejects.toThrow("initiating primary")
+      await expect(rpc.saveSettings({ sessionId: "child", revision: "revision", options: { checks: [] } })).rejects.toThrow("initiating primary")
+      expect(existsSync(join(value.directory, "ultracode.json"))).toBe(false)
+    } finally { await cleanup!() }
+  })
   test("bound worker context advertises only the result fields its role can submit", async () => {
     const value = fixture(), cleanup = await plugin.setup(value.context as any)
     try {
