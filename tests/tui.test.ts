@@ -1,6 +1,7 @@
 import { expect, mock, test } from "bun:test"
 import { defaultConfig } from "../src/config.ts"
 import type { WorkflowSnapshot } from "../src/workflow-view.ts"
+import type { SettingsView } from "../src/settings.ts"
 
 // Match OpenCode's shared reactive runtime rather than Solid's server entry.
 const solidEntry = "solid-js/dist/solid.js"
@@ -16,11 +17,13 @@ function fixture() {
   const selections: (string | undefined)[] = []
   const prompts: (string | undefined)[] = []
   let confirmation = false
+  const confirmations: (boolean | undefined)[] = []
   let calls = 0, disposed = 0
   let finishDialog: ((value?: string) => void) | undefined
   const workflowReads: any[] = [], controls: any[] = [], navigations: any[] = []
   const settingsReads: any[] = [], settingsSaves: any[] = []
-  const settingsView = { path: "C:/project/ultracode.json", revision: "settings-revision", overrides: {}, inherited: structuredClone(defaultConfig), effective: structuredClone(defaultConfig), models: [{ providerID: "fixture", id: "model", name: "Fixture model", variants: ["fast"], tools: true }] }
+  const settingsView: SettingsView = { path: "C:/project/ultracode.json", revision: "settings-revision", overrides: {}, inherited: structuredClone(defaultConfig), effective: structuredClone(defaultConfig), models: [{ providerID: "fixture", id: "model", name: "Fixture model", variants: ["fast"], tools: true }] }
+  const globalSettingsView: SettingsView = { ...structuredClone(settingsView), path: "C:/profile/opencode.jsonc", revision: "global-revision", scope: "global", reloadRequired: true }
   const workflowResponse: WorkflowSnapshot = { sessionId: "parent", runs: [{
     id: "run_1", parentSessionId: "parent", directory: "C:/project", generation: 1, revision: 2,
     status: "running", phase: "execution", objective: "Fix the parser", supervisorSessionId: "supervisor", errors: [], omittedErrors: 0,
@@ -38,8 +41,8 @@ function fixture() {
     app: { version: "2.0.25" }, location: { directory: "C:/plugin-project" },
     client: { session: { async list(input: any, options: any) { reads.push(input); return list(input, options) } }, rpc() { return {
       async config() { calls++; return response },
-      async settings(input: any, options: any) { settingsReads.push({ input, options }); return settingsView },
-      async saveSettings(input: any, options: any) { settingsSaves.push({ input, options }); return settingsView },
+      async settings(input: any, options: any) { settingsReads.push({ input, options }); return input.scope === "global" ? globalSettingsView : settingsView },
+      async saveSettings(input: any, options: any) { settingsSaves.push({ input, options }); return input.scope === "global" ? globalSettingsView : settingsView },
       async workflow(input: any, options: any) { workflowReads.push({ input, options }); return workflow(input, options) },
       async control(input: any, options: any) { controls.push({ input, options }); return control(input, options) },
       events: { on(name: string, callback: typeof listener) { expect(name).toBe("commandResult"); listener = callback; return () => { disposed++ } } },
@@ -60,17 +63,18 @@ function fixture() {
       },
       async alert(options: any) { dialogs.push({ kind: "alert", ...options }) },
       async prompt(options: any) { dialogs.push({ kind: "prompt", ...options }); return prompts.shift() },
-      async confirm(options: any) { dialogs.push({ kind: "confirm", ...options }); return confirmation },
+      async confirm(options: any) { dialogs.push({ kind: "confirm", ...options }); return confirmations.length ? confirmations.shift() : confirmation },
       clear() { finishDialog?.(); finishDialog = undefined },
     } },
   }
   return {
-    context, layers, dialogs, response, reads, synced, toasts, workflowReads, workflowResponse, controls, navigations, settingsReads, settingsSaves, settingsView,
+    context, layers, dialogs, response, reads, synced, toasts, workflowReads, workflowResponse, controls, navigations, settingsReads, settingsSaves, settingsView, globalSettingsView,
     get calls() { return calls }, get disposed() { return disposed },
     route(value: unknown) { setRoute(value) }, select(value?: string) { selected = value },
     choose(...values: (string | undefined)[]) { selections.push(...values) },
     enter(...values: (string | undefined)[]) { prompts.push(...values) },
     confirm(value = true) { confirmation = value },
+    decide(...values: (boolean | undefined)[]) { confirmations.push(...values) },
     seed(values: any[], cached: string[] = []) { values.forEach(info => sessions.set(info.id, info)); setCache(cached.map(id => sessions.get(id))) },
     list(callback: typeof list) { list = callback },
     workflow(callback: typeof workflow) { workflow = callback },
@@ -221,6 +225,16 @@ test("configuration viewer includes effective role choices, checks, prompts, and
   } finally { await cleanup!() }
 })
 
+test("configuration deadline details use the same seconds units as the guided editor", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.select("Limits/Worker deadline")
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.dialogs[1]?.message).toBe("600 seconds")
+  } finally { await cleanup!() }
+})
+
 test("equal setting values retain the selected field's caption", async () => {
   const f = fixture(), cleanup = await plugin.setup(f.context as any)
   try {
@@ -258,6 +272,174 @@ test("the configuration viewer opens a guided project editor without saving on c
   } finally { await cleanup!() }
 })
 
+test("the global editor previews all-project scope and saves only to the shared profile", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.seed(family, ["parent", "supervisor", "worker"])
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit global defaults", "models", "default", "inherit", "save"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.dialogs[0].options.some((option: any) => option.title === "Edit global defaults")).toBe(true)
+    expect(f.settingsReads[0].input).toEqual({ sessionId: "parent", scope: "global" })
+    const confirmation = f.dialogs.find(dialog => dialog.kind === "confirm")
+    expect(confirmation?.message).toContain("All projects")
+    expect(confirmation?.message).toContain("Project overrides")
+    expect(confirmation?.message).toContain("C:/profile/opencode.jsonc")
+    expect(f.settingsSaves[0]?.input).toEqual({ sessionId: "parent", scope: "global", revision: "global-revision", options: { models: { default: "inherit" } } })
+    expect(f.toasts.at(-1)?.message).toContain("Reload OpenCode")
+  } finally { await cleanup!() }
+})
+
+test("a global limit opens directly with its current value and an explanation of scope", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.seed(family, ["parent", "supervisor", "worker"])
+    f.globalSettingsView.overrides = { limits: { workers: 2 } }
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit global defaults", "limits", "workers", "back", "save")
+    f.enter("1"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    const prompt = f.dialogs.find(dialog => dialog.kind === "prompt")
+    expect(prompt?.value).toBe("2")
+    expect(prompt?.description).toContain("All projects")
+    expect(f.settingsSaves[0]?.input.options).toEqual({ limits: { workers: 1 } })
+  } finally { await cleanup!() }
+})
+
+test("limits stay open for several edits before returning to the scoped settings page", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "limits", "workers", "steps", "back", "save")
+    f.enter("1", "12"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.settingsSaves[0]?.input.options).toEqual({ limits: { workers: 1, steps: 12 } })
+    const limits = f.dialogs.filter(dialog => dialog.title === "Workflow limits")
+    expect(limits).toHaveLength(3)
+    expect(limits[1].options.find((option: any) => option.value === "workers").description).toContain("1 · project override")
+  } finally { await cleanup!() }
+})
+
+test("invalid limit input stays available for correction before returning to the limits list", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "limits", "workers", "back", "save")
+    f.enter("0", "2"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    const prompts = f.dialogs.filter(dialog => dialog.kind === "prompt")
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1].value).toBe("0")
+    expect(f.settingsSaves[0]?.input.options).toEqual({ limits: { workers: 2 } })
+  } finally { await cleanup!() }
+})
+
+test("the reset shortcut removes a global limit and previews its actual built-in value", async () => {
+  const f = fixture(), select = f.context.ui.dialog.select
+  f.globalSettingsView.overrides = { limits: { workers: 2 } }
+  let resetOptions: any
+  f.context.ui.dialog.select = async options => {
+    if (options.title === "Workflow limits" && !resetOptions) {
+      resetOptions = options
+      options.actions?.find((action: any) => action.bind === "ctrl+r")?.onTrigger("workers")
+      return undefined
+    }
+    return select(options)
+  }
+  const cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit global defaults", "limits", "back", "save"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(resetOptions.actions?.[0].title).toContain("built-in")
+    expect(f.settingsSaves[0]?.input.options).toEqual({})
+    expect(f.dialogs.find(dialog => dialog.kind === "confirm")?.message).toContain("2 → built-in default (4)")
+  } finally { await cleanup!() }
+})
+
+test("closing a guided editor retires its request and retained reset callbacks", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  let clears = 0
+  const clear = f.context.ui.dialog.clear
+  f.context.ui.dialog.clear = () => { clears++; clear() }
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "limits", "back", undefined)
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.settingsReads[0].options.signal.aborted).toBe(true)
+    const reset = f.dialogs.find(dialog => dialog.title === "Workflow limits").actions[0]
+    reset.onTrigger("workers")
+    expect(clears).toBe(0)
+    expect(f.settingsSaves).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("resetting global checks explains per-project discovery instead of an empty required list", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.globalSettingsView.overrides = { checks: [] }
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit global defaults", "checks", "reset", "save"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    const checks = f.dialogs.find(dialog => dialog.title === "Verification checks")
+    expect(checks.options.find((option: any) => option.value === "reset").title).toBe("Use automatic discovery")
+    expect(f.dialogs.find(dialog => dialog.kind === "confirm")?.message).toContain("Automatic discovery in each project")
+    expect(f.settingsSaves[0]?.input.options).toEqual({})
+  } finally { await cleanup!() }
+})
+
+test("back to configuration lets the user choose another scope without copying project overrides", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.settingsView.overrides = { limits: { workers: 1 } }
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "back", "Configuration/Edit global defaults", undefined)
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.settingsReads.map(read => read.input.scope ?? "project")).toEqual(["project", "global"])
+    expect(f.dialogs.find(dialog => dialog.title === "Ultra global defaults")).toBeDefined()
+    expect(f.settingsSaves).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("changing scope after editing requires explicit discard and starts with that scope's own values", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "models", "default", "inherit", "back", "Configuration/Edit global defaults", undefined); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    const discard = f.dialogs.find(dialog => dialog.title === "Discard unsaved changes?")
+    expect(discard?.message).toContain("Workflow default")
+    expect(discard?.message).toContain("C:/project/ultracode.json")
+    expect(f.settingsReads.map(read => read.input.scope ?? "project")).toEqual(["project", "global"])
+    expect(f.globalSettingsView.overrides).toEqual({})
+    expect(f.settingsSaves).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("cancelling discard after Escape keeps the draft available for an explicit save", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "models", "default", "inherit", undefined, "save")
+    f.decide(false, true)
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.dialogs.find(dialog => dialog.title === "Discard unsaved changes?")).toBeDefined()
+    expect(f.settingsSaves[0]?.input.options).toEqual({ models: { default: "inherit" } })
+  } finally { await cleanup!() }
+})
+
+test("a server that returns project data for global scope is refused without any save", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  delete f.globalSettingsView.scope
+  try {
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit global defaults")
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.dialogs.find(dialog => dialog.title === "Ultra settings unavailable")?.message).toContain("Reload")
+    expect(f.settingsSaves).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
 test("guided model selection stages a variant and saves only after a concrete confirmation", async () => {
   const f = fixture(), cleanup = await plugin.setup(f.context as any)
   try {
@@ -278,7 +460,7 @@ test("guided limits convert deadline seconds to milliseconds in the reviewed sav
   const f = fixture(), cleanup = await plugin.setup(f.context as any)
   try {
     f.route({ type: "session", sessionID: "parent" })
-    f.choose("Configuration/Edit project settings", "limits", "workerMs", "set", "save")
+    f.choose("Configuration/Edit project settings", "limits", "workerMs", "back", "save")
     f.enter("12.5"); f.confirm()
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     expect(f.dialogs.find(dialog => dialog.kind === "prompt")?.title).toContain("seconds")
@@ -304,10 +486,10 @@ test("guided limits reject invalid values and keep the draft unchanged", async (
   const f = fixture(), cleanup = await plugin.setup(f.context as any)
   try {
     f.route({ type: "session", sessionID: "parent" })
-    f.choose("Configuration/Edit project settings", "limits", "workers", "set", undefined)
+    f.choose("Configuration/Edit project settings", "limits", "workers", undefined)
     f.enter("0")
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    expect(f.dialogs.find(dialog => dialog.title === "Invalid limit")?.message).toContain("integer >= 1")
+    expect(f.dialogs.find(dialog => dialog.title === "Invalid limit")?.message).toContain("at least 1")
     expect(f.dialogs.at(-1).options.find((option: any) => option.value === "save").disabled).toBe(true)
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
@@ -319,8 +501,8 @@ test("guided reset removes only selected model and limit overrides and restores 
   const cleanup = await plugin.setup(f.context as any)
   try {
     f.route({ type: "session", sessionID: "parent" })
-    f.choose("Configuration/Edit project settings", "models", "roles.reviewer", "reset", "limits", "workers", "reset", "checks", "reset", "save")
-    f.confirm()
+    f.choose("Configuration/Edit project settings", "models", "roles.reviewer", "reset", "limits", "workers", "back", "checks", "reset", "save")
+    f.enter("inherit"); f.confirm()
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     expect(f.settingsSaves[0]?.input.options).toEqual({ models: { stages: { review: "inherit" } }, limits: { steps: 8 } })
     expect(f.dialogs.find(dialog => dialog.kind === "confirm")?.message).toContain("inherited")
@@ -335,7 +517,7 @@ test("an interrupted guided prompt never saves or shows stale feedback", async (
       f.route({ type: "session", sessionID: "parent" })
       let release!: (value: string) => void
       f.context.ui.dialog.prompt = () => new Promise(resolve => { release = resolve })
-      f.choose("Configuration/Edit project settings", "limits", "workers", "set", "save"); f.confirm()
+      f.choose("Configuration/Edit project settings", "limits", "workers", "back", "save"); f.confirm()
       const editing = f.event({ sessionId: "parent", command: "config", result: f.response })
       await settle()
       expect(release).toBeDefined()
@@ -373,6 +555,7 @@ test("declining a concrete save leaves project settings unwritten", async () => 
   try {
     f.route({ type: "session", sessionID: "parent" })
     f.choose("Configuration/Edit project settings", "models", "roles.reviewer", "inherit", "save", undefined)
+    f.decide(false, true)
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     expect(f.dialogs.find(dialog => dialog.kind === "confirm")?.message).toContain("Role: reviewer")
     expect(f.settingsSaves).toHaveLength(0)
@@ -401,7 +584,7 @@ test("new command feedback retires a pending settings edit before replacing its 
     f.route({ type: "session", sessionID: "parent" })
     let release!: (value: string) => void
     f.context.ui.dialog.prompt = () => new Promise(resolve => { release = resolve })
-    f.choose("Configuration/Edit project settings", "limits", "workers", "set")
+    f.choose("Configuration/Edit project settings", "limits", "workers")
     const editing = f.event({ sessionId: "parent", command: "config", result: f.response })
     await settle()
     await f.event({ sessionId: "parent", command: "status", result: { runs: [] } }); await settle()

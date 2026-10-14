@@ -38,5 +38,8 @@
     "effect": "4.0.0-rc.112",
     "solid-js": "1.9.15",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "jsonc-parser": "3.3.1"
   }
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { basename, isAbsolute, join, relative } from "node:path"
 import { tmpdir } from "node:os"
 import { Schema, SchemaRepresentation } from "effect"
@@ -30,6 +30,7 @@ function fixture(options: { failRegistration?: string; failDisposal?: string; fa
     app: { version: "2.0.25" },
     location: { directory, project: { id: "project", directory, canonical: directory } },
     options: options.configuration ?? { checks: [] },
+    plugin: { async list() { return { data: [{ id: "ultra.open-code", source: { type: "local", path: directory } }] } } },
     command: { async transform(callback: any) { callback({ add(command: any) { commands.set(command.name, command) } }); return register("command") } },
     tool: { async transform(callback: any) { callback({ add() {} }); return register("tools") }, async hook(name: string, callback: unknown) { return register(`tool.${name}`, callback) } },
     permission: { async hook(name: string, callback: unknown) { return register(`permission.${name}`, callback) } },
@@ -59,6 +60,29 @@ afterEach(() => {
 })
 
 describe("plugin lifecycle", () => {
+  test("global guided RPC edits the active shared profile without changing project overrides", async () => {
+    const value = fixture({ configuration: { limits: { workers: 2 }, checks: [] } })
+    const profile = join(value.directory, "profile.json")
+    writeFileSync(profile, JSON.stringify({ plugins: [{ package: value.directory, options: { limits: { workers: 2 } } }] }))
+    writeFileSync(join(value.directory, "ultracode.json"), '{"limits":{"workers":1}}')
+    const previous = process.env.OPENCODE_CONFIG
+    process.env.OPENCODE_CONFIG = profile
+    let cleanup: Awaited<ReturnType<typeof plugin.setup>>
+    try { cleanup = await plugin.setup(value.context as any) }
+    finally { if (previous === undefined) delete process.env.OPENCODE_CONFIG; else process.env.OPENCODE_CONFIG = previous }
+    try {
+      const rpc = value.hooks.get("rpc")
+      const before = await rpc.settings({ sessionId: "parent", scope: "global" })
+      expect(before.path).toBe(profile)
+      expect(before.effective.limits.workers).toBe(2)
+      const saved = await rpc.saveSettings({ sessionId: "parent", scope: "global", revision: before.revision, options: { limits: { workers: 3 } } })
+      expect(saved.scope).toBe("global")
+      expect(saved.reloadRequired).toBe(true)
+      expect(JSON.parse(readFileSync(profile, "utf8")).plugins[0].options.limits.workers).toBe(3)
+      expect(JSON.parse(readFileSync(join(value.directory, "ultracode.json"), "utf8"))).toEqual({ limits: { workers: 1 } })
+      expect((await rpc.config({})).config.limits.workers).toBe(1)
+    } finally { await cleanup!() }
+  })
   test("guided settings RPC omits absent values so native JSON validation accepts the snapshot", async () => {
     const value = fixture(), cleanup = await plugin.setup(value.context as any)
     try {

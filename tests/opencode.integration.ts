@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { existsSync } from "node:fs"
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises"
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { join, relative, resolve } from "node:path"
 import { Rpc } from "@opencode/plugin"
 import { Database } from "bun:sqlite"
@@ -252,6 +252,31 @@ export async function runOpenCodeIntegration() {
       assert.equal(await readFile(installedPath, "utf8"), globalSource)
       assert.equal(fixture.requests.length, requests)
       return { path: saved.path, backup: reset.backup, staleSaveRejected: true, inheritedChecksRestored: true, providerRequests: 0, nativeRenderingVerified: false }
+    })
+    await check("guided global defaults apply across projects after reload and preserve project overrides", async () => {
+      const requests = fixture.requests.length
+      const shared = await rpc.settings({ sessionId: parent.id, scope: "global" }, options()) as unknown as SettingsView
+      assert.equal(shared.scope, "global")
+      assert.equal(shared.path, installedPath)
+      assert.equal(shared.effective.limits.workers, 2)
+      const projectSource = await readFile(join(host!.project, "ultracode.json"), "utf8")
+      const saved = await rpc.saveSettings({ sessionId: parent.id, scope: "global", revision: shared.revision, options: { ...shared.overrides, limits: { ...shared.overrides.limits, workers: 3 } } }, options()) as unknown as SettingsView
+      assert.equal(saved.reloadRequired, true)
+      assert.equal(saved.effective.limits.workers, 3)
+      assert.equal(await readFile(join(host!.project, "ultracode.json"), "utf8"), projectSource)
+      await writeFile(join(host!.otherProject, "ultracode.json"), '{"limits":{"workers":1}}')
+      await host!.restart()
+      const primary = await rpc.config({}, options()) as { config: Run["config"] }
+      const other = await rpc.config({}, { location: { directory: host!.otherProject }, signal: AbortSignal.timeout(5_000) }) as { config: Run["config"] }
+      assert.equal(primary.config.limits.workers, 3)
+      assert.equal(other.config.limits.workers, 1)
+      const refreshed = await rpc.settings({ sessionId: parent.id, scope: "global" }, options()) as unknown as SettingsView
+      await rpc.saveSettings({ sessionId: parent.id, scope: "global", revision: refreshed.revision, options: shared.overrides }, options())
+      await rm(join(host!.otherProject, "ultracode.json"))
+      await host!.restart()
+      assert.equal((await rpc.config({}, options()) as { config: Run["config"] }).config.limits.workers, 2)
+      assert.equal(fixture.requests.length, requests)
+      return { profile: shared.path, inheritedWorkersAfterReload: 3, projectOverrideWorkers: 1, originalDefaultsRestored: true, providerRequests: 0 }
     })
     await check("one global installation supplies isolated project overrides and state", async () => {
       for (const directory of [host!.project, host!.otherProject]) for (const file of ["opencode.json", "opencode.jsonc"]) assert.equal(existsSync(join(directory, file)), false)

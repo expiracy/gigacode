@@ -1,7 +1,7 @@
 import { Plugin } from "@opencode/plugin"
 import { Schema } from "effect"
-import { mkdir, realpath } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { mkdir, realpath, stat } from "node:fs/promises"
+import { dirname, join, resolve } from "node:path"
 import { createHash } from "node:crypto"
 import { Engine, type StartOptions } from "./engine.ts"
 import { SQLiteStore } from "./store.ts"
@@ -22,7 +22,9 @@ import { resourceCleanup } from "./lifecycle.ts"
 import { promptVersion } from "./workflow.ts"
 import { workflowView } from "./workflow-view.ts"
 import { assertHostVersion } from "./compatibility.ts"
-import { ProjectSettings, type EditableSettings, type SettingsModel } from "./settings.ts"
+import { ProjectSettings, type EditableSettings, type SettingsModel, type SettingsScope } from "./settings.ts"
+import { GlobalSettings } from "./global-settings.ts"
+import { globalConfigDirectory } from "./native-config.ts"
 import type { Run, TaskSpec } from "./types.ts"
 
 const supervisorSpec: TaskSpec = { id: "supervisor", title: "Coordinate workflow", role: "supervisor", stage: "design", instructions: "", writes: false, dependencies: [] }
@@ -39,6 +41,7 @@ export default Plugin.define({
     const directory = await realpath(ctx.location.directory)
     const projectDirectory = await realpath(ctx.location.project.canonical ?? ctx.location.project.directory)
     const config = await loadProjectConfig(ctx.options, directory)
+    const globalProfile = { configDirectory: globalConfigDirectory(), ...(process.env.OPENCODE_CONFIG ? { path: resolve(process.env.OPENCODE_CONFIG) } : {}) }
     const root = join(projectDirectory, ".ultracode")
     assertPlainPath(root)
     await mkdir(root, { recursive: true })
@@ -60,11 +63,23 @@ export default Plugin.define({
       retireAdapter = () => adapter.retire()
       const engine = new Engine(store, adapter, ctx.location.project.id, directory, config, join(root, "state.sqlite"))
       const settingsBlocked = () => engine.list().some(run => !terminal.has(run.status) || busy(run)) ? "Finish or cancel active workflows before saving project settings." : undefined
-      const projectSettings = new ProjectSettings(directory, ctx.options, join(root, "settings-backups"), () => {
+      const guardSettings = () => {
         stop.signal.throwIfAborted()
         const blocked = settingsBlocked()
         if (blocked) throw new Error(blocked)
-      })
+      }
+      const projectSettings = new ProjectSettings(directory, ctx.options, join(root, "settings-backups"), guardSettings)
+      let globalSettings: Promise<GlobalSettings> | undefined
+      const settingsStore = async (scope: SettingsScope = "project") => {
+        if (scope === "project") return projectSettings
+        if (scope !== "global") throw new Error("Choose project or global settings.")
+        return globalSettings ??= (async () => {
+          const source = (await ctx.plugin.list()).data.find(plugin => plugin.id === "ultra.open-code")?.source
+          if (!source || source.type !== "local" && source.type !== "package") throw new Error("Cannot identify the active Ultra package for global settings.")
+          const packagePath = source.type === "package" ? source.target : (await stat(source.path)).isFile() ? dirname(source.path) : source.path
+          return new GlobalSettings({ ...globalProfile, packagePath }, guardSettings)
+        })()
+      }
       const settingsCaller = async (id: string) => {
         const caller = await adapter.scoped(id)
         if (caller.parentID || adapter.binding(id)) throw new Error("Settings require an initiating primary conversation in this location")
@@ -425,23 +440,24 @@ export default Plugin.define({
         async config() { return { config, hostVersion, promptVersion, directory, state: join(root, "state.sqlite") } },
         async settings(input, request) { return track(async () => {
           request?.signal.throwIfAborted()
-          await settingsCaller((input as { sessionId: string }).sessionId)
-          const [snapshot, models] = await Promise.all([projectSettings.read(), settingsModels()])
+          const value = input as { sessionId: string; scope?: SettingsScope }, scope = value.scope ?? "project"
+          await settingsCaller(value.sessionId)
+          const [snapshot, models] = await Promise.all([(await settingsStore(scope)).read(), settingsModels()])
           request?.signal.throwIfAborted()
           const blocked = settingsBlocked()
-          return { ...snapshot, models, ...(blocked ? { blocked } : {}) }
+          return { ...snapshot, scope, models, ...(scope === "global" ? { reloadRequired: true } : {}), ...(blocked ? { blocked } : {}) }
         }) },
         async saveSettings(input, request) { return track(async () => {
           const signal = request ? AbortSignal.any([stop.signal, request.signal]) : stop.signal
           signal.throwIfAborted()
-          const value = input as { sessionId: string; revision: string; options: EditableSettings }
+          const value = input as { sessionId: string; scope?: SettingsScope; revision: string; options: EditableSettings }, scope = value.scope ?? "project"
           await settingsCaller(value.sessionId)
           const models = await settingsModels()
           return engine.withOwnership(signal, async () => {
             await settingsCaller(value.sessionId)
-            const saved = await projectSettings.save(value.revision, value.options, models, signal)
-            Object.assign(config, saved.effective)
-            return { ...saved, models }
+            const saved = await (await settingsStore(scope)).save(value.revision, value.options, models, signal)
+            if (scope === "project") Object.assign(config, saved.effective)
+            return { ...saved, scope, models, ...(scope === "global" ? { reloadRequired: true } : {}) }
           })
         }) },
         async control(input) { const value = input as { text: string; sessionId: string }; return sanitizeEventData(await control(value.text, value.sessionId)) as object },

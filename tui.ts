@@ -4,7 +4,8 @@ import { createEffect, createRoot, createSignal } from "solid-js"
 import { UltraRpc } from "./src/rpc.ts"
 import type { Config } from "./src/types.ts"
 import type { WorkflowRun, WorkflowSnapshot } from "./src/workflow-view.ts"
-import { editProjectSettings } from "./src/settings-ui.ts"
+import { editSettings } from "./src/settings-ui.ts"
+import { limitText } from "./src/settings-presentation.ts"
 
 interface Configuration { config: Config; hostVersion?: string; promptVersion?: string; directory?: string; state?: string }
 interface CommandResult { sessionId: string; command: string; result?: object; error?: string }
@@ -12,8 +13,8 @@ type Setting = DialogSelectOption<string> & { detail: string }
 
 const limitLabels: Record<string, string> = {
   workers: "Concurrent workers", runs: "Concurrent runs", attempts: "Worker attempts per run",
-  repairRounds: "Repair rounds", workerMs: "Worker deadline (ms)", runMs: "Active run deadline (ms)",
-  elapsedMs: "Elapsed run deadline (ms)", steps: "Model steps per worker",
+  repairRounds: "Repair rounds", workerMs: "Worker deadline", runMs: "Active run deadline",
+  elapsedMs: "Elapsed run deadline", steps: "Model steps per worker",
   contextChars: "Task context (characters)",
 }
 const json = (value: unknown) => JSON.stringify(value, null, 2)
@@ -61,13 +62,14 @@ function configurationOptions(value: unknown): Setting[] {
   const options: Setting[] = []
   const add = (title: string, detail: string, category: string, description = detail) => options.push({ title, value: `${category}/${title}`, detail, category, description: description.replaceAll(/\s+/g, " ").slice(0, 100) })
   add("Edit project settings", "Configure workflow models, limits and checks for this project. Global defaults remain unchanged.", "Configuration", "Guided editor for models, limits and checks")
-  add("How to edit settings", "Choose Edit project settings to configure workflow models, limits and checks in this location's ultracode.json. Review the changes, then explicitly save; existing files are backed up. Use inherited value removes that project override. Follow the initiating chat model explicitly sets inherit. Saves require settled workflows and apply to new runs in this location without a restart. Saved runs retain captured settings; saved plans may need fresh planning. For shared global defaults, use OpenChamber Settings → Plugins → the Ultra package → Options (JSON), or bun run install:global --config <options.json>. Manual file and global edits require a reload or restart. Prompts and other options remain available through JSON configuration.", "Configuration", "Guided project editor, shared defaults and configuration files")
+  add("Edit global defaults", "Configure Ultra defaults for all projects using this OpenCode profile. Project overrides take precedence.", "Configuration", "All projects using this profile; project overrides still win")
+  add("How to edit settings", "Choose Edit project settings for this location, or Edit global defaults for all projects using this OpenCode profile. Project overrides take precedence over global defaults. In Limits, select a value to edit it, use seconds for deadlines, and press Ctrl+R to restore the inherited or built-in value. The list stays open for multiple edits. Review changes before saving; existing files are backed up. Project saves apply to new workflows immediately. Reload OpenCode after global saves to apply them across projects. Back to configuration lets you change scope; unsaved drafts require explicit discard. Navigation or reconnect retires the editor. Prompts, parallel writes and automatic thresholds remain available through JSON options.", "Configuration", "Choose scope, edit models/limits/checks, review and save")
   if (hostVersion) add("Supported OpenCode", hostVersion, "Configuration")
   if (promptVersion) add("Prompt version", promptVersion, "Configuration")
   add("Default model", config.models.default ?? "inherit", "Models")
   for (const [role, model] of Object.entries(config.models.roles ?? {})) add(`Model: ${role}`, model, "Role models")
   for (const [stage, model] of Object.entries(config.models.stages ?? {})) add(`Model: ${stage}`, model, "Stage models")
-  for (const [name, limit] of Object.entries(config.limits)) add(limitLabels[name] ?? name, String(limit), "Limits")
+  for (const [name, limit] of Object.entries(config.limits)) add(limitLabels[name] ?? name, limitText(limit, name.endsWith("Ms")), "Limits")
   if (!config.checks.length) add("Checks", "No configured or discovered checks. Work without required machine evidence cannot establish verified success.", "Checks", "None")
   for (const check of config.checks) add(`Check: ${check.id}`, json(check), "Checks", check.command)
   add("Automatic-mode threshold", String(config.autoThreshold), "Workflow", "Minimum prompt characters when automatic mode is enabled")
@@ -141,15 +143,22 @@ export default Plugin.define({
       const current = () => { const route = ctx.ui.router.current(); return !disposed && route.type === "session" && route.sessionID === id }
       const settings = configurationOptions(value)
       const options = settings.map(({ detail, ...option }) => option)
-      const selected = await ctx.ui.dialog.select({ title: "Ultra configuration", placeholder: "Search settings; select one for details", options })
-      if (selected === "Configuration/Edit project settings" && current()) {
-        settingsController?.abort()
-        const controller = settingsController = new AbortController()
-        await editProjectSettings(ctx, id, rpc, current, controller.signal)
+      while (current()) {
+        const selected = await ctx.ui.dialog.select({ title: "Ultra configuration", placeholder: "Choose where to edit, or select an effective setting for details", options })
+        if (!current()) return
+        if (selected === "Configuration/Edit project settings" || selected === "Configuration/Edit global defaults") {
+          settingsController?.abort()
+          const controller = settingsController = new AbortController()
+          let result: "back" | void
+          try { result = await editSettings(ctx, id, rpc, current, controller.signal, selected === "Configuration/Edit global defaults" ? "global" : "project") }
+          finally { controller.abort(); if (settingsController === controller) settingsController = undefined }
+          if (result === "back") continue
+          return
+        }
+        const setting = settings.find(option => option.value === selected)
+        if (setting) await ctx.ui.dialog.alert({ title: setting.title, message: setting.detail })
         return
       }
-      const setting = settings.find(option => option.value === selected)
-      if (setting && !disposed) await ctx.ui.dialog.alert({ title: setting.title, message: setting.detail })
     }
     const workflow = async (id: string, runId?: string) => {
       workflowStop?.()
