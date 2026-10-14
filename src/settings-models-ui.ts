@@ -1,6 +1,6 @@
 import type { Context } from "@opencode/plugin/tui/context"
 import type { EditableSettings, SettingsView } from "./settings.ts"
-import { modelFields, modelValue } from "./settings-presentation.ts"
+import { modelFields, modelValue, scopeLabel, settingSource } from "./settings-presentation.ts"
 
 function setModel(draft: EditableSettings, path: string, value?: string) {
   const models = draft.models ??= {}
@@ -16,11 +16,22 @@ function setModel(draft: EditableSettings, path: string, value?: string) {
 }
 
 export async function editModel(ctx: Context, view: SettingsView, draft: EditableSettings, active: () => boolean) {
-  const field = await ctx.ui.dialog.select({ title: "Workflow models", placeholder: "Stage settings take precedence over role settings", options: modelFields.map(field => ({ ...field,
-    description: `${modelValue(draft.models, field.value) ?? modelValue(view.inherited.models, field.value) ?? "Uses remaining model rules"} · ${modelValue(draft.models, field.value) === undefined ? "inherited" : view.scope === "global" ? "global default" : "project override"}`,
-  })) })
-  if (!active() || !field) return
-  const selected = await ctx.ui.dialog.select({ title: "Select workflow model", placeholder: "Only connected models with tool support are listed", options: [
+  let current: string | undefined
+  while (active()) {
+    const field = await ctx.ui.dialog.select({ title: "Workflow models", placeholder: `${scopeLabel(view)} · select a mapping to edit`, current, options: [
+      ...modelFields.map(field => ({ ...field,
+        description: `${modelValue(draft.models, field.value) ?? modelValue(view.inherited.models, field.value) ?? "Uses remaining model rules"} · ${settingSource(view, modelValue(draft.models, field.value) !== undefined)}`,
+      })),
+      { title: "Back to settings", value: "back", category: "Navigation" },
+    ] })
+    if (!active() || !field || field === "back" || !modelFields.some(option => option.value === field)) return
+    current = field
+    await editMapping(ctx, view, draft, active, field)
+  }
+}
+
+async function editMapping(ctx: Context, view: SettingsView, draft: EditableSettings, active: () => boolean, field: string) {
+  const selected = await ctx.ui.dialog.select({ title: "Select workflow model", placeholder: `${scopeLabel(view)} · models with tool support`, options: [
     { title: view.scope === "global" ? "Use built-in default" : "Use inherited value", value: "reset", description: modelValue(view.inherited.models, field) ?? "Uses remaining model rules" },
     { title: "Follow the initiating chat model", value: "inherit", description: "Explicitly use inherit for this mapping" },
     ...view.models.map(model => ({ title: model.name, value: `model:${model.providerID}/${model.id}`, description: `${model.providerID}/${model.id}` })),
@@ -31,7 +42,7 @@ export async function editModel(ctx: Context, view: SettingsView, draft: Editabl
   if (!model) return
   let reference = `${model.providerID}/${model.id}`
   if (model.variants.length) {
-    const variant = await ctx.ui.dialog.select({ title: "Model variant", options: [
+    const variant = await ctx.ui.dialog.select({ title: "Model variant", placeholder: scopeLabel(view), options: [
       { title: "Model default", value: "base" }, ...model.variants.map(variant => ({ title: variant, value: `variant:${variant}` })),
     ] })
     if (!active() || !variant) return

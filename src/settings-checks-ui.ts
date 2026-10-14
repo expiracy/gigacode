@@ -1,18 +1,27 @@
 import type { Context } from "@opencode/plugin/tui/context"
 import type { EditableSettings, SettingsView } from "./settings.ts"
 import { parseConfigOptions } from "./config.ts"
-import { checkText } from "./settings-presentation.ts"
+import { checkText, scopeLabel } from "./settings-presentation.ts"
+import type { CheckSpec } from "./types.ts"
 
 export async function editChecks(ctx: Context, view: SettingsView, draft: EditableSettings, active: () => boolean) {
   const isGlobal = view.scope === "global"
-  const checks = draft.checks ?? view.inherited.checks
-  const action = await ctx.ui.dialog.select({ title: "Verification checks", placeholder: isGlobal ? "All projects; project overrides take precedence. Saving does not run commands." : `${draft.checks === undefined ? "Inherited checks" : "Project list"}. This list replaces inherited checks. Saving does not execute commands.`, options: [
-    { title: "Add check", value: "add" },
-    ...checks.map((check, index) => ({ title: check.id, value: `check:${index}`, description: check.command })),
-    { title: isGlobal ? "Use automatic discovery" : "Use inherited checks", value: "reset", description: isGlobal ? "Detect test, typecheck and lint scripts separately in each project unless overridden" : checkText(view.inherited.checks) },
-    { title: "Disable configured checks", value: "disable", description: "Explicit empty list. Verification may be incomplete." },
-  ] })
-  if (!active() || !action) return
+  while (active()) {
+    const checks = draft.checks ?? view.inherited.checks
+    const action = await ctx.ui.dialog.select({ title: "Verification checks", placeholder: `${scopeLabel(view)} · ${draft.checks === undefined ? "inherited / automatic" : "custom check list"}; saving does not run commands`, options: [
+      { title: "Add check", value: "add" },
+      ...checks.map((check, index) => ({ title: check.id, value: `check:${index}`, description: check.command })),
+      { title: isGlobal ? "Use automatic discovery" : "Use inherited checks", value: "reset", description: isGlobal ? "Detect test, typecheck and lint scripts separately in each project unless overridden" : checkText(view.inherited.checks) },
+      { title: "Disable configured checks", value: "disable", description: "Explicit empty list. Verification may be incomplete." },
+      { title: "Back to settings", value: "back" },
+    ] })
+    if (!active() || !action || action === "back") return
+    await changeCheck(ctx, view, draft, active, checks, action)
+  }
+}
+
+async function changeCheck(ctx: Context, view: SettingsView, draft: EditableSettings, active: () => boolean, checks: CheckSpec[], action: string) {
+  const isGlobal = view.scope === "global"
   if (action === "reset") { delete draft.checks; return }
   if (action === "disable") {
     const confirmed = await ctx.ui.dialog.confirm({ title: "Disable configured checks?", message: isGlobal ? "An empty global check list disables automatic check discovery across projects unless a project overrides it. Workflows still require independent review and verification evidence to claim success." : "An empty project check list disables inherited and automatically detected checks. Workflows still require independent review and verification evidence to claim success." })

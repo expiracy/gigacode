@@ -1,7 +1,7 @@
 import type { Context } from "@opencode/plugin/tui/context"
 import type { EditableSettings, SettingsView } from "./settings.ts"
 import { parseConfigOptions } from "./config.ts"
-import { limitFields, limitText } from "./settings-presentation.ts"
+import { limitFields, limitText, scopeLabel, settingSource } from "./settings-presentation.ts"
 
 function resetLimit(draft: EditableSettings, key: typeof limitFields[number]["value"]) {
   if (draft.limits) { delete draft.limits[key]; if (!Object.keys(draft.limits).length) delete draft.limits }
@@ -11,9 +11,9 @@ export async function editLimit(ctx: Context, view: SettingsView, draft: Editabl
   let current: string | undefined
   while (active()) {
     let resetting = false
-    const key = await ctx.ui.dialog.select<string>({ title: "Workflow limits", placeholder: "Select a limit to edit; Escape returns to settings", current, options: [
+    const key = await ctx.ui.dialog.select<string>({ title: "Workflow limits", placeholder: `${scopeLabel(view)} · select a limit to edit`, current, options: [
       ...limitFields.map(field => ({ title: field.title, value: field.value,
-        description: `${limitText(draft.limits?.[field.value] ?? view.inherited.limits[field.value], field.seconds)} · ${draft.limits?.[field.value] === undefined ? "inherited" : view.scope === "global" ? "global default" : "project override"}. ${field.description}`,
+        description: `${limitText(draft.limits?.[field.value] ?? view.inherited.limits[field.value], field.seconds)} · ${settingSource(view, draft.limits?.[field.value] !== undefined)}. ${field.description}`,
       })),
       { title: "Back to settings", value: "back" },
     ], actions: [{ bind: "ctrl+r", title: view.scope === "global" ? "Reset to built-in default" : "Use inherited value", onTrigger(key) {

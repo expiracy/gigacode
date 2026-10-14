@@ -2,6 +2,11 @@ import { roles, stages } from "./config.ts"
 import type { CheckSpec, Limits, ModelOptions } from "./types.ts"
 import type { EditableSettings, SettingsView } from "./settings.ts"
 
+export function scopeLabel(view: SettingsView): string { return view.scope === "global" ? "Global defaults" : "This project" }
+export function settingSource(view: SettingsView, overridden: boolean): string {
+  return overridden ? view.scope === "global" ? "global default" : "project override" : view.scope === "global" ? "built-in default" : "inherited"
+}
+
 export const modelFields = [{ title: "Workflow default", value: "default", category: "Default" },
   ...roles.map(role => ({ title: `Role: ${role}`, value: `roles.${role}`, category: "Roles" })),
   ...stages.map(stage => ({ title: `Stage: ${stage}`, value: `stages.${stage}`, category: "Stages" })),

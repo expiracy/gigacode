@@ -32,16 +32,16 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
         { title: "Checks", value: "checks", description: "Configured verification commands" },
         { title: "Review changes", value: "review", disabled: !changed },
         { title: saveTitle, value: "save", description: view.blocked ?? (scope === "global" ? "All projects; reload OpenCode after saving" : "Applies to new workflows; global defaults stay unchanged"), disabled: !changed || !!view.blocked },
-        { title: "Back to configuration", value: "back", description: "Choose project settings or global defaults" },
+        { title: "Change scope", value: "back", description: "Choose project settings or global defaults" },
       ] })
       if (!active()) return
       if (!selected || selected === "back") {
         if (changed) {
-          const discard = await ctx.ui.dialog.confirm({ title: "Discard unsaved changes?", message: `${view.path}\n\n${changes(view, draft)}\n\nThese changes have not been saved. ${selected === "back" ? "Return to configuration without carrying this draft over?" : "Close the editor and discard this draft?"}`, label: { confirm: "Discard changes", cancel: "Keep editing" } })
+          const discard = await ctx.ui.dialog.confirm({ title: "Discard unsaved changes?", message: `${view.path}\n\n${changes(view, draft)}\n\nThese changes have not been saved. ${selected === "back" ? "Return to scope selection without carrying this draft over?" : "Close the editor and discard this draft?"}`, label: { confirm: "Discard changes", cancel: "Keep editing" } })
           if (!active()) return
           if (!discard) continue
         }
-        return selected === "back" ? "back" : undefined
+        return "back"
       }
       if (selected === "models") await editModel(ctx, view, draft, active)
       else if (selected === "limits") await editLimit(ctx, view, draft, active)

@@ -2,21 +2,12 @@ import * as Plugin from "@opencode/plugin/tui/plugin"
 import type { Context, DialogSelectAction, DialogSelectOption } from "@opencode/plugin/tui/context"
 import { createEffect, createRoot, createSignal } from "solid-js"
 import { UltraRpc } from "./src/rpc.ts"
-import type { Config } from "./src/types.ts"
 import type { WorkflowRun, WorkflowSnapshot } from "./src/workflow-view.ts"
-import { editSettings } from "./src/settings-ui.ts"
-import { limitText } from "./src/settings-presentation.ts"
+import { openSettingsMenu } from "./src/settings-menu.ts"
 
-interface Configuration { config: Config; hostVersion?: string; promptVersion?: string; directory?: string; state?: string }
 interface CommandResult { sessionId: string; command: string; result?: object; error?: string }
 type Setting = DialogSelectOption<string> & { detail: string }
 
-const limitLabels: Record<string, string> = {
-  workers: "Concurrent workers", runs: "Concurrent runs", attempts: "Worker attempts per run",
-  repairRounds: "Repair rounds", workerMs: "Worker deadline", runMs: "Active run deadline",
-  elapsedMs: "Elapsed run deadline", steps: "Model steps per worker",
-  contextChars: "Task context (characters)",
-}
 const json = (value: unknown) => JSON.stringify(value, null, 2)
 
 /** Native root hydration loads immediate children only; Ultra workers are grandchildren. */
@@ -53,31 +44,6 @@ async function hydrateFamily(ctx: Context, sessionID: string, signal: AbortSigna
     } while (cursor)
   }
   await children(root, "ultra-supervisor", supervisor => children(supervisor, "ultra-worker", async () => {}))
-}
-
-/** Effective settings and the single entry point to the guided project editor. */
-function configurationOptions(value: unknown): Setting[] {
-  if (!value || typeof value !== "object" || !("config" in value)) throw new Error("Ultra returned no effective configuration. Check the installation and restart OpenCode.")
-  const { config, hostVersion, promptVersion, directory, state } = value as Configuration
-  const options: Setting[] = []
-  const add = (title: string, detail: string, category: string, description = detail) => options.push({ title, value: `${category}/${title}`, detail, category, description: description.replaceAll(/\s+/g, " ").slice(0, 100) })
-  add("Edit project settings", "Configure workflow models, limits and checks for this project. Global defaults remain unchanged.", "Configuration", "Guided editor for models, limits and checks")
-  add("Edit global defaults", "Configure Ultra defaults for all projects using this OpenCode profile. Project overrides take precedence.", "Configuration", "All projects using this profile; project overrides still win")
-  add("How to edit settings", "Choose Edit project settings for this location, or Edit global defaults for all projects using this OpenCode profile. Project overrides take precedence over global defaults. In Limits, select a value to edit it, use seconds for deadlines, and press Ctrl+R to restore the inherited or built-in value. The list stays open for multiple edits. Review changes before saving; existing files are backed up. Project saves apply to new workflows immediately. Reload OpenCode after global saves to apply them across projects. Back to configuration lets you change scope; unsaved drafts require explicit discard. Navigation or reconnect retires the editor. Prompts, parallel writes and automatic thresholds remain available through JSON options.", "Configuration", "Choose scope, edit models/limits/checks, review and save")
-  if (hostVersion) add("Supported OpenCode", hostVersion, "Configuration")
-  if (promptVersion) add("Prompt version", promptVersion, "Configuration")
-  add("Default model", config.models.default ?? "inherit", "Models")
-  for (const [role, model] of Object.entries(config.models.roles ?? {})) add(`Model: ${role}`, model, "Role models")
-  for (const [stage, model] of Object.entries(config.models.stages ?? {})) add(`Model: ${stage}`, model, "Stage models")
-  for (const [name, limit] of Object.entries(config.limits)) add(limitLabels[name] ?? name, limitText(limit, name.endsWith("Ms")), "Limits")
-  if (!config.checks.length) add("Checks", "No configured or discovered checks. Work without required machine evidence cannot establish verified success.", "Checks", "None")
-  for (const check of config.checks) add(`Check: ${check.id}`, json(check), "Checks", check.command)
-  add("Automatic-mode threshold", String(config.autoThreshold), "Workflow", "Minimum prompt characters when automatic mode is enabled")
-  add("Writer policy", config.parallelWrites ? "Independent writers use recorded isolated Git checkouts when useful. One execution owns the project; preparation and integration remain serial and permission checked. Dependent writer graphs require serial mode." : "One writer per project; repair retains the admitted writer scope.", "Workflow", config.parallelWrites ? "Isolated independent writers" : "Single project writer")
-  for (const [role, prompt] of Object.entries(config.prompts ?? {})) add(`Prompt: ${role}`, prompt, "Role instructions")
-  if (directory) add("Project directory", directory, "Location")
-  if (state) add("State database", state, "Location")
-  return options
 }
 
 type WorkflowOption = Setting & { runId?: string; sessionId?: string }
@@ -141,24 +107,10 @@ export default Plugin.define({
     const reconnect = ctx.data.on("server.connected", () => { settingsController?.abort(); refresh(sessionID); void workflowRefresh?.(true) })
     const configuration = async (value: unknown, id: string) => {
       const current = () => { const route = ctx.ui.router.current(); return !disposed && route.type === "session" && route.sessionID === id }
-      const settings = configurationOptions(value)
-      const options = settings.map(({ detail, ...option }) => option)
-      while (current()) {
-        const selected = await ctx.ui.dialog.select({ title: "Ultra configuration", placeholder: "Choose where to edit, or select an effective setting for details", options })
-        if (!current()) return
-        if (selected === "Configuration/Edit project settings" || selected === "Configuration/Edit global defaults") {
-          settingsController?.abort()
-          const controller = settingsController = new AbortController()
-          let result: "back" | void
-          try { result = await editSettings(ctx, id, rpc, current, controller.signal, selected === "Configuration/Edit global defaults" ? "global" : "project") }
-          finally { controller.abort(); if (settingsController === controller) settingsController = undefined }
-          if (result === "back") continue
-          return
-        }
-        const setting = settings.find(option => option.value === selected)
-        if (setting) await ctx.ui.dialog.alert({ title: setting.title, message: setting.detail })
-        return
-      }
+      settingsController?.abort()
+      const controller = settingsController = new AbortController()
+      try { await openSettingsMenu(ctx, value, id, rpc, current, controller.signal) }
+      finally { controller.abort(); if (settingsController === controller) settingsController = undefined }
     }
     const workflow = async (id: string, runId?: string) => {
       workflowStop?.()
