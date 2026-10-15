@@ -1,36 +1,36 @@
 # Agent coding workflows
 
-Ultra chooses a graph proportional to the request, then runs it through native OpenCode sessions. A focused investigation can use one planner; a small implementation can start directly with a writer, independent reviewer and verifier. Research, critique and synthesis are additional work only when the task or an explicit recipe needs them.
+UltraOpenCode chooses a graph proportional to the request, then runs it through native OpenCode sessions. A focused investigation can use one planner; a small implementation can start directly with a writer, independent reviewer and verifier. Research, critique and synthesis are additional work only when the task or an explicit recipe needs them.
 
 The [architecture guide](architecture.md) explains the components and trust boundaries. This guide follows the work from admission through verification and recovery.
 
 ## From a request to native work
 
-Ultra can answer ordinary explanations and configuration questions with read tools. Starting a project workflow requires an authorized task. `ultra_task` captures its objective and mode; an optional `workflow` supplies task purposes and dependencies, while the engine supplies the immutable request and configured check criteria.
+UltraOpenCode can answer ordinary explanations and configuration questions with read tools. Starting a project workflow requires an authorized task. `ultraopencode_task` captures its objective and mode; an optional `workflow` supplies task purposes and dependencies, while the engine supplies the immutable request and configured check criteria.
 
-Before admission, Ultra captures the initiating model and permissions, validates the graph and model choices, and rechecks the initiating context for an agent/model/permission change. Replay of the same native call cannot launch a second run or change its request. A conversation with active work must use controls for that run instead of admitting another.
+Before admission, UltraOpenCode captures the initiating model and permissions, validates the graph and model choices, and rechecks the initiating context for an agent/model/permission change. Replay of the same native call cannot launch a second run or change its request. A conversation with active work must use controls for that run instead of admitting another.
 
 ```mermaid
 sequenceDiagram
     actor User
-    participant Primary as Ultra primary
+    participant Primary as UltraOpenCode primary
     participant Plugin as Native tool bridge
     participant Engine as Scheduler
     participant Host as OpenCode adapter
     participant Worker as Native worker
     participant DB as Saved state
     User->>Primary: Authorized project request
-    Primary->>Plugin: ultra_task with objective and mode
+    Primary->>Plugin: ultraopencode_task with objective and mode
     Plugin->>Engine: Validate and admit work
     Engine->>DB: Save graph and launch intent
     Plugin->>Host: Launch native supervisor
-    Note over Engine,Host: Supervisor calls ultra_execute to drive the saved graph
+    Note over Engine,Host: Supervisor calls ultraopencode_execute to drive the saved graph
     Engine->>DB: Reserve an eligible attempt
     Engine->>Host: Launch worker
     Host->>Engine: Attest prelaunch child identity
     Engine->>DB: Bind child before its task prompt
     Host->>Worker: Apply scope and deliver prompt
-    Worker->>Plugin: ultra_submit result
+    Worker->>Plugin: ultraopencode_submit result
     Plugin->>Engine: Validate and attribute claim
     Engine->>DB: Record result
     Engine->>Host: Inspect native settlement
@@ -45,10 +45,10 @@ The supervisor is a native model session, but it does not implement a second sch
 
 | Entry | Behavior |
 | --- | --- |
-| `ultra_task` with `mode: "plan"` | Run read-only work and stop ready with a report or saved proposal. |
-| `ultra_task` with `mode: "execute"`, without a graph | Begin with a planning worker, then admit a validated execution proposal within the authorized request. |
-| `ultra_task` with `mode: "execute"` and a graph | Start the admitted implementation graph directly. |
-| `/ultracode run <run-id>@<revision>` | Execute the exact saved proposal after checking authorization, revision and workspace freshness. |
+| `ultraopencode_task` with `mode: "plan"` | Run read-only work and stop ready with a report or saved proposal. |
+| `ultraopencode_task` with `mode: "execute"`, without a graph | Begin with a planning worker, then admit a validated execution proposal within the authorized request. |
+| `ultraopencode_task` with `mode: "execute"` and a graph | Start the admitted implementation graph directly. |
+| `/ultraopencode run <run-id>@<revision>` | Execute the exact saved proposal after checking authorization, revision and workspace freshness. |
 
 Selecting execute mode authorizes implementation within the captured scope; native permission asks and denies still apply. Finishing a plan never establishes that implementation occurred.
 
@@ -99,7 +99,7 @@ For example, this primary-agent tool input describes a direct queue fix. It assu
         "title": "Run configured tests",
         "role": "verifier",
         "stage": "verification",
-        "instructions": "Run the assigned test check through ultra_check and assess verification coverage.",
+        "instructions": "Run the assigned test check through ultraopencode_check and assess verification coverage.",
         "dependencies": ["implement"],
         "writes": false,
         "checkIds": ["test"]
@@ -132,14 +132,14 @@ Recipes provide fixed investigation structures through the same scheduler and pe
 For example:
 
 ```text
-/ultracode plan --recipe cross-checked-research Establish the timeout and retry contract for the pinned API version.
+/ultraopencode plan --recipe cross-checked-research Establish the timeout and retry contract for the pinned API version.
 ```
 
 A report can finish ready without proposing execution. Implementing its recommendations needs a new authorized execution request or an explicitly executable saved proposal; a report alone grants no write authority.
 
 ## Checks and acceptance
 
-A verifier calls `ultra_check({checkId: "test"})`. The adapter looks up the saved command, attests the calling worker and invocation, and executes through the native permission-checked shell wrapper. It records the exit status and candidate fingerprint. If the workspace changes during a check, its outcome becomes unknown.
+A verifier calls `ultraopencode_check({checkId: "test"})`. The adapter looks up the saved command, attests the calling worker and invocation, and executes through the native permission-checked shell wrapper. It records the exit status and candidate fingerprint. If the workspace changes during a check, its outcome becomes unknown.
 
 The verifier then submits its observed result. It cannot convert a failed command into a passing check by changing its summary or assessment. Similarly, an implementer submission is not independent review and does not satisfy requirement assessments merely by claiming the work is complete.
 
@@ -173,7 +173,7 @@ Dependent writing sequences, overlapping changes and unsupported changes are ref
 
 `resume` uses the existing run and creates a fresh launch intent when appropriate. Recovery preserves accepted predecessor results and never repeats successful investigation just to reconstruct a transcript. Switching the visible primary agent does not cancel a run or remove its coordinator restrictions.
 
-Inspect the exact run before retrying or increasing a budget. Use `/ultracode inspect <run-id> [task-id]` for details and `/ultracode export <run-id>` for saved reports. Unknown native outcomes and missing durable state require reconciliation, not fabricated results or direct edits to `.ultracode`.
+Inspect the exact run before retrying or increasing a budget. Use `/ultraopencode inspect <run-id> [task-id]` for details and `/ultraopencode export <run-id>` for saved reports. Unknown native outcomes and missing durable state require reconciliation, not fabricated results or direct edits to `.ultraopencode`.
 
 ## Developing a workflow change
 

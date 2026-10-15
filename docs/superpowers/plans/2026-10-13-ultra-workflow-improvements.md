@@ -1,8 +1,8 @@
-# Ultra Workflow Improvements Implementation Plan
+# UltraOpenCode Workflow Improvements Implementation Plan
 
 > **For agentic workers:** Use superpowers:subagent-driven-development. Check off delivered behaviors after their focused tests and review.
 
-**Goal:** Add measurable model evaluations, live progress, bounded context, reusable recipes and safely isolated parallel writing to the existing Ultra engine.
+**Goal:** Add measurable model evaluations, live progress, bounded context, reusable recipes and safely isolated parallel writing to the existing UltraOpenCode engine.
 
 **Architecture:** Reuse graph admission, native sessions, permission-preserving tools and durable state. Keep client rendering separate from scheduling. Independent implementers own distinct files; the parent integrates shared schema/plugin changes.
 

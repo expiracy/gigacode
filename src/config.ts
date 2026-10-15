@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs"
 import { readFile } from "node:fs/promises"
+import { projectConfigPath } from "./paths.ts"
 import { join } from "node:path"
 import type { AvailableModel, CheckSpec, Config, Limits, ModelOptions, ModelRef, ModelSelection, Role, Run, Stage, TaskSpec } from "./types.ts"
 
@@ -152,7 +153,7 @@ export function parseConfig(options: unknown): Config {
 /** Global/native options < exact-directory project override < explicit preview options. */
 export async function loadProjectConfig(options: unknown, directory: string, overrides?: unknown): Promise<Config> {
   const base = parseConfigOptions(options)
-  const path = join(directory, "ultracode.json")
+  const path = projectConfigPath(directory)
   let project: ConfigOptions | undefined
   try {
     project = parseConfigOptions(JSON.parse(await readFile(path, "utf8")))

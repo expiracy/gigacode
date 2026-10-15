@@ -19,9 +19,9 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
     const view = await rpc.settings({ sessionId, ...scopeInput }, { location, signal }) as SettingsView
     if (!active()) return
     if (!view?.effective || !view.inherited || !view.overrides || !view.path || !view.revision) throw new Error("The server returned no editable settings")
-    if (scope === "global" && view.scope !== "global") throw new Error("Reload the updated Ultra plugin before editing global defaults.")
+    if (scope === "global" && view.scope !== "global") throw new Error("Reload the updated UltraOpenCode plugin before editing global defaults.")
     view.scope = scope
-    const title = scope === "global" ? "Ultra global defaults" : "Ultra project settings"
+    const title = scope === "global" ? "UltraOpenCode global defaults" : "UltraOpenCode project settings"
     const saveTitle = scope === "global" ? "Save global defaults" : "Save project settings"
     const impact = scope === "global" ? "All projects using this OpenCode profile. Project overrides take precedence. Reload OpenCode to apply global defaults across projects; existing runs keep their captured settings." : "Changes apply to new workflows. Saved plans may need fresh planning because the project configuration changes."
     const draft = structuredClone(view.overrides)
@@ -37,13 +37,13 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
         { title: "Review changes", value: "review", disabled: !changed },
         { title: saveTitle, value: "save", description: view.blocked ?? (scope === "global" ? "All projects; reload OpenCode after saving" : "Applies to new workflows; global defaults stay unchanged"), disabled: !changed || !!view.blocked },
         ...(view.blocked ? [{ title: "Recheck save availability", value: "refresh", description: "Keep this draft and check current workflow state" }] : []),
-        { title: "Back to Ultra settings", value: "back", description: "Choose another scope, Help or About", category: "Navigation" },
+        { title: "Back to UltraOpenCode settings", value: "back", description: "Choose another scope, Help or About", category: "Navigation" },
       ] })
       if (!active()) return
       if (selected) currentSelection = selected
       if (!selected || selected === "back") {
         if (changed) {
-          const discard = await ctx.ui.dialog.confirm({ title: "Discard unsaved changes?", message: `${view.path}\n\n${preview}\n\nThese changes have not been saved. Return to Ultra settings and discard this draft?`, label: { confirm: "Discard changes", cancel: "Keep editing" } })
+          const discard = await ctx.ui.dialog.confirm({ title: "Discard unsaved changes?", message: `${view.path}\n\n${preview}\n\nThese changes have not been saved. Return to UltraOpenCode settings and discard this draft?`, label: { confirm: "Discard changes", cancel: "Keep editing" } })
           if (!active()) return
           if (!discard) continue
         }
@@ -58,7 +58,7 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
           const fresh = await rpc.settings({ sessionId, ...scopeInput }, { location, signal }) as SettingsView
           if (!active()) return
           if (!fresh?.revision || fresh.revision !== view.revision || fresh.path !== view.path || (fresh.scope ?? "project") !== scope) {
-            view.blocked = "Settings changed on disk. Return to Ultra settings and reopen this scope before saving."
+            view.blocked = "Settings changed on disk. Return to UltraOpenCode settings and reopen this scope before saving."
             throw new Error(view.blocked)
           }
           view.blocked = fresh.blocked
@@ -75,7 +75,7 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
         if (!confirmed) continue
         try {
           await rpc.saveSettings({ sessionId, ...scopeInput, revision: view.revision, options: draft, replaceAdvanced: true }, { location, signal })
-          if (active()) ctx.ui.toast.show({ title: "Ultra settings saved", message: scope === "global" ? "Global defaults saved. Reload OpenCode to apply them across projects. Project overrides still take precedence." : "Project settings apply to new workflows in this location. Global defaults are unchanged.", variant: "success", sessionID: sessionId })
+          if (active()) ctx.ui.toast.show({ title: "UltraOpenCode settings saved", message: scope === "global" ? "Global defaults saved. Reload OpenCode to apply them across projects. Project overrides still take precedence." : "Project settings apply to new workflows in this location. Global defaults are unchanged.", variant: "success", sessionID: sessionId })
         } catch (error) {
           if (active()) await ctx.ui.dialog.alert({ title: "Unable to confirm settings save", message: `${error instanceof Error ? error.message : "Save request failed"}\nReopen the editor to read current settings before trying again.` })
         }
@@ -83,6 +83,6 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
       } else return
     }
   } catch (error) {
-    if (active()) await ctx.ui.dialog.alert({ title: "Ultra settings unavailable", message: error instanceof Error ? error.message : "Unable to load settings" })
+    if (active()) await ctx.ui.dialog.alert({ title: "UltraOpenCode settings unavailable", message: error instanceof Error ? error.message : "Unable to load settings" })
   }
 }

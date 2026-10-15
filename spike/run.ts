@@ -75,7 +75,7 @@ try {
     assert.equal(info.hostVersion, EXPECTED_VERSION)
     assert.equal(info.sqlite, true)
     assert.ok(info.runtime)
-    assert.ok(info.tools.some((tool: Evidence) => tool.name === "ultra_probe"))
+    assert.ok(info.tools.some((tool: Evidence) => tool.name === "ultraopencode_probe"))
     assert.ok(info.tools.some((tool: Evidence) => tool.name === "subagent"))
     return { plugins, ...info }
   })
@@ -84,7 +84,7 @@ try {
   await check("deterministic command avoids model requests", async () => {
     const session = await create()
     const before = fixture.requests.length
-    await client.session.command({ sessionID: session.id, name: "ultra-spike", text: "status" })
+    await client.session.command({ sessionID: session.id, name: "ultraopencode-spike", text: "status" })
     const command = await event("command", session.id)
     assert.equal(fixture.requests.length, before)
     assert.equal(command.data.text, "status")
@@ -93,7 +93,7 @@ try {
 
   await check("genuine tool context and selected model", async () => {
     const session = await create("alternate")
-    const plan = scripted("IDENTITY_PROBE", "ultra_probe", { label: "identity" }, { model: "alternate" })
+    const plan = scripted("IDENTITY_PROBE", "ultraopencode_probe", { label: "identity" }, { model: "alternate" })
     await prompt(session.id, "IDENTITY_PROBE")
     const completed = await event("probe.completed", session.id)
     assert.equal((await settled(session.id)).outcome, "succeeded")
@@ -102,12 +102,12 @@ try {
     assert.equal(typeof completed.data.callID, "string")
     assert.equal(completed.data.hasSignal, true)
     assert.ok(fixture.requests.some(request => request.matchedPlan === plan && request.model === "alternate"))
-    return { ...completed.data, durableTool: await toolResult(session.id, "ultra_probe") }
+    return { ...completed.data, durableTool: await toolResult(session.id, "ultraopencode_probe") }
   })
 
   await check("background child and prelaunch permission installation", async () => {
     const session = await create()
-    scripted("BACKGROUND_PARENT", "ultra_bridge", { prompt: "BACKGROUND_CHILD", background: true, model: "fixture/alternate" })
+    scripted("BACKGROUND_PARENT", "ultraopencode_bridge", { prompt: "BACKGROUND_CHILD", background: true, model: "fixture/alternate" })
     const childPlan = fixture.enqueue({ marker: "BACKGROUND_CHILD", model: "alternate", hold: "background-child", text: "Worker finished", match: agentRequest("BACKGROUND_CHILD") })
     await prompt(session.id, "BACKGROUND_PARENT")
     const returned = await event("bridge.returned", session.id)
@@ -125,15 +125,15 @@ try {
     fixture.release("background-child")
     assert.equal((await settled(childID)).outcome, "succeeded")
     await settled(session.id)
-    await toolResult(session.id, "ultra_bridge")
+    await toolResult(session.id, "ultraopencode_bridge")
     return { childID, parentID: child.parentID, permissions: child.permissions, result: returned.data.result, beforeFirstModelRequest: true }
   })
 
   await check("concurrent native children keep distinct invocation bindings", async () => {
     const session = await create()
     fixture.enqueue({ marker: "PARALLEL_PARENT", match: agentRequest("PARALLEL_PARENT"), toolCalls: [
-      { name: "ultra_bridge", arguments: { prompt: "PARALLEL_CHILD_ONE" } },
-      { name: "ultra_bridge", arguments: { prompt: "PARALLEL_CHILD_TWO" } },
+      { name: "ultraopencode_bridge", arguments: { prompt: "PARALLEL_CHILD_ONE" } },
+      { name: "ultraopencode_bridge", arguments: { prompt: "PARALLEL_CHILD_TWO" } },
     ] })
     const plans = ["PARALLEL_CHILD_ONE", "PARALLEL_CHILD_TWO"].map(marker => fixture.enqueue({ marker, match: agentRequest(marker), hold: "parallel-children", text: "Parallel child completed" }))
     await prompt(session.id, "PARALLEL_PARENT")
@@ -151,7 +151,7 @@ try {
 
   await check("permission ask suspends tool admission", async () => {
     const session = await create("test", [{ action: "*", resource: "*", effect: "allow" }, { action: "shell", resource: "*", effect: "ask" }])
-    scripted("PERMISSION_ASK", "ultra_permission_probe", {})
+    scripted("PERMISSION_ASK", "ultraopencode_permission_probe", {})
     await prompt(session.id, "PERMISSION_ASK")
     const requests = await waitFor("native permission request", () => client.permission.list({ sessionID: session.id }), value => value.some(request => request.action === "shell"))
     assert.ok(!(await history()).some(row => row.session_id === session.id && row.kind === "permission-probe.executed"))
@@ -159,31 +159,31 @@ try {
     await client.permission.reply({ sessionID: session.id, requestID: request.id, decision: "once" })
     const admitted = await event("permission-probe.executed", session.id)
     await settled(session.id)
-    return { request, admitted: admitted.data, durableTool: await toolResult(session.id, "ultra_permission_probe") }
+    return { request, admitted: admitted.data, durableTool: await toolResult(session.id, "ultraopencode_permission_probe") }
   })
 
   await check("permission rejection prevents native execution", async () => {
     const session = await create("test", [{ action: "*", resource: "*", effect: "allow" }, { action: "shell", resource: "*", effect: "ask" }])
-    scripted("PERMISSION_REJECT", "ultra_permission_probe", {})
+    scripted("PERMISSION_REJECT", "ultraopencode_permission_probe", {})
     await prompt(session.id, "PERMISSION_REJECT")
     const requests = await waitFor("permission to reject", () => client.permission.list({ sessionID: session.id }), value => value.some(request => request.action === "shell"))
     const request = requests.find(request => request.action === "shell")!
     await client.permission.reply({ sessionID: session.id, requestID: request.id, decision: "reject" })
     await settled(session.id)
     assert.ok(!(await history()).some(row => row.session_id === session.id && row.kind === "permission-probe.executed"))
-    return { requestID: request.id, durableTool: await toolResult(session.id, "ultra_permission_probe", "error") }
+    return { requestID: request.id, durableTool: await toolResult(session.id, "ultraopencode_permission_probe", "error") }
   })
 
   await check("read-only child cannot bypass native write restrictions", async () => {
     const session = await create()
-    scripted("DENIED_PARENT", "ultra_bridge", { prompt: "DENIED_CHILD", permissionMode: "deny-edit" })
-    scripted("DENIED_CHILD", "ultra_native_check", { command: "echo mutated > protected.txt" })
+    scripted("DENIED_PARENT", "ultraopencode_bridge", { prompt: "DENIED_CHILD", permissionMode: "deny-edit" })
+    scripted("DENIED_CHILD", "ultraopencode_native_check", { command: "echo mutated > protected.txt" })
     await prompt(session.id, "DENIED_PARENT")
     const returned = await event("bridge.returned", session.id)
     const childID = returned.data.childID as string
     await event("native-check.started", childID)
     await settled(childID)
-    const tool = await toolResult(childID, "ultra_native_check", "error")
+    const tool = await toolResult(childID, "ultraopencode_native_check", "error")
     assert.match(JSON.stringify(tool.state.error), /permission|denied|reject/i)
     assert.equal(await readFile(join(host!.project, "protected.txt"), "utf8"), "original\n")
     assert.ok(!(await history()).some(row => row.session_id === childID && row.kind === "native-check.completed"))
@@ -192,9 +192,9 @@ try {
 
   await check("supervisor can dispatch a worker at depth two", async () => {
     const session = await create()
-    scripted("HIER_ROOT", "ultra_bridge", { prompt: "HIER_SUPERVISOR", agent: "ultra-supervisor", permissionMode: "inherit" })
-    scripted("HIER_SUPERVISOR", "ultra_bridge", { prompt: "HIER_WORKER", agent: "ultra-worker" })
-    scripted("HIER_WORKER", "ultra_probe", { label: "nested worker" })
+    scripted("HIER_ROOT", "ultraopencode_bridge", { prompt: "HIER_SUPERVISOR", agent: "ultraopencode-supervisor", permissionMode: "inherit" })
+    scripted("HIER_SUPERVISOR", "ultraopencode_bridge", { prompt: "HIER_WORKER", agent: "ultraopencode-worker" })
+    scripted("HIER_WORKER", "ultraopencode_probe", { label: "nested worker" })
     await prompt(session.id, "HIER_ROOT")
     const supervisorLaunch = await event("bridge.returned", session.id)
     const supervisorID = supervisorLaunch.data.childID as string
@@ -207,26 +207,26 @@ try {
     assert.ok(worker.permissions?.some(rule => rule.action === "subagent" && rule.effect === "deny"))
     await settled(supervisorID)
     await settled(session.id)
-    await toolResult(session.id, "ultra_bridge")
-    await toolResult(supervisorID, "ultra_bridge")
-    await toolResult(workerID, "ultra_probe")
+    await toolResult(session.id, "ultraopencode_bridge")
+    await toolResult(supervisorID, "ultraopencode_bridge")
+    await toolResult(workerID, "ultraopencode_probe")
     return { rootID: session.id, supervisorID, workerID, depth: 2, workerDelegationDenied: true }
   })
 
   await check("unavailable model is rejected without fallback", async () => {
     const session = await create()
-    scripted("MISSING_MODEL", "ultra_bridge", { prompt: "NO_MODEL_CHILD", model: "fixture/missing" })
+    scripted("MISSING_MODEL", "ultraopencode_bridge", { prompt: "NO_MODEL_CHILD", model: "fixture/missing" })
     await prompt(session.id, "MISSING_MODEL")
     const failed = await event("bridge.failed", session.id)
     await settled(session.id)
     assert.match(failed.data.error, /not available/i)
     assert.ok(!failed.data.childID)
-    return { error: failed.data.error, durableTool: await toolResult(session.id, "ultra_bridge", "error") }
+    return { error: failed.data.error, durableTool: await toolResult(session.id, "ultraopencode_bridge", "error") }
   })
 
   await check("queued prompt does not interrupt an active tool", async () => {
     const session = await create()
-    scripted("QUEUE_ACTIVE", "ultra_probe", { label: "queue active", waitMs: 1_500 })
+    scripted("QUEUE_ACTIVE", "ultraopencode_probe", { label: "queue active", waitMs: 1_500 })
     await prompt(session.id, "QUEUE_ACTIVE")
     await event("probe.started", session.id)
     const receipt = await client.session.prompt({ sessionID: session.id, text: "QUEUE_NEXT", delivery: "queue" })
@@ -242,8 +242,8 @@ try {
 
   await check("native completion waits for the active parent tool's step boundary", async () => {
     const session = await create()
-    scripted("NOTIFY_PARENT", "ultra_bridge", { prompt: "NOTIFY_CHILD" })
-    scripted("NOTIFY_PARENT", "ultra_probe", { label: "notification admission", waitMs: 2_000 })
+    scripted("NOTIFY_PARENT", "ultraopencode_bridge", { prompt: "NOTIFY_CHILD" })
+    scripted("NOTIFY_PARENT", "ultraopencode_probe", { label: "notification admission", waitMs: 2_000 })
     fixture.enqueue({ marker: "NOTIFY_CHILD", hold: "notification-child", text: "Child completed", match: agentRequest("NOTIFY_CHILD") })
     await prompt(session.id, "NOTIFY_PARENT")
     const returned = await event("bridge.returned", session.id)
@@ -268,7 +268,7 @@ try {
 
   await check("cancellation reaches the real tool abort signal", async () => {
     const session = await create()
-    scripted("CANCEL_TOOL", "ultra_probe", { label: "cancel", waitMs: 60_000 })
+    scripted("CANCEL_TOOL", "ultraopencode_probe", { label: "cancel", waitMs: 60_000 })
     await prompt(session.id, "CANCEL_TOOL")
     await event("probe.started", session.id)
     const receipt = await client.session.interrupt({ sessionID: session.id, resume: false })
@@ -282,8 +282,8 @@ try {
 
   await check("background child cancellation is acknowledged before release", async () => {
     const session = await create()
-    scripted("CANCEL_PARENT", "ultra_bridge", { prompt: "CANCEL_CHILD" })
-    scripted("CANCEL_CHILD", "ultra_probe", { label: "cancel child", waitMs: 60_000 })
+    scripted("CANCEL_PARENT", "ultraopencode_bridge", { prompt: "CANCEL_CHILD" })
+    scripted("CANCEL_CHILD", "ultraopencode_probe", { label: "cancel child", waitMs: 60_000 })
     await prompt(session.id, "CANCEL_PARENT")
     const returned = await event("bridge.returned", session.id)
     const childID = returned.data.childID as string
@@ -299,7 +299,7 @@ try {
 
   await check("prelaunch failure never prompts a child", async () => {
     const session = await create()
-    scripted("REJECT_PARENT", "ultra_bridge", { prompt: "MUST_NOT_PROMPT_CHILD", failPrelaunch: true })
+    scripted("REJECT_PARENT", "ultraopencode_bridge", { prompt: "MUST_NOT_PROMPT_CHILD", failPrelaunch: true })
     await prompt(session.id, "REJECT_PARENT")
     const rejected = await event("bridge.prelaunch.rejected")
     await settled(session.id)
@@ -311,7 +311,7 @@ try {
 
   await check("native check returns structured evidence", async () => {
     const session = await create()
-    scripted("NATIVE_CHECK", "ultra_native_check", { command: "echo ultra-compatibility-check" })
+    scripted("NATIVE_CHECK", "ultraopencode_native_check", { command: "echo ultra-compatibility-check" })
     await prompt(session.id, "NATIVE_CHECK")
     const completed = await event("native-check.completed", session.id)
     await settled(session.id)
@@ -319,7 +319,7 @@ try {
     assert.equal(typeof completed.data.result.output, "object")
     assert.equal(completed.data.result.output.exit, 0)
     assert.equal(completed.data.result.output.status, "completed")
-    return { result: completed.data.result, durableTool: await toolResult(session.id, "ultra_native_check") }
+    return { result: completed.data.result, durableTool: await toolResult(session.id, "ultraopencode_native_check") }
   })
 
   await check("foreign location ownership is rejected", async () => {
@@ -349,14 +349,14 @@ try {
     assert.ok(after.filter(row => row.kind === "setup").length > before.filter(row => row.kind === "setup").length)
     assert.ok(after.some(row => row.kind === "cleanup"))
     const info = await rpc.inspect({}, { location }) as Evidence
-    assert.equal(info.tools.filter((tool: Evidence) => tool.name === "ultra_probe").length, 1)
-    assert.equal(info.commands.data.filter((command: Evidence) => command.name === "ultra-spike").length, 1)
+    assert.equal(info.tools.filter((tool: Evidence) => tool.name === "ultraopencode_probe").length, 1)
+    assert.equal(info.commands.data.filter((command: Evidence) => command.name === "ultraopencode-spike").length, 1)
     return { setups: after.filter(row => row.kind === "setup").length, cleanup: true, duplicateRegistrations: 0 }
   })
 
   await check("service restart resumes the same background child", async () => {
     const session = await create()
-    scripted("RESTART_PARENT", "ultra_bridge", { prompt: "RESTART_CHILD" })
+    scripted("RESTART_PARENT", "ultraopencode_bridge", { prompt: "RESTART_CHILD" })
     const heldPlan = fixture.enqueue({ marker: "RESTART_CHILD", hold: "restart-child", text: "before restart", match: agentRequest("RESTART_CHILD") })
     await prompt(session.id, "RESTART_PARENT")
     const returned = await event("bridge.returned", session.id)
@@ -378,7 +378,7 @@ try {
 
   await check("SQLite and native session snapshots survive host restart", async () => {
     const session = await create()
-    scripted("PERSIST_PROBE", "ultra_probe", { label: "persist" })
+    scripted("PERSIST_PROBE", "ultraopencode_probe", { label: "persist" })
     await prompt(session.id, "PERSIST_PROBE")
     await event("probe.completed", session.id)
     await settled(session.id)
@@ -387,13 +387,13 @@ try {
     const after = await history()
     assert.ok(before.every(row => after.some(item => item.seq === row.seq && item.kind === row.kind)))
     assert.equal((await client.session.get({ sessionID: session.id })).outcome, "succeeded")
-    await toolResult(session.id, "ultra_probe")
+    await toolResult(session.id, "ultraopencode_probe")
     return { sessionID: session.id, eventsBefore: before.length, eventsAfter: after.length, nativeSnapshotPersisted: true }
   })
 
   await check("native session.log supplies historical events", async () => {
     const session = await create()
-    scripted("LOG_HISTORY", "ultra_probe", { label: "native replay" })
+    scripted("LOG_HISTORY", "ultraopencode_probe", { label: "native replay" })
     await prompt(session.id, "LOG_HISTORY")
     await event("probe.completed", session.id)
     await settled(session.id)

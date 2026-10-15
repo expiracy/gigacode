@@ -22,7 +22,7 @@ function fixture() {
   let finishDialog: ((value?: string) => void) | undefined
   const workflowReads: any[] = [], controls: any[] = [], navigations: any[] = []
   const settingsReads: any[] = [], settingsSaves: any[] = []
-  const settingsView: SettingsView = { path: "C:/project/ultracode.json", revision: "settings-revision", overrides: {}, inherited: structuredClone(defaultConfig), effective: structuredClone(defaultConfig), models: [{ providerID: "fixture", id: "model", name: "Fixture model", variants: ["fast"], tools: true }] }
+  const settingsView: SettingsView = { path: "C:/project/ultraopencode.json", revision: "settings-revision", overrides: {}, inherited: structuredClone(defaultConfig), effective: structuredClone(defaultConfig), models: [{ providerID: "fixture", id: "model", name: "Fixture model", variants: ["fast"], tools: true }] }
   const globalSettingsView: SettingsView = { ...structuredClone(settingsView), path: "C:/profile/opencode.jsonc", revision: "global-revision", scope: "global", reloadRequired: true }
   const workflowResponse: WorkflowSnapshot = { sessionId: "parent", runs: [{
     id: "run_1", parentSessionId: "parent", directory: "C:/project", generation: 1, revision: 2,
@@ -36,7 +36,7 @@ function fixture() {
   const layers: any[] = [], dialogs: any[] = [], reads: any[] = [], synced: string[] = [], toasts: any[] = []
   const sessions = new Map<string, any>(), events = new Map<string, Set<Function>>()
   let list: (input: any, options: any) => Promise<any> = async input => ({ data: [...sessions.values()].filter(info => info.parentID === input.parentID), cursor: {} })
-  const response = { config: structuredClone(defaultConfig), hostVersion: "2.0.25", promptVersion: "ultra/2", directory: "C:/project", state: "C:/project/.ultracode/state.sqlite" }
+  const response = { config: structuredClone(defaultConfig), hostVersion: "2.0.25", promptVersion: "ultraopencode/2", directory: "C:/project", state: "C:/project/.ultraopencode/state.sqlite" }
   const context = {
     app: { version: "2.0.25" }, location: { directory: "C:/plugin-project" },
     client: { session: { async list(input: any, options: any) { reads.push(input); return list(input, options) } }, rpc() { return {
@@ -58,7 +58,7 @@ function fixture() {
       async select(options: any) {
         dialogs.push(Object.assign(Object.create(options), { kind: "select" }))
         if (selections.length) return selections.shift()
-        if (options.title === "Ultra workflows" && !selected) return new Promise<string | undefined>(resolve => { finishDialog = resolve })
+        if (options.title === "UltraOpenCode workflows" && !selected) return new Promise<string | undefined>(resolve => { finishDialog = resolve })
         return selected
       },
       async alert(options: any) { dialogs.push({ kind: "alert", ...options }) },
@@ -87,9 +87,9 @@ function fixture() {
 
 async function settle() { for (let i = 0; i < 20; i++) await Promise.resolve() }
 const family = [
-  { id: "parent", agent: "ultra" },
-  { id: "supervisor", parentID: "parent", agent: "ultra-supervisor" },
-  { id: "worker", parentID: "supervisor", agent: "ultra-worker" },
+  { id: "parent", agent: "ultraopencode" },
+  { id: "supervisor", parentID: "parent", agent: "ultraopencode-supervisor" },
+  { id: "worker", parentID: "supervisor", agent: "ultraopencode-worker" },
 ]
 
 test("cold root attach hydrates existing native workers without opening the supervisor", async () => {
@@ -106,7 +106,7 @@ test("cold root attach hydrates existing native workers without opening the supe
   } finally { await cleanup!() }
 })
 
-test("navigation and reconnect refresh Ultra descendants for legacy primary agents too", async () => {
+test("navigation and reconnect refresh UltraOpenCode descendants for legacy primary agents too", async () => {
   const f = fixture()
   f.seed([{ ...family[0], agent: "build" }, ...family.slice(1)], ["parent", "supervisor"])
   const cleanup = await plugin.setup(f.context as any)
@@ -138,8 +138,8 @@ test("paged hydration deduplicates sessions and excludes unrelated families and 
   f.list(async input => {
     if (input.parentID === "parent") return input.cursor
       ? { data: [family[1]], cursor: {} }
-      : { data: [family[1], { id: "other", parentID: "parent", agent: "general" }, { id: "foreign", parentID: "elsewhere", agent: "ultra-supervisor" }], cursor: { next: "next-page" } }
-    return { data: [family[2], family[2], { id: "foreign-worker", parentID: "elsewhere", agent: "ultra-worker" }], cursor: {} }
+      : { data: [family[1], { id: "other", parentID: "parent", agent: "general" }, { id: "foreign", parentID: "elsewhere", agent: "ultraopencode-supervisor" }], cursor: { next: "next-page" } }
+    return { data: [family[2], family[2], { id: "foreign-worker", parentID: "elsewhere", agent: "ultraopencode-worker" }], cursor: {} }
   })
   f.route({ type: "session", sessionID: "parent" })
   const cleanup = await plugin.setup(f.context as any)
@@ -185,7 +185,7 @@ test("failed family reads stay visible and retry on reconnect without polling", 
   } finally { await cleanup!() }
 })
 
-test("native ultracode config is the only terminal configuration entry point", async () => {
+test("native ultraopencode config is the only terminal configuration entry point", async () => {
   const f = fixture(), cleanup = await plugin.setup(f.context as any)
   try {
     expect(f.layers).toHaveLength(0)
@@ -193,7 +193,7 @@ test("native ultracode config is the only terminal configuration entry point", a
     expect(f.dialogs).toHaveLength(0)
     f.route({ type: "session", sessionID: "parent" })
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    expect(f.dialogs[0].title).toBe("Ultra settings")
+    expect(f.dialogs[0].title).toBe("UltraOpenCode settings")
     expect(f.calls).toBe(0)
   } finally { await cleanup!() }
 })
@@ -203,8 +203,8 @@ test("settings offers separate help and about destinations beside scope choices"
   try {
     f.route({ type: "session", sessionID: "parent" })
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    expect(f.dialogs[0].title).toBe("Ultra settings")
-    expect(f.dialogs[0].options.map((option: any) => option.title)).toEqual(["This project", "Global defaults", "Help", "About Ultra"])
+    expect(f.dialogs[0].title).toBe("UltraOpenCode settings")
+    expect(f.dialogs[0].options.map((option: any) => option.title)).toEqual(["This project", "Global defaults", "Help", "About UltraOpenCode"])
     expect(f.settingsReads).toHaveLength(0)
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
@@ -225,7 +225,7 @@ test("advanced configuration lives in the chosen scope and uses its actual value
     expect(advanced?.options.find((option: any) => option.value === "prompts").description).toContain("1 custom")
     expect(advanced?.options.find((option: any) => option.value === "threshold").description).toContain("45 characters")
     expect(JSON.stringify(advanced?.options)).not.toContain("Project-specific instructions")
-    const help = f.dialogs.find(dialog => dialog.title === "Ultra help")
+    const help = f.dialogs.find(dialog => dialog.title === "UltraOpenCode help")
     expect(help?.options.map((option: any) => option.value)).not.toContain("about")
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
@@ -237,15 +237,15 @@ test("help offers focused guides and returns to the topic list before settings",
     f.route({ type: "session", sessionID: "parent" })
     f.choose("help", "scopes", "saving", "advanced", "workflows", "back", "about", undefined)
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    const help = f.dialogs.filter(dialog => dialog.title === "Ultra help")
-    expect(help[0]?.options.map((option: any) => option.title)).toEqual(["Scopes & inheritance", "Editing & saving", "Advanced controls", "Workflow commands", "Back to Ultra settings"])
+    const help = f.dialogs.filter(dialog => dialog.title === "UltraOpenCode help")
+    expect(help[0]?.options.map((option: any) => option.title)).toEqual(["Scopes & inheritance", "Editing & saving", "Advanced controls", "Workflow commands", "Back to UltraOpenCode settings"])
     expect(help.map(dialog => dialog.current)).toEqual([undefined, "scopes", "saving", "advanced", "workflows"])
     const guides = f.dialogs.filter(dialog => dialog.kind === "alert")
-    expect(guides.map(dialog => dialog.title)).toEqual(["Scopes & inheritance", "Editing & saving", "Advanced controls", "Workflow commands", "About Ultra"])
+    expect(guides.map(dialog => dialog.title)).toEqual(["Scopes & inheritance", "Editing & saving", "Advanced controls", "Workflow commands", "About UltraOpenCode"])
     expect(guides[0].message).toContain("Project overrides take precedence")
     expect(guides[1].message).toContain("Reload OpenCode")
-    expect(guides[2].message).toContain("/ultracode on")
-    expect(guides[3].message).toContain("/ultracode status")
+    expect(guides[2].message).toContain("/ultraopencode on")
+    expect(guides[3].message).toContain("/ultraopencode status")
     expect(f.settingsReads).toHaveLength(0)
     expect(f.settingsSaves).toHaveLength(0)
     expect(f.calls).toBe(0)
@@ -259,7 +259,7 @@ test("about opens directly and returns focus to its settings entry with unknown 
     f.route({ type: "session", sessionID: "parent" })
     f.choose("about", undefined)
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    expect(f.dialogs.map(dialog => dialog.title)).toEqual(["Ultra settings", "About Ultra", "Ultra settings"])
+    expect(f.dialogs.map(dialog => dialog.title)).toEqual(["UltraOpenCode settings", "About UltraOpenCode", "UltraOpenCode settings"])
     expect(f.dialogs[1].message).toContain("durable, multi-agent coding workflows")
     expect(f.dialogs[1].message).toContain("OpenCode: Unknown")
     expect(f.dialogs[1].message).toContain("Prompt version: Unknown")
@@ -275,7 +275,7 @@ test("navigation retires a pending help guide before it can open an alert", asyn
   const f = fixture(), cleanup = await plugin.setup(f.context as any)
   const select = f.context.ui.dialog.select
   let release!: (value: string) => void
-  f.context.ui.dialog.select = options => options.title === "Ultra help" ? new Promise(resolve => { release = resolve }) : select(options)
+  f.context.ui.dialog.select = options => options.title === "UltraOpenCode help" ? new Promise(resolve => { release = resolve }) : select(options)
   try {
     f.route({ type: "session", sessionID: "parent" })
     f.choose("help")
@@ -284,7 +284,7 @@ test("navigation retires a pending help guide before it can open an alert", asyn
     f.route({ type: "home" })
     release("saving")
     await opening
-    expect(f.dialogs.map(dialog => dialog.title)).toEqual(["Ultra settings"])
+    expect(f.dialogs.map(dialog => dialog.title)).toEqual(["UltraOpenCode settings"])
     expect(f.settingsReads).toHaveLength(0)
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
@@ -311,7 +311,7 @@ test("automatic-mode threshold edits explain opt-in behavior and preview the cho
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     const prompt = f.dialogs.find(dialog => dialog.kind === "prompt")
     expect(prompt?.value).toBe("80")
-    expect(prompt?.description).toContain("/ultracode on")
+    expect(prompt?.description).toContain("/ultraopencode on")
     expect(f.dialogs.find(dialog => dialog.kind === "confirm")?.message).toContain("120 characters")
     expect(f.settingsSaves[0]?.input.options).toEqual({ autoThreshold: 120 })
   } finally { await cleanup!() }
@@ -410,7 +410,7 @@ test("viewing advanced configuration preserves an unsaved draft without duplicat
     f.enter("1"); f.confirm()
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     const advanced = f.dialogs.find(dialog => dialog.title === "Advanced configuration")
-    expect(advanced.placeholder).toContain("C:/project/ultracode.json")
+    expect(advanced.placeholder).toContain("C:/project/ultraopencode.json")
     expect(advanced.options.map((option: any) => option.value)).toEqual(["prompts", "writer", "threshold", "back"])
     expect(f.settingsSaves).toHaveLength(1)
     expect(f.settingsSaves[0].input.options).toEqual({ limits: { workers: 1 } })
@@ -457,9 +457,9 @@ test("advanced configuration and support have separate destinations", async () =
     const advanced = f.dialogs.find(dialog => dialog.title === "Advanced configuration")
     expect(advanced.options.find((option: any) => option.value === "prompts").description).toContain("1 custom")
     expect(advanced.options.find((option: any) => option.value === "threshold").description).toContain("80 characters")
-    const about = f.dialogs.find(dialog => dialog.title === "About Ultra")
-    for (const text of ["2.0.25", "ultra/2", "C:/project", "state.sqlite"]) expect(about.message).toContain(text)
-    expect(f.dialogs.filter(dialog => dialog.title === "Ultra help")).toHaveLength(0)
+    const about = f.dialogs.find(dialog => dialog.title === "About UltraOpenCode")
+    for (const text of ["2.0.25", "ultraopencode/2", "C:/project", "state.sqlite"]) expect(about.message).toContain(text)
+    expect(f.dialogs.filter(dialog => dialog.title === "UltraOpenCode help")).toHaveLength(0)
     expect(f.settingsReads).toHaveLength(1)
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
@@ -497,7 +497,7 @@ test("native slash configuration result opens immediately without another RPC or
   try {
     f.route({ type: "session", sessionID: "parent" })
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    expect(f.dialogs[0].title).toBe("Ultra settings")
+    expect(f.dialogs[0].title).toBe("UltraOpenCode settings")
     expect(f.calls).toBe(0)
   } finally { await cleanup!() }
 })
@@ -510,7 +510,7 @@ test("the configuration viewer opens a guided project editor without saving on c
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     expect(f.dialogs[0].options.some((option: any) => option.title === "This project")).toBe(true)
     expect(f.settingsReads[0].input).toEqual({ sessionId: "parent" })
-    expect(f.dialogs[1].title).toBe("Ultra project settings")
+    expect(f.dialogs[1].title).toBe("UltraOpenCode project settings")
     expect(f.dialogs[1].options.map((option: any) => option.title)).toEqual(expect.arrayContaining(["Models", "Limits", "Checks"]))
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
@@ -581,7 +581,7 @@ test("settings restores focus through sections and names each Back destination",
     f.route({ type: "session", sessionID: "parent" })
     f.choose("Configuration/Edit global defaults", "checks", "add", "back", "advanced", "writer", "back", "prompts", "back", "back", "limits", "back", "back", undefined)
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    expect(f.dialogs.filter(dialog => dialog.title === "Ultra global defaults").map(dialog => dialog.current)).toEqual([undefined, "checks", "advanced", "limits"])
+    expect(f.dialogs.filter(dialog => dialog.title === "UltraOpenCode global defaults").map(dialog => dialog.current)).toEqual([undefined, "checks", "advanced", "limits"])
     expect(f.dialogs.filter(dialog => dialog.title === "Advanced configuration").map(dialog => dialog.current)).toEqual([undefined, "writer", "prompts"])
     expect(f.dialogs.filter(dialog => dialog.title === "Verification checks").map(dialog => dialog.current)).toEqual([undefined, "add"])
     for (const title of ["Workflow limits", "Advanced configuration", "Verification checks"]) {
@@ -695,7 +695,7 @@ test("back to configuration lets the user choose another scope without copying p
     f.choose("Configuration/Edit project settings", "back", "Configuration/Edit global defaults", undefined)
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     expect(f.settingsReads.map(read => read.input.scope ?? "project")).toEqual(["project", "global"])
-    expect(f.dialogs.find(dialog => dialog.title === "Ultra global defaults")).toBeDefined()
+    expect(f.dialogs.find(dialog => dialog.title === "UltraOpenCode global defaults")).toBeDefined()
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
 })
@@ -708,7 +708,7 @@ test("changing scope after editing requires explicit discard and starts with tha
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     const discard = f.dialogs.find(dialog => dialog.title === "Discard unsaved changes?")
     expect(discard?.message).toContain("Workflow default")
-    expect(discard?.message).toContain("C:/project/ultracode.json")
+    expect(discard?.message).toContain("C:/project/ultraopencode.json")
     expect(f.settingsReads.map(read => read.input.scope ?? "project")).toEqual(["project", "global"])
     expect(f.globalSettingsView.overrides).toEqual({})
     expect(f.settingsSaves).toHaveLength(0)
@@ -735,7 +735,7 @@ test("restoring original model overrides leaves no unsaved draft despite object 
     f.choose("Configuration/Edit project settings", "models", "roles.planner", "reset", "roles.planner", "inherit", "back", "back", undefined)
     f.confirm()
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    const editor = f.dialogs.findLast(dialog => dialog.title === "Ultra project settings")
+    const editor = f.dialogs.findLast(dialog => dialog.title === "UltraOpenCode project settings")
     expect(editor.options.find((option: any) => option.value === "save").disabled).toBe(true)
     expect(editor.placeholder).not.toContain("Unsaved changes")
     expect(f.dialogs.filter(dialog => dialog.kind === "confirm")).toHaveLength(0)
@@ -767,7 +767,7 @@ test("a server that returns project data for global scope is refused without any
     f.route({ type: "session", sessionID: "parent" })
     f.choose("Configuration/Edit global defaults")
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    expect(f.dialogs.find(dialog => dialog.title === "Ultra settings unavailable")?.message).toContain("Reload")
+    expect(f.dialogs.find(dialog => dialog.title === "UltraOpenCode settings unavailable")?.message).toContain("Reload")
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
 })
@@ -785,7 +785,7 @@ test("a blocked editor can recheck save availability without losing its scoped d
     f.route({ type: "session", sessionID: "parent" })
     f.choose("Configuration/Edit global defaults", "limits", "workers", "back", "refresh", "save"); f.enter("2"); f.confirm()
     await f.event({ sessionId: "parent", command: "config", result: f.response })
-    const blocked = f.dialogs.find(dialog => dialog.title === "Ultra global defaults")
+    const blocked = f.dialogs.find(dialog => dialog.title === "UltraOpenCode global defaults")
     expect(blocked.placeholder).toContain("All projects")
     expect(blocked.options.find((option: any) => option.value === "refresh")?.title).toBe("Recheck save availability")
     expect(f.settingsReads.map(read => read.input.scope)).toEqual(["global", "global"])
@@ -810,7 +810,7 @@ test("rechecking changed settings preserves the draft and refuses to replace its
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     expect(f.dialogs.find(dialog => dialog.title === "Unable to recheck settings")?.message).toContain("Settings changed on disk")
     expect(f.dialogs.find(dialog => dialog.title === "Project setting changes")?.message).toContain("Workers: inherited (4) → 1")
-    const editor = f.dialogs.findLast(dialog => dialog.title === "Ultra project settings")
+    const editor = f.dialogs.findLast(dialog => dialog.title === "UltraOpenCode project settings")
     expect(editor.options.find((option: any) => option.value === "save").disabled).toBe(true)
     expect(f.dialogs.find(dialog => dialog.title === "Discard unsaved changes?")).toBeDefined()
     expect(f.settingsSaves).toHaveLength(0)
@@ -961,7 +961,7 @@ test("guided limits reject invalid values and keep the draft unchanged", async (
     f.enter("0")
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     expect(f.dialogs.find(dialog => dialog.title === "Invalid limit")?.message).toContain("at least 1")
-    expect(f.dialogs.findLast(dialog => dialog.title === "Ultra project settings").options.find((option: any) => option.value === "save").disabled).toBe(true)
+    expect(f.dialogs.findLast(dialog => dialog.title === "UltraOpenCode project settings").options.find((option: any) => option.value === "save").disabled).toBe(true)
     expect(f.settingsSaves).toHaveLength(0)
   } finally { await cleanup!() }
 })
@@ -1075,7 +1075,7 @@ test("other command results are visible only in their initiating session", async
     expect(f.dialogs).toHaveLength(0)
     await f.event({ sessionId: "parent", command: "status", result: { runs: [] } })
     await settle()
-    expect(f.dialogs[0].title).toBe("Ultra workflows")
+    expect(f.dialogs[0].title).toBe("UltraOpenCode workflows")
   } finally { f.close(); await cleanup!() }
 })
 
@@ -1083,9 +1083,9 @@ test("native command failures give actionable visible errors without another RPC
   const f = fixture(), cleanup = await plugin.setup(f.context as any)
   try {
     f.route({ type: "session", sessionID: "parent" })
-    await f.event({ sessionId: "parent", command: "bogus", error: "Unknown ultracode command: bogus. Usage: /ultracode config" })
-    expect(f.dialogs[0].title).toBe("Ultra command error")
-    expect(f.dialogs[0].message).toContain("Unknown ultracode command")
+    await f.event({ sessionId: "parent", command: "bogus", error: "Unknown ultraopencode command: bogus. Usage: /ultraopencode config" })
+    expect(f.dialogs[0].title).toBe("UltraOpenCode command error")
+    expect(f.dialogs[0].message).toContain("Unknown ultraopencode command")
     expect(f.calls).toBe(0)
   } finally { await cleanup!() }
 })
@@ -1106,7 +1106,7 @@ test("existing status feedback opens a searchable workflow snapshot in its initi
     await f.event({ sessionId: "parent", command: "status run_1", result: { run: { id: "run_1" } } }); await settle()
     expect(f.workflowReads).toHaveLength(1)
     expect(f.workflowReads[0].input).toEqual({ sessionId: "parent", runId: "run_1" })
-    expect(f.dialogs[0].title).toBe("Ultra workflows")
+    expect(f.dialogs[0].title).toBe("UltraOpenCode workflows")
     expect(f.dialogs[0].placeholder).toContain("Search")
     for (const text of ["execution", "running", "Fix parser", "fixture/model", "worker", "unknown"]) expect(JSON.stringify(f.dialogs[0].options)).toContain(text)
     expect(f.layers).toHaveLength(0)
@@ -1177,7 +1177,7 @@ test("configuration feedback replaces a pending workflow view without a late dia
     await f.event({ sessionId: "parent", command: "config", result: f.response })
     expect(f.workflowReads[0].options.signal.aborted).toBe(true)
     release(f.workflowResponse); await settle()
-    expect(f.dialogs.map(dialog => dialog.title)).toEqual(["Ultra settings"])
+    expect(f.dialogs.map(dialog => dialog.title)).toEqual(["UltraOpenCode settings"])
   } finally { f.close(); await cleanup!() }
 })
 
@@ -1304,7 +1304,7 @@ test("a failed control is visible and never replayed by a reconnect", async () =
     await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
     f.dialogs[0].actions.find((action: any) => action.title === "Cancel").onTrigger(f.dialogs[0].options[0].value)
     await settle()
-    expect(f.toasts.some(toast => toast.title === "Ultra control error" && toast.message.includes("native settlement"))).toBe(true)
+    expect(f.toasts.some(toast => toast.title === "UltraOpenCode control error" && toast.message.includes("native settlement"))).toBe(true)
     await f.nativeEvent("server.connected")
     expect(f.controls).toHaveLength(1)
   } finally { f.close(); await cleanup!() }

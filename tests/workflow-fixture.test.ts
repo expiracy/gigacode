@@ -11,7 +11,7 @@ function fixture() {
   fixtures.push(value)
   return value
 }
-async function send(value: WorkflowFixture, messages: Record<string, unknown>[], stream = false, tools = ["ultra_task", "ultra_control"]) {
+async function send(value: WorkflowFixture, messages: Record<string, unknown>[], stream = false, tools = ["ultraopencode_task", "ultraopencode_control"]) {
   return fetch(`${value.baseURL}/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: "test", stream, messages, tools: tools.map(name => ({ type: "function", function: { name } })) }),
@@ -24,7 +24,7 @@ describe("native workflow primary scripts", () => {
     const objective = "Investigate project behavior and uncertain API contracts before proposing a design."
     const workflow = fixturePlanningWorkflow(objective)
     const original = structuredClone(workflow)
-    value.scriptPrimary({ prompt: objective, toolCalls: [{ name: "ultra_task", arguments: { objective, mode: "plan", workflow } }] })
+    value.scriptPrimary({ prompt: objective, toolCalls: [{ name: "ultraopencode_task", arguments: { objective, mode: "plan", workflow } }] })
     workflow.tasks[0]!.instructions = "Changed after the script was registered"
     const response = await send(value, [{ role: "user", content: objective }])
     const call = (await response.json() as any).choices[0].message.tool_calls[0].function
@@ -49,13 +49,13 @@ describe("native workflow primary scripts", () => {
 
   test("scripts an ordinary task prompt once per model tool turn and records available tools", async () => {
     const value = fixture()
-    const objective = "Plan the native Ultra mode fixture."
-    const scriptId = value.scriptPrimary({ prompt: objective, toolCalls: [{ name: "ultra_task", arguments: { objective, mode: "plan" } }], text: "The graph is launched." })
+    const objective = "Plan the native UltraOpenCode mode fixture."
+    const scriptId = value.scriptPrimary({ prompt: objective, toolCalls: [{ name: "ultraopencode_task", arguments: { objective, mode: "plan" } }], text: "The graph is launched." })
     const messages = [{ role: "user", content: objective }]
     const first = await send(value, messages)
     const body = await first.json() as any
-    expect(body.choices[0].message.tool_calls[0].function).toEqual({ name: "ultra_task", arguments: JSON.stringify({ objective, mode: "plan" }) })
-    expect(value.requests[0]).toMatchObject({ marker: "primary", primaryScriptId: scriptId, calls: ["ultra_task"], tools: ["ultra_task", "ultra_control"] })
+    expect(body.choices[0].message.tool_calls[0].function).toEqual({ name: "ultraopencode_task", arguments: JSON.stringify({ objective, mode: "plan" }) })
+    expect(value.requests[0]).toMatchObject({ marker: "primary", primaryScriptId: scriptId, calls: ["ultraopencode_task"], tools: ["ultraopencode_task", "ultraopencode_control"] })
     const settled = await send(value, [...messages, { role: "assistant", tool_calls: body.choices[0].message.tool_calls }, { role: "tool", tool_call_id: body.choices[0].message.tool_calls[0].id, content: "Launched one real native supervisor." }])
     expect((await settled.json() as any).choices[0].message).toEqual({ role: "assistant", content: "The graph is launched." })
     expect(value.requests[1]?.calls).toEqual([])
@@ -63,32 +63,32 @@ describe("native workflow primary scripts", () => {
 
   test("uses only the current human prompt and never overrides a native supervisor", async () => {
     const value = fixture()
-    value.scriptPrimary({ prompt: "Fixture control request", toolCalls: [{ name: "ultra_control", arguments: { action: "config" } }] })
+    value.scriptPrimary({ prompt: "Fixture control request", toolCalls: [{ name: "ultraopencode_control", arguments: { action: "config" } }] })
     const ordinary = await send(value, [{ role: "user", content: "Fixture control request" }, { role: "assistant", content: "done" }, { role: "user", content: "A separate ordinary follow-up." }])
     expect((await ordinary.json() as any).choices[0].message.tool_calls).toBeUndefined()
     expect(value.requests[0]?.marker).toBe("ordinary")
     const supervisor = await send(value, [{ role: "user", content: 'ULTRA_SUPERVISOR\n{"runId":"run-fixture","intentId":"intent-fixture"}\nFixture control request' }])
     const calls = (await supervisor.json() as any).choices[0].message.tool_calls
-    expect(calls[0].function.name).toBe("ultra_execute")
+    expect(calls[0].function.name).toBe("ultraopencode_execute")
     expect(value.requests[1]?.marker).toBe("supervisor")
   })
 
   test("does not emit primary tools during auxiliary title generation", async () => {
     const value = fixture()
-    const objective = "Plan the title and native Ultra task."
-    value.scriptPrimary({ prompt: objective, toolCalls: [{ name: "ultra_task", arguments: { objective, mode: "plan" } }] })
+    const objective = "Plan the title and native UltraOpenCode task."
+    value.scriptPrimary({ prompt: objective, toolCalls: [{ name: "ultraopencode_task", arguments: { objective, mode: "plan" } }] })
     const title = await send(value, [{ role: "system", content: "Generate a short title." }, { role: "user", content: objective }], false, [])
     expect((await title.json() as any).choices[0].message.tool_calls).toBeUndefined()
     expect(value.requests[0]).toMatchObject({ marker: "ordinary", tools: [], calls: [] })
     const primary = await send(value, [{ role: "user", content: objective }])
-    expect((await primary.json() as any).choices[0].message.tool_calls[0].function.name).toBe("ultra_task")
+    expect((await primary.json() as any).choices[0].message.tool_calls[0].function.name).toBe("ultraopencode_task")
     expect(value.requests[1]?.marker).toBe("primary")
   })
 
   test("streams deliberate duplicate task calls and typed read-only controls", async () => {
     const value = fixture()
-    const task = { name: "ultra_task", arguments: { objective: "Start one graph.", mode: "execute" } }
-    const calls = [task, task, { name: "ultra_control", arguments: { action: "status", runId: "run-fixture" } }]
+    const task = { name: "ultraopencode_task", arguments: { objective: "Start one graph.", mode: "execute" } }
+    const calls = [task, task, { name: "ultraopencode_control", arguments: { action: "status", runId: "run-fixture" } }]
     value.scriptPrimary({ prompt: "Exercise duplicate admission", toolCalls: calls })
     const response = await send(value, [{ role: "user", content: "Exercise duplicate admission" }], true)
     const frames = (await response.text()).split("\n\n").filter(frame => frame.startsWith("data: ") && !frame.includes("[DONE]")).map(frame => JSON.parse(frame.slice(6)))
@@ -98,6 +98,6 @@ describe("native workflow primary scripts", () => {
       expect(chunks[0].function.name).toBe(call.name)
       expect(JSON.parse(chunks.map((delta: any) => delta.function.arguments).join(""))).toEqual(call.arguments)
     }
-    expect(value.requests[0]?.calls).toEqual(["ultra_task", "ultra_task", "ultra_control"])
+    expect(value.requests[0]?.calls).toEqual(["ultraopencode_task", "ultraopencode_task", "ultraopencode_control"])
   })
 })

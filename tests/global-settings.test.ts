@@ -14,7 +14,7 @@ async function fixture() {
 }
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }) })
 
-test("global settings expose only Ultra options and built-in defaults, never native credentials", async () => {
+test("global settings expose only UltraOpenCode options and built-in defaults, never native credentials", async () => {
   const f = await fixture()
   const source = JSON.stringify({ providers: { private: { apiKey: "fixture-secret" } }, plugins: [{ package: f.packagePath, options: { limits: { workers: 2 }, prompts: { reviewer: "Keep contracts" } } }] })
   await writeFile(f.path, source)
@@ -27,7 +27,7 @@ test("global settings expose only Ultra options and built-in defaults, never nat
   expect(await readFile(f.path, "utf8")).toBe(source)
 })
 
-test("global saves change only Ultra editable fields and preserve JSONC comments and unrelated configuration", async () => {
+test("global saves change only UltraOpenCode editable fields and preserve JSONC comments and unrelated configuration", async () => {
   const f = await fixture()
   const source = `{
   // Keep provider credentials and explanation.
@@ -124,7 +124,7 @@ test("cancelled global writes preserve the original profile", async () => {
 test("ambiguous global registrations are refused before any profile write", async () => {
   const f = await fixture(), source = JSON.stringify({ plugins: [f.packagePath, { package: f.packagePath, options: { limits: { workers: 2 } } }] })
   await writeFile(f.path, source)
-  await expect(f.settings.read()).rejects.toThrow("Multiple Ultra registrations")
+  await expect(f.settings.read()).rejects.toThrow("Multiple UltraOpenCode registrations")
   expect(await readFile(f.path, "utf8")).toBe(source)
 })
 

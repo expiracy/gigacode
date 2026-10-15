@@ -108,26 +108,76 @@ describe("installed host discovery", () => {
 })
 
 describe("global installer", () => {
+  test("migrates legacy reserved agents and the selected default while preserving user settings", async () => {
+    const { plugin, configDirectory } = await fixture()
+    await mkdir(configDirectory)
+    const primary = { mode: "primary", hidden: false, model: "provider/custom", system: "Keep my project instructions", permissions: [{ action: "edit", resource: "private/**", effect: "deny" }] }
+    const worker = { mode: "subagent", model: "provider/worker", description: "My worker", system: "Keep my worker instructions" }
+    const source = JSON.stringify({ plugins: [{ package: "ultra-open-code", options: { limits: { workers: 2 } } }], default_agent: "ultra", agents: { ultra: primary, "ultra-worker": worker, "ultra-supervisor": { mode: "subagent", model: "provider/supervisor" }, build: { model: "provider/build" } } })
+    await writeFile(join(configDirectory, "opencode.json"), source)
+    const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
+    const native = JSON.parse(await readFile(installed.path, "utf8"))
+    expect(native.default_agent).toBe("ultraopencode")
+    expect(native.agents.ultraopencode).toEqual({ ...primary, description: "Thorough coding, design, review and testing" })
+    expect(native.agents["ultraopencode-worker"]).toMatchObject(worker)
+    expect(native.agents["ultraopencode-supervisor"].model).toBe("provider/supervisor")
+    expect(native.agents["ultraopencode-supervisor"].system).toContain("ultraopencode_execute")
+    expect(native.agents.build).toEqual({ model: "provider/build" })
+    expect(native.agents.ultra).toBeUndefined()
+    expect(native.agents["ultra-worker"]).toBeUndefined()
+    expect(native.agents["ultra-supervisor"]).toBeUndefined()
+    expect(native.plugins).toEqual([{ package: plugin, options: { limits: { workers: 2 } } }])
+    expect(await readFile(installed.backup!, "utf8")).toBe(source)
+    expect((await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })).changes).toEqual([])
+  })
+
+  test("updates the exact legacy supervisor and worker defaults to the renamed tools", async () => {
+    const { plugin, configDirectory } = await fixture()
+    await mkdir(configDirectory)
+    await writeFile(join(configDirectory, "opencode.json"), JSON.stringify({ agents: {
+      "ultra-supervisor": { mode: "subagent", description: "Ultra Open Code workflow supervisor", system: "Use the supplied run instructions to call ultra_execute with the exact runId and intentId. Do not edit project files or independently spawn agents." },
+      "ultra-worker": { mode: "subagent", description: "Ultra Open Code workflow worker", system: "Follow the supplied Ultra task instructions, respect scoped permissions, and submit a structured result using ultra_submit. Do not spawn additional agents." },
+    } }))
+    const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
+    const { agents } = JSON.parse(await readFile(installed.path, "utf8"))
+    expect(agents["ultraopencode-supervisor"].description).toBe("UltraOpenCode workflow supervisor")
+    expect(agents["ultraopencode-supervisor"].system).toContain("ultraopencode_execute")
+    expect(agents["ultraopencode-worker"].description).toBe("UltraOpenCode workflow worker")
+    expect(agents["ultraopencode-worker"].system).toContain("ultraopencode_submit")
+    expect(agents["ultraopencode-worker"].system).toContain("UltraOpenCode task instructions")
+  })
+
+  test("refuses conflicting legacy and current agent definitions without changing the profile", async () => {
+    const { plugin, configDirectory } = await fixture()
+    await mkdir(configDirectory)
+    const path = join(configDirectory, "opencode.json")
+    const source = JSON.stringify({ agents: { ultra: { model: "provider/legacy" }, ultraopencode: { model: "provider/current" } } })
+    await writeFile(path, source)
+    await expect(installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })).rejects.toThrow("Both legacy agent ultra and reserved agent ultraopencode")
+    expect(await readFile(path, "utf8")).toBe(source)
+    expect(await readdir(configDirectory)).toEqual(["opencode.json"])
+  })
+
   test("upgrades the workflow default with explicit pre-edit check assignments", async () => {
     const { plugin, configDirectory } = await fixture()
     await mkdir(configDirectory)
     await writeFile(join(configDirectory, "opencode.json"), JSON.stringify({ agents: { ultra: { system: WORKFLOW_PRIMARY_SYSTEM } } }))
     const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.28" })
     const config = JSON.parse(await readFile(installed.path, "utf8"))
-    expect(config.agents.ultra.system).toContain("Pre-edit RED checks")
-    expect(config.agents.ultra.system).toBe(ULTRA_PRIMARY_SYSTEM)
+    expect(config.agents.ultraopencode.system).toContain("Pre-edit RED checks")
+    expect(config.agents.ultraopencode.system).toBe(ULTRA_PRIMARY_SYSTEM)
   })
-  test("installs a visible native Ultra primary agent without widening permission defaults", async () => {
+  test("installs a visible native UltraOpenCode primary agent without widening permission defaults", async () => {
     const { plugin, configDirectory } = await fixture()
     const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
     const native = JSON.parse(await readFile(installed.path, "utf8"))
-    expect(native.agents.ultra).toMatchObject({ mode: "primary", hidden: false })
-    expect(native.agents.ultra.description).toBe("Thorough coding, design, review and testing")
-    expect(native.agents.ultra.system).toEqual(expect.any(String))
-    expect(native.agents.ultra.permissions).toBeUndefined()
+    expect(native.agents.ultraopencode).toMatchObject({ mode: "primary", hidden: false })
+    expect(native.agents.ultraopencode.description).toBe("Thorough coding, design, review and testing")
+    expect(native.agents.ultraopencode.system).toEqual(expect.any(String))
+    expect(native.agents.ultraopencode.permissions).toBeUndefined()
     expect(native.default_agent).toBeUndefined()
-    expect(native.agents.ultra.name).toBeUndefined()
-    const decoded = Schema.decodeUnknownSync(ConfigAgent.Info)(native.agents.ultra)
+    expect(native.agents.ultraopencode.name).toBeUndefined()
+    const decoded = Schema.decodeUnknownSync(ConfigAgent.Info)(native.agents.ultraopencode)
     expect(decoded.mode).toBe("primary")
     expect(decoded.hidden).toBe(false)
   })
@@ -146,8 +196,8 @@ describe("global installer", () => {
     await writeFile(path, original)
     const first = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
     const native = JSON.parse(await readFile(path, "utf8"))
-    expect(native.agents.ultra.system).not.toBe(LEGACY_PRIMARY_SYSTEM)
-    expect(native.agents.ultra).toEqual({ ...ultra, system: ULTRA_PRIMARY_SYSTEM, description: "Thorough coding, design, review and testing" })
+    expect(native.agents.ultraopencode.system).not.toBe(LEGACY_PRIMARY_SYSTEM)
+    expect(native.agents.ultraopencode).toEqual({ ...ultra, system: ULTRA_PRIMARY_SYSTEM, description: "Thorough coding, design, review and testing" })
     expect(native.default_agent).toBe("plan")
     expect(native.agents.build).toEqual({ model: "provider/build" })
     expect(await readFile(first.backup!, "utf8")).toBe(original)
@@ -160,11 +210,11 @@ describe("global installer", () => {
     expect(await readdir(configDirectory)).toEqual(files)
   })
 
-  test("preserves Ultra primary model, ordered policy and user instructions across idempotent installs", async () => {
+  test("preserves UltraOpenCode primary model, ordered policy and user instructions across idempotent installs", async () => {
     const { plugin, configDirectory } = await fixture()
     await mkdir(configDirectory)
     const ultra = {
-      mode: "primary", hidden: false, model: "provider/model#deep", system: "User's orchestration preferences", description: "User's Ultra description",
+      mode: "primary", hidden: false, model: "provider/model#deep", system: "User's orchestration preferences", description: "User's UltraOpenCode description",
       request: { settings: { temperature: 0.2 }, headers: { "x-local-routing": "project" } }, color: "#468ace", steps: 12,
       permissions: [{ action: "shell", resource: "*", effect: "ask" }, { action: "edit", resource: "private/**", effect: "deny" }],
     }
@@ -173,7 +223,7 @@ describe("global installer", () => {
     await writeFile(path, original)
     const first = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
     const native = JSON.parse(await readFile(path, "utf8"))
-    expect(native.agents.ultra).toEqual(ultra)
+    expect(native.agents.ultraopencode).toEqual(ultra)
     expect(native.agents.build).toEqual({ model: "provider/build" })
     expect(native.permissions).toEqual([{ action: "read", resource: "*.env", effect: "deny" }])
     expect(native.default_agent).toBe("plan")
@@ -189,7 +239,7 @@ describe("global installer", () => {
 
   test.each([
     { mode: "subagent" }, { mode: "all" }, { hidden: true }, { disabled: true }, { permissions: { shell: "ask" } },
-  ])("rejects a conflicting Ultra primary definition without replacing user configuration: %j", async ultra => {
+  ])("rejects a conflicting UltraOpenCode primary definition without replacing user configuration: %j", async ultra => {
     const { plugin, configDirectory } = await fixture()
     await mkdir(configDirectory)
     const path = join(configDirectory, "opencode.json")
@@ -229,10 +279,10 @@ describe("global installer", () => {
     const config = JSON.parse(await readFile(installed.path, "utf8"))
     expect(config.plugins).toEqual([{ package: plugin }])
     expect(config.experimental.subagent_depth).toBe(2)
-    expect(config.agents["ultra-supervisor"].mode).toBe("subagent")
-    expect(config.agents["ultra-worker"].permissions).toContainEqual({ action: "subagent", resource: "*", effect: "deny" })
+    expect(config.agents["ultraopencode-supervisor"].mode).toBe("subagent")
+    expect(config.agents["ultraopencode-worker"].permissions).toContainEqual({ action: "subagent", resource: "*", effect: "deny" })
     expect(existsSync(join(root, "opencode.json"))).toBe(false)
-    expect(existsSync(join(root, ".ultracode"))).toBe(false)
+    expect(existsSync(join(root, ".ultraopencode"))).toBe(false)
   })
 
   test("preserves global JSONC, unrelated settings and credentials in an original backup", async () => {
@@ -273,7 +323,15 @@ describe("global installer", () => {
     expect(JSON.parse(await readFile(installed.path, "utf8")).plugins).toEqual([{ package: plugin, options: { limits: { runs: 1 } } }])
   })
 
-  test("migrates a named Ultra entry and preserves native string plugins", async () => {
+  test("updates the open-ultra-code registration without duplicating it or losing its options", async () => {
+    const { plugin, configDirectory } = await fixture()
+    await mkdir(configDirectory)
+    await writeFile(join(configDirectory, "opencode.json"), JSON.stringify({ plugins: [{ package: "open-ultra-code", options: { checks: [], limits: { workers: 2 } } }] }))
+    const installed = await installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })
+    expect(JSON.parse(await readFile(installed.path, "utf8")).plugins).toEqual([{ package: plugin, options: { checks: [], limits: { workers: 2 } } }])
+  })
+
+  test("migrates a named UltraOpenCode entry and preserves native string plugins", async () => {
     const { plugin, configDirectory } = await fixture()
     await mkdir(configDirectory)
     await writeFile(join(configDirectory, "opencode.json"), JSON.stringify({ plugins: ["other-plugin", "-removed-plugin", { package: "ultra-open-code", options: { checks: [] } }] }))
@@ -281,13 +339,13 @@ describe("global installer", () => {
     expect(JSON.parse(await readFile(installed.path, "utf8")).plugins).toEqual(["other-plugin", "-removed-plugin", { package: plugin, options: { checks: [] } }])
   })
 
-  test("rejects duplicate Ultra registrations before a later entry can hide the requested options", async () => {
+  test("rejects duplicate UltraOpenCode registrations before a later entry can hide the requested options", async () => {
     const { plugin, configDirectory } = await fixture()
     await mkdir(configDirectory)
     const path = join(configDirectory, "opencode.json")
     const original = JSON.stringify({ plugins: [{ package: "ultra-open-code", options: { limits: { workers: 1 } } }, { package: plugin, options: { limits: { workers: 3 } } }] })
     await writeFile(path, original)
-    await expect(installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25", config: { limits: { workers: 2 } } })).rejects.toThrow("Multiple Ultra")
+    await expect(installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25", config: { limits: { workers: 2 } } })).rejects.toThrow("Multiple UltraOpenCode")
     expect(await readFile(path, "utf8")).toBe(original)
     expect(await readdir(configDirectory)).toEqual(["opencode.json"])
   })
@@ -318,9 +376,9 @@ describe("global installer", () => {
     const { plugin, configDirectory } = await fixture()
     await mkdir(configDirectory)
     const path = join(configDirectory, "opencode.json")
-    await writeFile(path, '{"agents":{"ultra-worker":{"mode":"primary"}}}')
+    await writeFile(path, '{"agents":{"ultraopencode-worker":{"mode":"primary"}}}')
     const original = await readFile(path, "utf8")
-    await expect(installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })).rejects.toThrow("ultra-worker")
+    await expect(installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })).rejects.toThrow("ultraopencode-worker")
     await writeFile(join(configDirectory, "opencode.jsonc"), "{}")
     await expect(installer.installGlobal({ configDirectory, pluginPath: plugin, hostVersion: "2.0.25" })).rejects.toThrow("Both")
     expect(await readFile(path, "utf8")).toBe(original)

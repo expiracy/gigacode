@@ -18,8 +18,8 @@ export async function agentModeFixture(options: { system?: string; checks?: Conf
   const agents = new Map<string, any>([
     ["build", { id: "build", name: "Build", mode: "primary", hidden: false, permissions: structuredClone(policy) }],
     [ULTRA_AGENT_ID, { id: ULTRA_AGENT_ID, name: ULTRA_AGENT_ID, mode: "primary", hidden: false, system: options.system ?? ULTRA_PRIMARY_SYSTEM, model: { providerID: "fixture", id: "test" }, permissions: structuredClone(policy) }],
-    ["ultra-supervisor", { id: "ultra-supervisor", mode: "subagent", hidden: true, permissions: [] }],
-    ["ultra-worker", { id: "ultra-worker", mode: "subagent", hidden: true, permissions: [] }],
+    ["ultraopencode-supervisor", { id: "ultraopencode-supervisor", mode: "subagent", hidden: true, permissions: [] }],
+    ["ultraopencode-worker", { id: "ultraopencode-worker", mode: "subagent", hidden: true, permissions: [] }],
   ])
   const sessions = new Map<string, any>()
   const seed = (id: string, update: Record<string, unknown> = {}) => {
@@ -108,7 +108,7 @@ export async function agentModeFixture(options: { system?: string; checks?: Conf
   // Native configuration transforms run after user plugins and retain configured system text.
   if (options.system !== undefined) agents.get(ULTRA_AGENT_ID).system = options.system
   const read = <T>(query: string): T[] => {
-    const db = new Database(join(directory, ".ultracode", "state.sqlite"), { readonly: true })
+    const db = new Database(join(directory, ".ultraopencode", "state.sqlite"), { readonly: true })
     try { return db.query<{ body: string }, []>(query).all().map(row => JSON.parse(row.body) as T) }
     finally { db.close() }
   }
@@ -120,7 +120,7 @@ export async function agentModeFixture(options: { system?: string; checks?: Conf
     directory, policy, context, agents, sessions, tools, hooks, synthetics, feedback, progress, dispatches, interrupts, seed, toolContext,
     runs: () => read<Run>("SELECT body FROM runs ORDER BY rowid"),
     audit() {
-      const db = new Database(join(directory, ".ultracode", "state.sqlite"), { readonly: true })
+      const db = new Database(join(directory, ".ultraopencode", "state.sqlite"), { readonly: true })
       try { return db.query<{ id: string; kind: string; body: string }, []>("SELECT id, kind, body FROM events ORDER BY seq").all().map(({ id, kind, body }) => ({ id, kind, data: JSON.parse(body) })) }
       finally { db.close() }
     },

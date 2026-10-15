@@ -15,9 +15,11 @@ test("workspace fingerprints track contents while excluding runtime state and de
   try {
     await writeFile(join(root, "a.ts"), "old")
     const initial = await manifest(root)
-    await mkdir(join(root, ".ultracode"))
+    await mkdir(join(root, ".ultraopencode"))
     await mkdir(join(root, "node_modules"))
-    await writeFile(join(root, ".ultracode", "state.sqlite"), "noise")
+    await writeFile(join(root, ".ultraopencode", "state.sqlite"), "noise")
+    await mkdir(join(root, ".ultracode"))
+    await writeFile(join(root, ".ultracode", "state.sqlite"), "legacy noise")
     await writeFile(join(root, "node_modules", "dependency.js"), "noise")
     expect((await manifest(root)).hash).toBe(initial.hash)
     await writeFile(join(root, "a.ts"), "new")

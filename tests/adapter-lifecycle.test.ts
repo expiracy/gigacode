@@ -13,8 +13,8 @@ const model: ModelSelection = { requested: "fixture/model", origin: "captured", 
 // Both pinned native handlers reject these before sessions.create and progress.
 const precreationFailures = [
   { label: "depth limit", message: 'Subagent depth limit reached (1). Increase "experimental.subagent_depth" to allow nested subagents.', model },
-  { label: "missing agent", message: "Unknown agent: ultra-supervisor", model },
-  { label: "primary-only agent", message: "Agent ultra-supervisor cannot run as a subagent", model },
+  { label: "missing agent", message: "Unknown agent: ultraopencode-supervisor", model },
+  { label: "primary-only agent", message: "Agent ultraopencode-supervisor cannot run as a subagent", model },
   { label: "missing model", message: 'Model "fixture/model" is not available. Use the models tool to see what is available.', model },
   { label: "model without variants", message: 'Model "fixture/model" has no variants. Omit the variant.', model: { ...model, ref: { ...model.ref, variant: "fast" } } },
   { label: "unavailable variant", message: 'Variant "fast" is not available for "fixture/model". Available: slow, default.', model: { ...model, ref: { ...model.ref, variant: "fast" } } },
@@ -87,7 +87,7 @@ describe("native admission and lifecycle regressions", () => {
     expect(evaluateRules(permissions, "read", "src/app.ts")).toBe("allow")
     expect(evaluateRules(permissions, "read", "private.env")).toBe("deny")
     expect(evaluateRules(permissions, "write", "src/app.ts")).toBe("deny")
-    expect(evaluateRules(permissions, "subagent", "ultra-worker")).toBe("deny")
+    expect(evaluateRules(permissions, "subagent", "ultraopencode-worker")).toBe("deny")
   })
 
   test("rejects an unsupported native admission state even when the session ID matches", async () => {
@@ -101,10 +101,10 @@ describe("native admission and lifecycle regressions", () => {
   })
 
   test("namespaced third party tools cannot inherit trusted native or workflow capabilities by suffix", () => {
-    const tools = { read: {}, ultra_submit: {}, "foreign.read": {}, "foreign.write": {}, "foreign.ultra_check": {}, "foreign.ultra_execute": {} }
-    expect(Object.keys(visibleTools(tools, "reviewer"))).toEqual(["read", "ultra_submit"])
-    expect(Object.keys(visibleTools(tools, "implementer"))).toEqual(["read", "ultra_submit"])
-    expect(Object.keys(visibleTools(tools, "verifier"))).toEqual(["read", "ultra_submit"])
+    const tools = { read: {}, ultraopencode_submit: {}, "foreign.read": {}, "foreign.write": {}, "foreign.ultraopencode_check": {}, "foreign.ultraopencode_execute": {} }
+    expect(Object.keys(visibleTools(tools, "reviewer"))).toEqual(["read", "ultraopencode_submit"])
+    expect(Object.keys(visibleTools(tools, "implementer"))).toEqual(["read", "ultraopencode_submit"])
+    expect(Object.keys(visibleTools(tools, "verifier"))).toEqual(["read", "ultraopencode_submit"])
     expect(Object.keys(visibleTools(tools, "supervisor"))).toEqual([])
   })
 
@@ -150,7 +150,7 @@ describe("native admission and lifecycle regressions", () => {
   })
 
   test("labels an exact typed native permission denial before child creation as definitive no launch", async () => {
-    const fixture = admissionFixture({ failure: new NativeToolError({ message: "Subagent denied: ultra-supervisor" }) })
+    const fixture = admissionFixture({ failure: new NativeToolError({ message: "Subagent denied: ultraopencode-supervisor" }) })
     let caught: unknown
     try { await fixture.adapter.supervisor(fixture.run, invocation(fixture.context), model, async () => {}) } catch (error) { caught = error }
     expect(caught).toBeInstanceOf(NoLaunchError)
@@ -204,9 +204,9 @@ describe("native admission and lifecycle regressions", () => {
 
   test("keeps arbitrary childless failures, lookalike messages, and post-prelaunch denials uncertain", async () => {
     for (const options of [
-      { failure: new Error("Subagent denied: ultra-supervisor") },
+      { failure: new Error("Subagent denied: ultraopencode-supervisor") },
       { failure: new NativeToolError({ message: "Subagent denied: different-agent" }) },
-      { failure: new NativeToolError({ message: "Subagent denied: ultra-supervisor" }), failureAfterPrelaunch: true },
+      { failure: new NativeToolError({ message: "Subagent denied: ultraopencode-supervisor" }), failureAfterPrelaunch: true },
     ]) {
       const fixture = admissionFixture(options)
       let caught: unknown

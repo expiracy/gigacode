@@ -5,7 +5,7 @@ const empty = { type: "object", properties: {}, additionalProperties: false } as
 
 /** Test-only control plane. No RPC handler creates a tool invocation context. */
 export const CompatibilityRpc = Rpc.define({
-  id: "ultra.compatibility",
+  id: "open-ultra-code.compatibility",
   methods: {
     inspect: { input: empty, output: object },
     snapshot: { input: empty, output: object },

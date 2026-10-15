@@ -51,7 +51,8 @@ function samePath(left: string, right: string): boolean {
 }
 
 export function packageMatches(entry: string, packagePath: string, directory: string): boolean {
-  if (entry === "ultra-open-code") return true
+  // Recognize the former package only so existing registrations can be upgraded.
+  if (entry === "open-ultra-code" || entry === "ultra-open-code") return true
   const path = entry.startsWith("file://") ? fileURLToPath(entry) : /^(?:\.\.?)[\\/]/.test(entry) ? resolve(directory, entry) : entry
   return samePath(path, packagePath) || samePath(path, join(packagePath, "index.ts")) || samePath(path, join(packagePath, "index.js"))
 }

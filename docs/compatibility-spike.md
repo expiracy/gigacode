@@ -25,7 +25,7 @@ Requires Bun, Git, and OpenCode 2.0.25 or 2.0.26. The default test target remain
 
 The harness starts `opencode serve --service` on a free loopback port with a random local password. It redirects configuration, homes, caches, logs, temporary files, provider catalog, and the host database into a fresh `.spike/run-<timestamp>/` fixture. Child processes receive an environment allowlist. The only configured model provider is a local OpenAI-compatible HTTP fixture; no user credentials are forwarded.
 
-`report.json` records each check's outcome and evidence, plus sanitized model requests. `host.log` records process output. Each activated project/location contains `.ultra-spike/compatibility.sqlite`, storing observed events and bindings. Configuration and dirty worktree fixtures remain available for inspection. The host and fixture endpoint stop in `finally`.
+`report.json` records each check's outcome and evidence, plus sanitized model requests. `host.log` records process output. Each activated project/location contains `.ultraopencode-spike/compatibility.sqlite`, storing observed events and bindings. Configuration and dirty worktree fixtures remain available for inspection. The host and fixture endpoint stop in `finally`.
 
 Exit code is nonzero for a failed assertion. An explicitly identified unsupported capability remains visible in the report and does not turn supported probes into failures.
 
@@ -34,7 +34,7 @@ Exit code is nonzero for a failed assertion. An explicitly identified unsupporte
 | Capability | Result | What the running host demonstrated |
 | --- | --- | --- |
 | Plugin and RPC registration | Pass | Official `Plugin.define`, commands, tools, RPC, host version, and `bun:sqlite` work. |
-| Deterministic commands | Pass | `/ultra-spike status` records a command without a model request. |
+| Deterministic commands | Pass | `/ultraopencode-spike status` records a command without a model request. |
 | Real tool context | Pass | Native session/message/call identity, progress, and `AbortSignal` reach a custom tool; its durable tool state is completed. |
 | Model selection | Pass | A session and delegated child use the selected `fixture/alternate` model. |
 | Background delegation | Pass | Registered native `subagent` returns a running child handle while that child's model request remains held. |
@@ -71,7 +71,7 @@ Several rows share one probe; the runner contains 23 probes total.
 
 **Narrow inherited session policy before prompting.** Broad parent session allows can override a worker agent's own deny rules. The bridge appends worker restrictions to the inherited snapshot, preserves ordered permission semantics, and verifies persistence inside the native progress callback before releasing preparation. This spike proves the fixture restrictions. The production engine now adds a run/role/scope intersection, with a regression test that retains an ordered allow exception following a broad captured deny.
 
-**Steer is a step-boundary operation.** Native completion uses `steer`, but does not abort an executing tool. The probe records admission before tool completion and delivery afterward. Queued delivery still differs: it waits for idle. Native completion delivery is not configurable through the inspected subagent input, so Ultra's queued reports cannot change that native behavior.
+**Steer is a step-boundary operation.** Native completion uses `steer`, but does not abort an executing tool. The probe records admission before tool completion and delivery afterward. Queued delivery still differs: it waits for idle. Native completion delivery is not configurable through the inspected subagent input, so UltraOpenCode's queued reports cannot change that native behavior.
 
 **Use snapshots and our own history for recovery.** The native CLI bus does not persist historical event payloads in the tested profile. No supported CLI/config/environment switch was found to enable them. Embedded server options expose `events.persist`, which requires a separate compatibility profile. Persist observed events in our database, and reconcile native session, tool, and permission snapshots after reconnect. Missing events must be marked as gaps rather than reconstructed as exact history. [Pinned bus](https://github.com/anomalyco/opencode/blob/b44eea9e204024db2b480a136ece29d790d5f593/packages/core/src/bus.ts), [CLI server startup](https://github.com/anomalyco/opencode/blob/b44eea9e204024db2b480a136ece29d790d5f593/packages/cli/src/server-process.ts).
 

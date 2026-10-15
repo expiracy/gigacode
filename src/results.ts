@@ -74,7 +74,7 @@ export function parseTaskResult(input: unknown): TaskResult {
   let result: TaskResult
   try { result = structuredClone(decodeResult(input)) as TaskResult }
   catch (error) {
-    throw new Error(`Invalid task result: ${error instanceof Error ? error.message : "Invalid structure"}. Correct the fields using ultra_submit's typed input schema and submit again.`)
+    throw new Error(`Invalid task result: ${error instanceof Error ? error.message : "Invalid structure"}. Correct the fields using ultraopencode_submit's typed input schema and submit again.`)
   }
   for (const [field, entries] of [["assessment", result.assessments?.map(item => item.criterionId)], ["finding", result.findings?.map(item => item.id)]] as const) {
     if (entries && new Set(entries).size !== entries.length) throw new Error(`Invalid task result: Duplicate ${field} IDs. Submit one observed assessment or finding per ID.`)

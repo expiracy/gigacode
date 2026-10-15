@@ -12,18 +12,18 @@ import type { ArtifactStore } from "./artifacts.ts"
 import type { Attempt, CheckEvidence, HostAdapter, Invocation, ModelSelection, Role, Run, Store, TaskSpec, WorkerSnapshot } from "./types.ts"
 import { NoLaunchError, SettledLaunchError, UnsettledLaunchError } from "./types.ts"
 
-const safeTools = new Set(["read", "glob", "grep", "list", "lsp", "webfetch", "websearch", "search", "skill", "question", "ultra_submit", "ultra_dependency"])
+const safeTools = new Set(["read", "glob", "grep", "list", "lsp", "webfetch", "websearch", "search", "skill", "question", "ultraopencode_submit", "ultraopencode_dependency"])
 const writeTools = new Set(["write", "edit", "patch", "apply_patch"])
-const readySymbol = Symbol.for("ultra.open-code.location-adapters.v1")
+const readySymbol = Symbol.for("open-ultra-code.location-adapters.v1")
 const readyAdapters: Map<string, OpenCodeAdapter> = Reflect.get(globalThis, readySymbol) ?? new Map()
 Reflect.set(globalThis, readySymbol, readyAdapters)
 const locationKey = (project: string, directory: string) => JSON.stringify([project, process.platform === "win32" ? resolve(directory).toLowerCase() : resolve(directory)])
 export function visibleTools<T>(tools: Record<string, T>, role: Role, integration = false, preparation = false): Record<string, T> {
   return Object.fromEntries(Object.entries(tools).filter(([name]) => {
-    if (integration) return name === "ultra_integrate" || name === "ultra_submit"
-    if (preparation) return name === "ultra_prepare" || name === "ultra_submit"
-    if (role === "supervisor") return name === "ultra_execute"
-    return safeTools.has(name) || (role === "implementer" && writeTools.has(name)) || (role === "verifier" && name === "ultra_check")
+    if (integration) return name === "ultraopencode_integrate" || name === "ultraopencode_submit"
+    if (preparation) return name === "ultraopencode_prepare" || name === "ultraopencode_submit"
+    if (role === "supervisor") return name === "ultraopencode_execute"
+    return safeTools.has(name) || (role === "implementer" && writeTools.has(name)) || (role === "verifier" && name === "ultraopencode_check")
   }))
 }
 export async function checkedInput(tool: Pick<Info, "name" | "input">, value: unknown): Promise<any> {
@@ -125,7 +125,7 @@ export class OpenCodeAdapter implements HostAdapter {
       context.signal.throwIfAborted(); await this.scoped(context.sessionID)
       const source = await this.parallelBaseline(run.directory), commit = run.parallel.baseline.commit
       if (source.hash !== run.parallel.baseline.hash || source.commit !== commit || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit) || !/^run_[a-f0-9]{32}$/.test(run.id)) throw new Error("Parallel preparation baseline or generated identity is invalid")
-      const hooks = `.ultracode/empty-hooks/${randomUUID().replaceAll("-", "")}`
+      const hooks = `.ultraopencode/empty-hooks/${randomUUID().replaceAll("-", "")}`
       const hooksDirectory = join(run.directory, hooks)
       assertPlainPath(hooksDirectory); await mkdir(dirname(hooksDirectory), { recursive: true }); await mkdir(hooksDirectory, { mode: 0o700 })
       if ((await readGit(run.directory, ["ls-tree", "--name-only", commit, "--", hooks])).trim()) throw new Error("Generated hooks directory exists in the frozen repository")
@@ -135,7 +135,7 @@ export class OpenCodeAdapter implements HostAdapter {
         const current = this.binding(context.sessionID)
         if (!current || !activeWorker(current) || current.attempt?.id !== attempt.id) throw new Error("Preparation ownership changed; partial worktrees were retained")
         const expected = worktreeDirectory(run, { taskId: checkout.taskId, number: 1 }), path = relative(run.directory, checkout.directory).replaceAll("\\", "/")
-        if (checkout.state !== "planned" || resolve(checkout.directory) !== resolve(expected) || !/^\.ultracode\/worktrees\/run_[a-f0-9]{32}\/[a-f0-9]{16}-1$/.test(path)) throw new Error("Checkout path differs from its saved generated preparation scope")
+        if (checkout.state !== "planned" || resolve(checkout.directory) !== resolve(expected) || !/^\.(?:ultraopencode|ultracode)\/worktrees\/run_[a-f0-9]{32}\/[a-f0-9]{16}-1$/.test(path)) throw new Error("Checkout path differs from its saved generated preparation scope")
         assertPlainPath(checkout.directory)
         if (await this.workspace(run.directory) !== run.parallel.baseline.hash) throw new Error("Source checkout changed during preparation; user changes were preserved")
         const command = `git -c core.hooksPath=${hooks} -c core.fsmonitor=false worktree add --detach ${path} ${commit}`
@@ -225,11 +225,11 @@ export class OpenCodeAdapter implements HostAdapter {
   }
   async launch(run: Run, attempt: Attempt, task: TaskSpec, source: Invocation, bind: (id: string) => Promise<void>) {
     if (source.sessionId !== run.supervisorSessionId) throw new Error("Worker dispatch requires the bound supervisor invocation")
-    return this.delegate(run, source, "ultra-worker", attempt.model, `ULTRA_TASK_META\n${JSON.stringify({ runId: run.id, taskId: task.id, attemptId: attempt.id, role: task.role, stage: task.stage })}\n${attempt.prompt}`, task.title, bind, task.role, attempt.worktree?.directory)
+    return this.delegate(run, source, "ultraopencode-worker", attempt.model, `ULTRA_TASK_META\n${JSON.stringify({ runId: run.id, taskId: task.id, attemptId: attempt.id, role: task.role, stage: task.stage })}\n${attempt.prompt}`, task.title, bind, task.role, attempt.worktree?.directory)
   }
   async supervisor(run: Run, source: Invocation, model: ModelSelection, bind: (id: string) => Promise<void>) {
     if (source.sessionId !== run.parentSessionId) throw new Error("Supervisor dispatch requires the initiating session invocation")
-    return this.delegate(run, source, "ultra-supervisor", model, `ULTRA_SUPERVISOR\n${JSON.stringify({ runId: run.id, intentId: run.intentId })}\nCall ultra_execute({runId:${JSON.stringify(run.id)},intentId:${JSON.stringify(run.intentId)}}) exactly once and wait for it. The tool schedules and reconciles every worker. On an interrupted or recovered session, call the same tool again to reconcile the saved run. Do not implement, delegate manually, or invent status. After the tool returns, explain the actual design or code changes from its accepted results, the fresh native test evidence, and any remaining problems. Preserve the exact run outcome; worker claims cannot override failed checks or a partial status. Summarize useful technical conclusions rather than just identifiers, task counts, or export paths.`, "Ultracode supervisor", bind, "supervisor")
+    return this.delegate(run, source, "ultraopencode-supervisor", model, `ULTRA_SUPERVISOR\n${JSON.stringify({ runId: run.id, intentId: run.intentId })}\nCall ultraopencode_execute({runId:${JSON.stringify(run.id)},intentId:${JSON.stringify(run.intentId)}}) exactly once and wait for it. The tool schedules and reconciles every worker. On an interrupted or recovered session, call the same tool again to reconcile the saved run. Do not implement, delegate manually, or invent status. After the tool returns, explain the actual design or code changes from its accepted results, the fresh native test evidence, and any remaining problems. Preserve the exact run outcome; worker claims cannot override failed checks or a partial status. Summarize useful technical conclusions rather than just identifiers, task counts, or export paths.`, "UltraOpenCode supervisor", bind, "supervisor")
   }
   private checkoutRules(run: Run, directory: string) {
     const from = resolve(run.directory).replaceAll("\\", "/"), to = resolve(directory).replaceAll("\\", "/")
@@ -369,7 +369,7 @@ export class OpenCodeAdapter implements HostAdapter {
   async interrupt(id: string) { await this.recordedSession(id); await this.ctx.session.interrupt({ sessionID: sessionID(id), resume: false }) }
   async publish(run: Run, id: string, text: string) {
     await this.scoped(run.parentSessionId)
-    await this.ctx.session.synthetic({ sessionID: sessionID(run.parentSessionId), id: `msg_ultra_${id}` as any, text: `ULTRA_NOTICE\n${run.id}: ${text}`, delivery: "queue", resume: false, metadata: { ultraRunId: run.id } })
+    await this.ctx.session.synthetic({ sessionID: sessionID(run.parentSessionId), id: `msg_ultraopencode_${id}` as any, text: `ULTRA_NOTICE\n${run.id}: ${text}`, delivery: "queue", resume: false, metadata: { ultraRunId: run.id } })
   }
   permission(binding: Binding, event: { sessionID: string; action: string; resources: readonly string[]; effect: "allow" | "ask" | "deny"; source?: { id: string; messageID?: string } }) {
     if (binding.retired) return "deny"

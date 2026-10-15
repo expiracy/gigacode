@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 import { existsSync } from "node:fs"
 import { readFile, realpath } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
@@ -11,28 +12,29 @@ import { defaultExecutionPlan, defaultPlanningPlan } from "../src/workflow.ts"
 import { recipeName, recipeWorkflow, type RecipeName } from "../src/recipes.ts"
 import { validatePlan } from "../src/graph.ts"
 import { supportedVersions } from "../src/compatibility.ts"
+import { runtimeDirectory } from "../src/paths.ts"
 import { globalConfigDirectory, parseNativeConfiguration, productionPluginDirectory } from "./install.ts"
 import type { Config, Run } from "../src/types.ts"
 
-export const localHelp = `Ultra Open Code local CLI
+export const localHelp = `UltraOpenCode local CLI
 
-bun scripts/cli.ts help
-bun scripts/cli.ts validate [--config <ultra-options.json>] [--global-config <directory>]
-bun scripts/cli.ts render [--execute | --recipe <name>] [--global-config <directory>] <objective>
-bun scripts/cli.ts list
-bun scripts/cli.ts status [run-id]
-bun scripts/cli.ts inspect <run-id> [task-id]
-bun scripts/cli.ts export <run-id>
+bun run ultraopencode help
+bun run ultraopencode validate [--config <ultraopencode-options.json>] [--global-config <directory>]
+bun run ultraopencode render [--execute | --recipe <name>] [--global-config <directory>] <objective>
+bun run ultraopencode list
+bun run ultraopencode status [run-id]
+bun run ultraopencode inspect <run-id> [task-id]
+bun run ultraopencode export <run-id>
 
 Every command accepts --project <directory>. Status reads saved snapshots; it does
-not reconnect, dispatch workers, or modify run state. Use /ultracode inside OpenCode
+not reconnect, dispatch workers, or modify run state. Use /ultraopencode inside OpenCode
 to start, pause, resume, cancel, retry, or execute a workflow. validate checks option
 syntax; model availability and native permissions are checked in the live host.
 Read-only recipes: deep-review, bug-investigation, cross-checked-research.
 
-validate and render read global OpenCode plugin options and optional ultracode.json;
+validate and render read global OpenCode plugin options and optional ultraopencode.json;
 --config is applied last. A native project registration replaces the same global
-registration's entire options object. Use ultracode.json for partial overrides.
+registration's entire options object. Use ultraopencode.json for partial overrides.
 These offline previews read selected config directories directly, without native
 ancestor or include discovery. --global-config selects an isolated config directory.
 
@@ -47,7 +49,7 @@ const samePath = (left: string, right: string) => process.platform === "win32" ?
 interface NativeRegistration { target: string; options: unknown }
 
 function ambiguousRegistrations(): Error {
-  return new Error("Ambiguous Ultra plugin registrations use different package aliases; move project options to ultracode.json and retain one Ultra registration before offline preview")
+  return new Error("Ambiguous UltraOpenCode plugin registrations use different package aliases; move project options to ultraopencode.json and retain one UltraOpenCode registration before offline preview")
 }
 
 async function nativeOptions(directory: string): Promise<NativeRegistration | undefined> {
@@ -66,8 +68,9 @@ async function nativeOptions(directory: string): Promise<NativeRegistration | un
     if (typeof plugin !== "string" && (!plugin || typeof plugin !== "object" || Array.isArray(plugin) || typeof plugin.package !== "string")) throw new Error(`Existing plugin entries must use a native package string or {package, options?} shape: ${path}`)
     const packageName = typeof plugin === "string" ? plugin : plugin.package
     const packagePath = packageName.startsWith("file://") ? fileURLToPath(packageName) : resolve(directory, packageName)
-    if (packageName === "ultra-open-code" || [productionPluginDirectory, join(productionPluginDirectory, "index.ts"), join(productionPluginDirectory, "index.js")].some(known => samePath(packagePath, known))) {
-      const target = packageName === "ultra-open-code" ? "package:ultra-open-code" : `local:${packagePath}`
+    // The former package is read only to support profiles awaiting installer migration.
+    if (packageName === "open-ultra-code" || packageName === "ultra-open-code" || [productionPluginDirectory, join(productionPluginDirectory, "index.ts"), join(productionPluginDirectory, "index.js")].some(known => samePath(packagePath, known))) {
+      const target = packageName === "open-ultra-code" || packageName === "ultra-open-code" ? `package:${packageName}` : `local:${packagePath}`
       if (selected && selected.target !== target) throw ambiguousRegistrations()
       selected = { target, options: typeof plugin === "string" ? undefined : plugin.options }
     }
@@ -132,14 +135,14 @@ export async function executeLocalCommand(args: string[], options: { directory?:
       const rendered = recipe ? validatePlan({ ...recipeWorkflow(recipe, objective), revision: 1, criteria: planning.criteria }, "plan", config) : execute ? defaultExecutionPlan(objective, planning.criteria, config.checks) : planning
       return { exitCode: 0, output: json(rendered) }
     }
-    if (!["list", "status", "inspect", "export"].includes(verb)) throw new Error(`Unknown local command: ${verb}. Start and control workflows through /ultracode inside OpenCode.`)
+    if (!["list", "status", "inspect", "export"].includes(verb)) throw new Error(`Unknown local command: ${verb}. Start and control workflows through /ultraopencode inside OpenCode.`)
     if (configPath || globalPath || execute) throw new Error("Snapshot commands accept --project and --state only")
     if ((verb === "list" && arguments_.length) || (verb === "status" && arguments_.length > 1) || (verb === "inspect" && (arguments_.length < 1 || arguments_.length > 2)) || (verb === "export" && arguments_.length !== 1)) throw new Error(localHelp)
-    const databasePath = resolve(statePath ?? join(directory, ".ultracode", "state.sqlite"))
+    const databasePath = resolve(statePath ?? join(runtimeDirectory(directory), "state.sqlite"))
     const stateDirectory = dirname(databasePath)
     if (!existsSync(databasePath)) {
       if ((verb === "status" && !arguments_.length) || verb === "list") return { exitCode: 0, output: json({ snapshot: true, runs: [] }) }
-      throw new Error("No local Ultra state database exists for this project")
+      throw new Error("No local UltraOpenCode state database exists for this project")
     }
     store = new SQLiteStore(databasePath)
     if (verb === "list" || verb === "status" && !arguments_.length) {

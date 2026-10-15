@@ -10,7 +10,7 @@ import { sanitizeEventData } from "../src/redaction.ts"
 import type { Run, Workflow } from "../src/types.ts"
 
 const object = { type: "object", additionalProperties: true } as const
-const contract = Rpc.define({ id: "ultra.open-code", methods: {
+const contract = Rpc.define({ id: "open-ultra-code", methods: {
   status: { input: object, output: object }, inspect: { input: object, output: object },
   control: { input: object, output: object }, workflow: { input: object, output: object },
 }, events: {} })
@@ -33,7 +33,7 @@ export async function runParallelIntegration() {
     } })
     const client = host.client, location = { directory: host.project }, rpc = client.rpc(contract)
     const request = () => ({ location, signal: AbortSignal.timeout(10_000) })
-    const parent = await client.session.create({ location, agent: "ultra", model: { providerID: "fixture", id: "test" } })
+    const parent = await client.session.create({ location, agent: "ultraopencode", model: { providerID: "fixture", id: "test" } })
     await client.session.prompt({ sessionID: parent.id, text: "ACTIVATE_PARALLEL_FIXTURE", resume: false })
     const project = await client.location.get({ location })
     // A native worktree.create call would execute this. Permission-checked Git preparation must not.
@@ -45,7 +45,7 @@ export async function runParallelIntegration() {
       { id: "verify", title: "Verify integration", role: "verifier", stage: "verification", instructions: "Run fixture-check after both changes are integrated", dependencies: ["first", "second"], writes: false, checkIds: ["fixture-check"] },
     ] }
     const prompt = "Implement two isolated fixture files and verify the integrated root"
-    fixture.scriptPrimary({ prompt, toolCalls: [{ name: "ultra_task", arguments: { objective: prompt, mode: "execute", workflow } }] })
+    fixture.scriptPrimary({ prompt, toolCalls: [{ name: "ultraopencode_task", arguments: { objective: prompt, mode: "execute", workflow } }] })
     await client.session.prompt({ sessionID: parent.id, text: prompt })
     await client.session.wait({ sessionID: parent.id }, { signal: AbortSignal.timeout(30_000) })
     const settled = await waitFor("parallel native completion", async () => {
@@ -73,7 +73,7 @@ export async function runParallelIntegration() {
       assert(!existsSync(join(attempt.worktree.directory, "startup-marker.txt")))
       const own = fixture.requests.filter(request => request.taskId === id)
       assert(own.some(request => request.calls.includes("write")))
-      assert(own.every(request => !request.tools.includes("shell") && !request.tools.includes("ultra_prepare") && !request.tools.includes("ultra_integrate")))
+      assert(own.every(request => !request.tools.includes("shell") && !request.tools.includes("ultraopencode_prepare") && !request.tools.includes("ultraopencode_integrate")))
     }
     assert(!existsSync(join(host.project, "startup-marker.txt")))
     assert.equal(await readFile(join(host.project, "protected.txt"), "utf8"), "original\n")
@@ -85,13 +85,13 @@ export async function runParallelIntegration() {
     assert.equal(snapshot.runs[0]?.id, run.id)
     assert.equal(snapshot.runs[0]?.status, "succeeded")
     const preparationCalls = fixture.requests.filter(request => request.taskId === prep.spec.id)
-    assert(preparationCalls.some(request => request.calls.includes("ultra_prepare")))
+    assert(preparationCalls.some(request => request.calls.includes("ultraopencode_prepare")))
     assert(preparationCalls.every(request => !request.tools.includes("write") && !request.tools.includes("shell")))
     assert(audit.events.some(event => event.kind === "permission.evaluate" && event.data.action === "shell" && event.data.source?.id))
     const deniedLocation = { directory: host.otherProject }
-    const denied = await client.session.create({ location: deniedLocation, agent: "ultra", model: { providerID: "fixture", id: "test" }, permissions: [{ action: "shell", resource: "*", effect: "deny" }] })
+    const denied = await client.session.create({ location: deniedLocation, agent: "ultraopencode", model: { providerID: "fixture", id: "test" }, permissions: [{ action: "shell", resource: "*", effect: "deny" }] })
     const deniedPrompt = "A denied preparation must preserve this project and refuse isolated workers"
-    fixture.scriptPrimary({ prompt: deniedPrompt, toolCalls: [{ name: "ultra_task", arguments: { objective: deniedPrompt, mode: "execute", workflow } }] })
+    fixture.scriptPrimary({ prompt: deniedPrompt, toolCalls: [{ name: "ultraopencode_task", arguments: { objective: deniedPrompt, mode: "execute", workflow } }] })
     await client.session.prompt({ sessionID: denied.id, text: deniedPrompt })
     await client.session.wait({ sessionID: denied.id }, { signal: AbortSignal.timeout(30_000) })
     const deniedRun = await waitFor("native preparation denial", async () => {

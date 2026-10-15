@@ -3,7 +3,7 @@ import { mkdir, unlink, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { assertPlainPath } from "./workspace.ts"
 
-const queueKey = Symbol.for("ultra.open-code.settings-writes.v1")
+const queueKey = Symbol.for("open-ultra-code.settings-writes.v1")
 const writes: Map<string, Promise<unknown>> = Reflect.get(globalThis, queueKey) ?? new Map()
 Reflect.set(globalThis, queueKey, writes)
 

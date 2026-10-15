@@ -27,7 +27,7 @@ async function editThreshold(ctx: Context, view: SettingsView, draft: EditableSe
   const reset = view.scope === "global" ? "default" : "inherit"
   let input = String(draft.autoThreshold ?? view.inherited.autoThreshold)
   while (active()) {
-    const value = await ctx.ui.dialog.prompt({ title: "Automatic-mode threshold (characters)", value: input, description: `${scopeLabel(view)}. Minimum prompt length after /ultracode on; changing it does not enable automatic mode. Ultra mode is independent. Enter ${reset} to restore ${view.inherited.autoThreshold}.` })
+    const value = await ctx.ui.dialog.prompt({ title: "Automatic-mode threshold (characters)", value: input, description: `${scopeLabel(view)}. Minimum prompt length after /ultraopencode on; changing it does not enable automatic mode. UltraOpenCode mode is independent. Enter ${reset} to restore ${view.inherited.autoThreshold}.` })
     if (!active() || value === undefined) return
     if (value.trim().toLowerCase() === reset) { delete draft.autoThreshold; return }
     input = value

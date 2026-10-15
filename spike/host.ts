@@ -142,8 +142,8 @@ export async function prepareHostConfiguration(options: IsolatedHostOptions): Pr
     experimental: { subagent_depth: 2 },
     permissions: [{ action: "*", resource: "*", effect: "allow" }],
     agents: {
-      "ultra-supervisor": { mode: "subagent", description: "Compatibility supervisor", system: "Run only the scripted compatibility tools." },
-      "ultra-worker": {
+      "ultraopencode-supervisor": { mode: "subagent", description: "Compatibility supervisor", system: "Run only the scripted compatibility tools." },
+      "ultraopencode-worker": {
         mode: "subagent",
         description: "Compatibility worker",
         system: "Run only the scripted compatibility tools.",
@@ -192,8 +192,8 @@ export async function startHost(options: IsolatedHostOptions): Promise<IsolatedH
     const gitEnvironment = {
       ...environment,
       GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: emptyGitConfig, GIT_TERMINAL_PROMPT: "0",
-      GIT_AUTHOR_NAME: "Ultra integration fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
-      GIT_COMMITTER_NAME: "Ultra integration fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+      GIT_AUTHOR_NAME: "UltraOpenCode integration fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+      GIT_COMMITTER_NAME: "UltraOpenCode integration fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid",
     }
     for (const directory of [project, otherProject]) {
       for (const args of [["init", "--quiet", "--initial-branch=main"], ["add", "README.md", ...(directory === project ? ["protected.txt"] : [])], ["commit", "--quiet", "--no-gpg-sign", "--no-verify", "-m", "Initialize isolated integration fixture"]]) {

@@ -1,9 +1,12 @@
 {
-  "name": "ultra-open-code",
+  "name": "open-ultra-code",
   "version": "0.1.0",
   "description": "Transparent, durable multi-agent workflows for OpenCode 2",
   "private": true,
   "type": "module",
+  "bin": {
+    "ultraopencode": "scripts/cli.ts"
+  },
   "exports": {
     ".": "./index.ts",
     "./tui": "./tui.ts"
@@ -28,7 +31,7 @@
     "test:parallel": "bun run tests/parallel.integration.ts",
     "install:global": "bun run scripts/install.ts --global",
     "install:project": "bun run scripts/install.ts --local",
-    "ultra": "bun run scripts/cli.ts",
+    "ultraopencode": "bun run scripts/cli.ts",
     "spike": "bun run spike/run.ts"
   },
   "devDependencies": {

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { readdirSync } from "node:fs"
+import { existsSync, readdirSync } from "node:fs"
 import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -13,13 +13,25 @@ async function fixture() {
 }
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }) })
 
+test("editing a legacy project override preserves its path and saved options", async () => {
+  const directory = await fixture(), path = join(directory, "ultracode.json")
+  await writeFile(path, '{"limits":{"workers":1},"prompts":{"reviewer":"Keep contracts"}}')
+  const settings = new ProjectSettings(directory, {}), before = await settings.read()
+  expect(before.path).toBe(path)
+  expect(before.effective.limits.workers).toBe(1)
+  const saved = await settings.save(before.revision, { limits: { workers: 2 } }, [])
+  expect(saved.path).toBe(path)
+  expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ limits: { workers: 2 }, prompts: { reviewer: "Keep contracts" } })
+  expect(existsSync(join(directory, "ultraopencode.json"))).toBe(false)
+})
+
 test("settings show inherited values, project overrides and detected checks without rewriting the file", async () => {
   const directory = await fixture()
   const source = '{"limits":{"workers":1},"prompts":{"reviewer":"Keep the public API"}}\n'
-  await writeFile(join(directory, "ultracode.json"), source)
+  await writeFile(join(directory, "ultraopencode.json"), source)
   await writeFile(join(directory, "package.json"), JSON.stringify({ scripts: { test: "bun test" } }))
   const snapshot = await new ProjectSettings(directory, { limits: { workers: 2 } }).read()
-  expect(snapshot.path).toBe(join(directory, "ultracode.json"))
+  expect(snapshot.path).toBe(join(directory, "ultraopencode.json"))
   expect(snapshot.revision).toMatch(/^[a-f0-9]{64}$/)
   expect(snapshot.inherited.limits.workers).toBe(2)
   expect(snapshot.effective.limits.workers).toBe(1)
@@ -43,7 +55,7 @@ test("project settings can save validated advanced options through the same sett
 
 test("an explicit advanced reset restores inherited values while core-only saves preserve them", async () => {
   const directory = await fixture(), settings = new ProjectSettings(directory, { prompts: { reviewer: "Global review" }, parallelWrites: true, autoThreshold: 90 })
-  await writeFile(join(directory, "ultracode.json"), '{"prompts":{"reviewer":"Project review"},"parallelWrites":false,"autoThreshold":120}')
+  await writeFile(join(directory, "ultraopencode.json"), '{"prompts":{"reviewer":"Project review"},"parallelWrites":false,"autoThreshold":120}')
   const before = await settings.read()
   const kept = await settings.save(before.revision, { limits: { workers: 1 } }, [])
   expect(kept.effective.prompts?.reviewer).toBe("Project review")
@@ -59,7 +71,7 @@ test("an explicit advanced reset restores inherited values while core-only saves
 test("saving models, limits and checks backs up the file and preserves other project settings", async () => {
   const directory = await fixture()
   const source = '{"limits":{"workers":1},"prompts":{"reviewer":"Keep the public API"},"parallelWrites":true,"autoThreshold":25}\n'
-  await writeFile(join(directory, "ultracode.json"), source)
+  await writeFile(join(directory, "ultraopencode.json"), source)
   const settings = new ProjectSettings(directory, { limits: { workers: 4 } })
   const before = await settings.read()
   const saved = await settings.save(before.revision, { models: { roles: { reviewer: "fixture/small#fast" } }, limits: { workers: 2 }, checks: [] }, [{ providerID: "fixture", id: "small", variants: ["fast"], tools: true }])
@@ -76,7 +88,7 @@ test("saving never places temporary config files in the fingerprinted project so
   let checks = 0
   const settings = new ProjectSettings(directory, {}, undefined, () => {
     checks++
-    expect(readdirSync(directory).filter(name => name.startsWith(".ultracode-settings-"))).toEqual([])
+    expect(readdirSync(directory).filter(name => name.startsWith(".ultraopencode-settings-"))).toEqual([])
   })
   const before = await settings.read()
   await settings.save(before.revision, { limits: { workers: 1 } }, [])
@@ -86,7 +98,7 @@ test("saving never places temporary config files in the fingerprinted project so
 test("removing editable overrides restores inherited models, limits and detected checks", async () => {
   const directory = await fixture()
   await writeFile(join(directory, "package.json"), '{"scripts":{"test":"bun test"}}')
-  await writeFile(join(directory, "ultracode.json"), '{"models":{"default":"fixture/project"},"limits":{"workers":1},"checks":[],"prompts":{"reviewer":"Keep contracts"}}')
+  await writeFile(join(directory, "ultraopencode.json"), '{"models":{"default":"fixture/project"},"limits":{"workers":1},"checks":[],"prompts":{"reviewer":"Keep contracts"}}')
   const settings = new ProjectSettings(directory, { models: { default: "fixture/global" }, limits: { workers: 3 } })
   const saved = await settings.save((await settings.read()).revision, {}, [])
   expect(saved.effective.models.default).toBe("fixture/global")
@@ -107,7 +119,7 @@ test("competing editor saves reject the stale revision instead of overwriting th
 
 test("an invalid limit cannot rewrite the existing project file", async () => {
   const directory = await fixture(), source = '{"limits":{"workers":2}}\n'
-  await writeFile(join(directory, "ultracode.json"), source)
+  await writeFile(join(directory, "ultraopencode.json"), source)
   const settings = new ProjectSettings(directory, {}), before = await settings.read()
   await expect(settings.save(before.revision, { limits: { workers: 0 } }, [])).rejects.toThrow("integer")
   expect(await readFile(before.path, "utf8")).toBe(source)
@@ -115,7 +127,7 @@ test("an invalid limit cannot rewrite the existing project file", async () => {
 
 test("new unavailable model choices are refused while unchanged mappings can be repaired separately", async () => {
   const directory = await fixture(), settings = new ProjectSettings(directory, {})
-  await writeFile(join(directory, "ultracode.json"), '{"models":{"default":"missing/old"}}')
+  await writeFile(join(directory, "ultraopencode.json"), '{"models":{"default":"missing/old"}}')
   const before = await settings.read()
   await expect(settings.save(before.revision, { models: { default: "missing/new" } }, [])).rejects.toThrow("no fallback")
   const saved = await settings.save(before.revision, { ...before.overrides, limits: { workers: 1 } }, [])
@@ -126,14 +138,14 @@ test("new unavailable model choices are refused while unchanged mappings can be 
 test("project settings refuse a symlink instead of following it to another file", async () => {
   const directory = await fixture(), target = join(directory, "original.json")
   await writeFile(target, '{"limits":{"workers":2}}')
-  await symlink(target, join(directory, "ultracode.json"))
+  await symlink(target, join(directory, "ultraopencode.json"))
   await expect(new ProjectSettings(directory, {}).read()).rejects.toThrow("symlink")
   expect(await readFile(target, "utf8")).toBe('{"limits":{"workers":2}}')
 })
 
 test("saving unchanged preferences preserves formatting and creates no backup", async () => {
   const directory = await fixture(), source = '{"limits":{"workers":2},"prompts":{"reviewer":"Keep contracts"}}\n'
-  await writeFile(join(directory, "ultracode.json"), source)
+  await writeFile(join(directory, "ultraopencode.json"), source)
   const settings = new ProjectSettings(directory, {}), before = await settings.read()
   const saved = await settings.save(before.revision, before.overrides, [])
   expect(saved.backup).toBeUndefined()
@@ -151,13 +163,13 @@ test("an aborted settings request cannot create or replace project configuration
 
 test("a workflow becoming active during a save blocks atomic replacement and removes the temporary file", async () => {
   const directory = await fixture(), source = '{"limits":{"workers":2}}\n'
-  await writeFile(join(directory, "ultracode.json"), source)
+  await writeFile(join(directory, "ultraopencode.json"), source)
   let guards = 0
   const settings = new ProjectSettings(directory, {}, undefined, () => { if (++guards === 2) throw new Error("Workflow became active") })
   const before = await settings.read()
   await expect(settings.save(before.revision, { limits: { workers: 1 } }, [])).rejects.toThrow("Workflow became active")
   expect(await readFile(before.path, "utf8")).toBe(source)
-  expect(readdirSync(join(directory, ".ultracode", "settings-temp"))).toEqual([])
+  expect(readdirSync(join(directory, ".ultraopencode", "settings-temp"))).toEqual([])
 })
 
 test("external file edits and changed detected checks invalidate an editor revision", async () => {

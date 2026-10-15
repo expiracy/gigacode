@@ -9,7 +9,7 @@ export interface ProjectCoordination {
   owner: string; lease?: Lease; users: number; heartbeat?: ReturnType<typeof setInterval>; failure?: unknown; stores: Map<Store, number>; driving: Set<string>
 }
 // Location instances and plugin reloads must keep the same shared ownership record.
-const coordinatorSymbol = Symbol.for("ultra.open-code.project-coordination.v1")
+const coordinatorSymbol = Symbol.for("open-ultra-code.project-coordination.v1")
 const coordinatorMap: Map<string, ProjectCoordination> = Reflect.get(globalThis, coordinatorSymbol) ?? new Map<string, ProjectCoordination>()
 Reflect.set(globalThis, coordinatorSymbol, coordinatorMap)
 export function projectCoordination(projectId: string, key?: string): ProjectCoordination {

@@ -440,8 +440,8 @@ test("answering an isolated writer refuses a new generation before recording inp
   const run = await start("execute"), spec = task("isolated", true)
   store.mutate(run.id, saved => {
     saved.status = "waiting_input"; saved.phase = "execution"
-    saved.parallel = { baseline: { commit: "frozen", hash: host.hash, files: {} }, preparationTaskId: "preparation.1", integrationTaskId: "integration.1", checkouts: [{ taskId: spec.id, directory: path + "/.ultracode/checkout", state: "ready" }] }
-    saved.tasks = [{ spec, status: "succeeded", acceptedAttemptId: "isolated-attempt", attempts: [{ id: "isolated-attempt", taskId: spec.id, number: 1, status: "succeeded", ownerEpoch: 1, inputHash: "input", prompt: "prompt", model: { ref: { providerID: "fixture", id: "test" }, origin: "captured", requested: "inherit" }, createdAt: Date.now(), finishedAt: Date.now(), workspaceHash: host.hash, result: { summary: "Needs a choice", needsInput: "Which implementation?" }, checks: [], steps: 1, worktree: { directory: path + "/.ultracode/checkout", state: "settled", changes: [] } }] }]
+    saved.parallel = { baseline: { commit: "frozen", hash: host.hash, files: {} }, preparationTaskId: "preparation.1", integrationTaskId: "integration.1", checkouts: [{ taskId: spec.id, directory: path + "/.ultraopencode/checkout", state: "ready" }] }
+    saved.tasks = [{ spec, status: "succeeded", acceptedAttemptId: "isolated-attempt", attempts: [{ id: "isolated-attempt", taskId: spec.id, number: 1, status: "succeeded", ownerEpoch: 1, inputHash: "input", prompt: "prompt", model: { ref: { providerID: "fixture", id: "test" }, origin: "captured", requested: "inherit" }, createdAt: Date.now(), finishedAt: Date.now(), workspaceHash: host.hash, result: { summary: "Needs a choice", needsInput: "Which implementation?" }, checks: [], steps: 1, worktree: { directory: path + "/.ultraopencode/checkout", state: "settled", changes: [] } }] }]
   })
   const before = engine.get(run.id)!
   await expect(engine.provideInput(run.id, "Use the first option")).rejects.toThrow("new parallel run")
@@ -456,7 +456,7 @@ test("a moved preparation idle stamp still enforces the worker deadline before i
   const sessionId = host.launches[0]!.sessionId
   store.mutate(run.id, saved => {
     const attempt = saved.tasks[0]!.attempts[0]!
-    attempt.worktree = { directory: path + "/.ultracode/moved", state: "ready" }
+    attempt.worktree = { directory: path + "/.ultraopencode/moved", state: "ready" }
     attempt.startedAt = Date.now() - config.limits.workerMs - 1
   })
   host.sessions.set(sessionId, { sessionId, state: "succeeded" })
@@ -492,7 +492,7 @@ test("a clarification cannot reset frozen isolated writers through stale discove
     const attempt = { number: 1, status: "succeeded" as const, ownerEpoch: 1, inputHash: "input", prompt: "prompt", model: { ref: { providerID: "fixture", id: "test" }, origin: "captured", requested: "inherit" }, createdAt: Date.now(), finishedAt: Date.now(), checks: [], steps: 1, result: { summary: "Accepted" } }
     saved.tasks = [
       { spec: task("discover"), status: "succeeded", acceptedAttemptId: "discovered", attempts: [{ ...attempt, id: "discovered", taskId: "discover", workspaceHash: "baseline" }] },
-      { spec: task("writer", true, ["discover"]), status: "succeeded", acceptedAttemptId: "written", attempts: [{ ...attempt, id: "written", taskId: "writer", workspaceHash: "baseline", worktree: { directory: path + "/.ultracode/checkout", state: "settled", changes: [] } }] },
+      { spec: task("writer", true, ["discover"]), status: "succeeded", acceptedAttemptId: "written", attempts: [{ ...attempt, id: "written", taskId: "writer", workspaceHash: "baseline", worktree: { directory: path + "/.ultraopencode/checkout", state: "settled", changes: [] } }] },
       { spec: task("integration.1", true, ["writer"]), status: "succeeded", acceptedAttemptId: "integrated", attempts: [{ ...attempt, id: "integrated", taskId: "integration.1", workspaceHash: "baseline", candidateHash: host.hash, integrationAppliedHash: host.hash }] },
       { spec: { ...task("review", false, ["integration.1"]), role: "reviewer", stage: "review" }, status: "succeeded", acceptedAttemptId: "reviewed", attempts: [{ ...attempt, id: "reviewed", taskId: "review", workspaceHash: host.hash, result: { summary: "Needs label choice", needsInput: "Which label?" } }] },
     ]
@@ -1152,7 +1152,7 @@ test("attempt input hashes bind permission policy and configured prompts", async
 test("definitive denial before native child creation settles and releases its reservation", async () => {
   const run = await start("execute"); install(run, [task("write", true)], "execution")
   store.mutate(run.id, saved => { saved.config.limits.repairRounds = 0 })
-  host.beforeBind = () => { throw new NoLaunchError("Subagent denied: ultra-worker") }
+  host.beforeBind = () => { throw new NoLaunchError("Subagent denied: ultraopencode-worker") }
   await engine.tick(run.id, invocation())
   const saved = engine.get(run.id)!, attempt = saved.tasks[0]!.attempts[0]!
   expect(attempt.status).toBe("failed")

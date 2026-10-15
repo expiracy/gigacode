@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "ultra-open-code",
+      "name": "open-ultra-code",
       "dependencies": {
         "jsonc-parser": "3.3.1",
       },

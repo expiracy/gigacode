@@ -30,7 +30,7 @@ function fixture(options: { failRegistration?: string; failDisposal?: string; fa
     app: { version: "2.0.25" },
     location: { directory, project: { id: "project", directory, canonical: directory } },
     options: options.configuration ?? { checks: [] },
-    plugin: { async list() { return { data: [{ id: "ultra.open-code", source: { type: "local", path: directory } }] } } },
+    plugin: { async list() { return { data: [{ id: "open-ultra-code", source: { type: "local", path: directory } }] } } },
     command: { async transform(callback: any) { callback({ add(command: any) { commands.set(command.name, command) } }); return register("command") } },
     tool: { async transform(callback: any) { callback({ add() {} }); return register("tools") }, async hook(name: string, callback: unknown) { return register(`tool.${name}`, callback) } },
     permission: { async hook(name: string, callback: unknown) { return register(`permission.${name}`, callback) } },
@@ -40,7 +40,7 @@ function fixture(options: { failRegistration?: string; failDisposal?: string; fa
       async get({ sessionID }: any) { return { id: sessionID, projectID: "project", location: { directory }, agent: "build", permissions: [], model: { providerID: "fixture", id: "test" } } },
       async synthetic(input: unknown) { synthetics.push(input) },
     },
-    agent: { async transform(callback: any) { callback({ update() {} }); return register("agents") }, async list() { return { data: [{ id: "build", mode: "primary", permissions: [] }, { id: "ultra-supervisor" }, { id: "ultra-worker" }] } } },
+    agent: { async transform(callback: any) { callback({ update() {} }); return register("agents") }, async list() { return { data: [{ id: "build", mode: "primary", permissions: [] }, { id: "ultraopencode-supervisor" }, { id: "ultraopencode-worker" }] } } },
     model: { async list() { return { data: [{ providerID: "fixture", id: "test", variants: [], capabilities: { tools: true } }] } } },
     rpc: { async register(_contract: unknown, handlers: unknown) { return { ...await register("rpc", handlers), events: rpcEvents } } },
     event: { subscribe({ signal }: { signal: AbortSignal }) { return { async *[Symbol.asyncIterator]() { if (!signal.aborted) await new Promise<void>(done => signal.addEventListener("abort", () => done(), { once: true })) } } } },
@@ -60,9 +60,29 @@ afterEach(() => {
 })
 
 describe("plugin lifecycle", () => {
+  test("reopens an existing legacy database without creating an empty renamed history", async () => {
+    const value = fixture(), state = join(value.directory, ".ultracode", "state.sqlite")
+    new SQLiteStore(state).close()
+    const cleanup = await plugin.setup(value.context as any)
+    try {
+      expect((await value.hooks.get("rpc").config({})).state).toBe(state)
+      expect(existsSync(join(value.directory, ".ultraopencode", "state.sqlite"))).toBe(false)
+    } finally { await cleanup!() }
+  })
+
+  test("refuses conflicting legacy and current databases instead of hiding saved history", async () => {
+    const value = fixture()
+    for (const name of [".ultracode", ".ultraopencode"]) new SQLiteStore(join(value.directory, name, "state.sqlite")).close()
+    const setup = Promise.resolve(plugin.setup(value.context as any))
+    try {
+      await expect(setup).rejects.toThrow("Both")
+      expect(value.disposals).toEqual([])
+    } finally { const cleanup = await setup.catch(() => undefined); await cleanup?.() }
+  })
+
   test("advanced reset RPC is explicit, and new runs capture the saved advanced defaults", async () => {
     const value = fixture({ configuration: { prompts: { reviewer: "Inherited review" }, autoThreshold: 90, checks: [] } })
-    writeFileSync(join(value.directory, "ultracode.json"), '{"prompts":{"reviewer":"Project review"},"parallelWrites":true,"autoThreshold":120}')
+    writeFileSync(join(value.directory, "ultraopencode.json"), '{"prompts":{"reviewer":"Project review"},"parallelWrites":true,"autoThreshold":120}')
     const cleanup = await plugin.setup(value.context as any)
     try {
       const rpc = value.hooks.get("rpc"), before = await rpc.settings({ sessionId: "parent" })
@@ -79,7 +99,7 @@ describe("plugin lifecycle", () => {
     const value = fixture({ configuration: { limits: { workers: 2 }, checks: [] } })
     const profile = join(value.directory, "profile.json")
     writeFileSync(profile, JSON.stringify({ plugins: [{ package: value.directory, options: { limits: { workers: 2 } } }] }))
-    writeFileSync(join(value.directory, "ultracode.json"), '{"limits":{"workers":1}}')
+    writeFileSync(join(value.directory, "ultraopencode.json"), '{"limits":{"workers":1}}')
     const previous = process.env.OPENCODE_CONFIG
     process.env.OPENCODE_CONFIG = profile
     let cleanup: Awaited<ReturnType<typeof plugin.setup>>
@@ -94,7 +114,7 @@ describe("plugin lifecycle", () => {
       expect(saved.scope).toBe("global")
       expect(saved.reloadRequired).toBe(true)
       expect(JSON.parse(readFileSync(profile, "utf8")).plugins[0].options.limits.workers).toBe(3)
-      expect(JSON.parse(readFileSync(join(value.directory, "ultracode.json"), "utf8"))).toEqual({ limits: { workers: 1 } })
+      expect(JSON.parse(readFileSync(join(value.directory, "ultraopencode.json"), "utf8"))).toEqual({ limits: { workers: 1 } })
       expect((await rpc.config({})).config.limits.workers).toBe(1)
     } finally { await cleanup!() }
   })
@@ -135,7 +155,7 @@ describe("plugin lifecycle", () => {
       expect(settings.models).toEqual([expect.objectContaining({ providerID: "fixture", id: "test", variants: [] })])
       expect(settings.effective.limits.workers).toBe(4)
       await rpc.saveSettings({ sessionId: "parent", revision: settings.revision, options: { limits: { workers: 1 }, checks: [] } })
-      expect(JSON.parse(readFileSync(join(value.directory, "ultracode.json"), "utf8"))).toEqual({ limits: { workers: 1 }, checks: [] })
+      expect(JSON.parse(readFileSync(join(value.directory, "ultraopencode.json"), "utf8"))).toEqual({ limits: { workers: 1 }, checks: [] })
       expect((await rpc.config({})).config.limits.workers).toBe(1)
       const admitted = await rpc.control({ text: "plan Inspect this project", sessionId: "parent" })
       expect(value.store!.get(admitted.run.id)!.config.limits.workers).toBe(1)
@@ -159,7 +179,7 @@ describe("plugin lifecycle", () => {
       value.context.session.get = async input => ({ ...await get(input), parentID: "parent" })
       await expect(rpc.settings({ sessionId: "child" })).rejects.toThrow("initiating primary")
       await expect(rpc.saveSettings({ sessionId: "child", revision: "revision", options: { checks: [] } })).rejects.toThrow("initiating primary")
-      expect(existsSync(join(value.directory, "ultracode.json"))).toBe(false)
+      expect(existsSync(join(value.directory, "ultraopencode.json"))).toBe(false)
     } finally { await cleanup!() }
   })
   test("bound worker context advertises only the result fields its role can submit", async () => {
@@ -176,23 +196,23 @@ describe("plugin lifecycle", () => {
       })
       for (const role of ["planner", "reviewer", "verifier", "implementer", "synthesizer"] as const) {
         value.store!.mutate(admitted.run.id, run => { run.tasks[0]!.spec.role = role })
-        const original = { ultra_submit: { name: "ultra_submit", input: { original: true } }, shell: { name: "shell" } }
+        const original = { ultraopencode_submit: { name: "ultraopencode_submit", input: { original: true } }, shell: { name: "shell" } }
         const event = { sessionID: "worker", tools: original, system: [], messages: [] }
         await value.hooks.get("session.context")(event)
-        expect(JSON.stringify(event.tools.ultra_submit.input).includes('"proposal"')).toBe(["planner", "synthesizer"].includes(role))
-        const properties = (event.tools.ultra_submit.input as any).properties.result.properties
+        expect(JSON.stringify(event.tools.ultraopencode_submit.input).includes('"proposal"')).toBe(["planner", "synthesizer"].includes(role))
+        const properties = (event.tools.ultraopencode_submit.input as any).properties.result.properties
         for (const field of ["summary", "findings", "artifacts", "needsInput"]) expect(properties).toHaveProperty(field)
         if (role === "implementer") expect(properties.assessments).toBeUndefined()
         else expect(properties.assessments.items.properties.criterionId.enum).toEqual(["request", "compatibility"])
         expect(properties.needsInput.description).toContain("never submit an empty string")
-        expect(event.tools.ultra_submit.name).toBe("ultra_submit")
-        expect(original.ultra_submit.input).toEqual({ original: true })
+        expect(event.tools.ultraopencode_submit.name).toBe("ultraopencode_submit")
+        expect(original.ultraopencode_submit.input).toEqual({ original: true })
         expect(event.tools).not.toHaveProperty("shell")
       }
       value.store!.mutate(admitted.run.id, run => { run.criteria = run.criteria.filter(criterion => criterion.kind === "check") })
-      const event = { sessionID: "worker", tools: { ultra_submit: { input: {} } }, system: [], messages: [] }
+      const event = { sessionID: "worker", tools: { ultraopencode_submit: { input: {} } }, system: [], messages: [] }
       await value.hooks.get("session.context")(event)
-      expect((event.tools.ultra_submit.input as any).properties.result.properties.assessments).toBeUndefined()
+      expect((event.tools.ultraopencode_submit.input as any).properties.result.properties.assessments).toBeUndefined()
     } finally { await cleanup!() }
   })
   test("registers the native preparation environment guard without changing unrelated shell calls", async () => {
@@ -213,7 +233,7 @@ describe("plugin lifecycle", () => {
       const context = { ...source.context, location: { directory: destination, project: { id: "project", directory: destination, canonical: source.directory } } }
       cleanupDestination = await plugin.setup(context as any)
       expect((await source.hooks.get("rpc").status({})).runs.map((run: any) => run.id)).toEqual([admitted.run.id])
-      expect(existsSync(join(destination, ".ultracode", "state.sqlite"))).toBe(false)
+      expect(existsSync(join(destination, ".ultraopencode", "state.sqlite"))).toBe(false)
     } finally { await cleanupDestination?.(); await cleanupSource!() }
   })
   test("explicit native recipe commands preserve their read-only graph and original objective", async () => {
@@ -272,7 +292,7 @@ describe("plugin lifecycle", () => {
       const handlers = value.hooks.get("rpc")
       expect((await handlers.config({})).hostVersion).toBe(version)
       expect((await handlers.control({ text: "config", sessionId: "parent" })).hostVersion).toBe(version)
-      await value.commands.get("ultracode").execute({ sessionID: "parent", prompt: { text: "config" } })
+      await value.commands.get("ultraopencode").execute({ sessionID: "parent", prompt: { text: "config" } })
       expect(value.feedback[0]!.data.result.hostVersion).toBe(version)
     } finally { await cleanup!() }
   })
@@ -281,7 +301,7 @@ describe("plugin lifecycle", () => {
     const value = fixture()
     value.context.app.version = version
     await expect(plugin.setup(value.context as any)).rejects.toThrow("requires tested OpenCode")
-    expect(existsSync(join(value.directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(value.directory, ".ultraopencode"))).toBe(false)
     expect(value.commands.size).toBe(0)
     expect(value.disposals).toEqual([])
   })
@@ -298,7 +318,7 @@ describe("plugin lifecycle", () => {
   test("invalid configuration fails before creating project state", async () => {
     const value = fixture({ configuration: { unknown: true } })
     await expect(plugin.setup(value.context as any)).rejects.toThrow("Unknown configuration field")
-    expect(existsSync(join(value.directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(value.directory, ".ultraopencode"))).toBe(false)
     expect(value.disposals).toEqual([])
     expect(value.close).not.toHaveBeenCalled()
   })
@@ -333,7 +353,7 @@ describe("plugin lifecycle", () => {
     let release!: () => void, entered!: () => void
     const held = new Promise<void>(done => { release = done }), entry = new Promise<void>(done => { entered = done })
     value.rpcEvents.emit = async () => { entered(); await held }
-    const active = value.commands.get("ultracode").execute({ sessionID: "parent", prompt: { text: "config" } })
+    const active = value.commands.get("ultraopencode").execute({ sessionID: "parent", prompt: { text: "config" } })
     let draining: Promise<void> | undefined
     try {
       await Promise.race([entry, active.then(() => { throw new Error("Command completed without emitting UI feedback") })])
@@ -344,7 +364,7 @@ describe("plugin lifecycle", () => {
       await value.hooks.get("permission.evaluate")(bound)
       expect(unrelated.effect).toBe("allow")
       expect(bound.effect).toBe("deny")
-      const context = { sessionID: "other", tools: { read: {}, ultra_start: {}, ultra_execute: {}, ultra_submit: {}, ultra_check: {} } }
+      const context = { sessionID: "other", tools: { read: {}, ultraopencode_start: {}, ultraopencode_execute: {}, ultraopencode_submit: {}, ultraopencode_check: {} } }
       const prompt = { sessionID: "other", prompt: { text: "Help me with ordinary project work. ".repeat(4) } }
       const modelRequest = { sessionID: "other", kind: "primary", model: { providerID: "fixture", id: "test" } }
       const requests = await Promise.allSettled([
@@ -353,7 +373,7 @@ describe("plugin lifecycle", () => {
         Promise.resolve().then(() => value.hooks.get("session.prompt")(prompt)),
       ])
       expect(requests.map(result => result.status)).toEqual(["fulfilled", "fulfilled", "fulfilled"])
-      expect(Object.keys(context.tools)).toEqual(["read", "ultra_start"])
+      expect(Object.keys(context.tools)).toEqual(["read", "ultraopencode_start"])
       expect(prompt.prompt.text).toBe("Help me with ordinary project work. ".repeat(4))
       const workerRequests = await Promise.allSettled([
         Promise.resolve().then(() => value.hooks.get("session.model.request")({ ...modelRequest, sessionID: "bound" })),
@@ -381,7 +401,7 @@ describe("plugin lifecycle", () => {
     const value = fixture()
     const cleanup = await plugin.setup(value.context as any)
     try {
-      await value.commands.get("ultracode").execute({ sessionID: "parent", prompt: { text: "config" } })
+      await value.commands.get("ultraopencode").execute({ sessionID: "parent", prompt: { text: "config" } })
       expect(value.feedback).toHaveLength(1)
       expect(value.feedback[0]).toMatchObject({ name: "commandResult", data: { sessionId: "parent", command: "config", result: { promptVersion } } })
       expect(value.feedback[0]!.data.error).toBeUndefined()
@@ -394,9 +414,9 @@ describe("plugin lifecycle", () => {
     const value = fixture()
     const cleanup = await plugin.setup(value.context as any)
     try {
-      await expect(value.commands.get("ultracode").execute({ sessionID: "parent", prompt: { text: "unknown-verb" } })).rejects.toThrow("Unknown ultracode command")
+      await expect(value.commands.get("ultraopencode").execute({ sessionID: "parent", prompt: { text: "unknown-verb" } })).rejects.toThrow("Unknown ultraopencode command")
       expect(value.feedback).toHaveLength(1)
-      expect(value.feedback[0]).toMatchObject({ name: "commandResult", data: { sessionId: "parent", command: "unknown-verb", error: expect.stringContaining("Unknown ultracode command") } })
+      expect(value.feedback[0]).toMatchObject({ name: "commandResult", data: { sessionId: "parent", command: "unknown-verb", error: expect.stringContaining("Unknown ultraopencode command") } })
       expect(value.feedback[0]!.data.result).toBeUndefined()
       expect(value.synthetics).toEqual([])
       expect(value.store!.list("project")).toEqual([])
@@ -407,7 +427,7 @@ describe("plugin lifecycle", () => {
     const value = fixture({ failFeedback: true })
     const cleanup = await plugin.setup(value.context as any)
     try {
-      await expect(value.commands.get("ultracode").execute({ sessionID: "parent", prompt: { text: "on" } })).resolves.toBeUndefined()
+      await expect(value.commands.get("ultraopencode").execute({ sessionID: "parent", prompt: { text: "on" } })).resolves.toBeUndefined()
       const events = value.store!.events("project")
       expect(events.filter(event => event.kind === "session.auto")).toHaveLength(1)
       expect(events.find(event => event.kind === "session.auto")!.data).toEqual({ sessionId: "parent", enabled: true })

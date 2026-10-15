@@ -1,6 +1,6 @@
 # Agent coding architecture
 
-Ultra turns an authorized coding request into a saved graph of native OpenCode agents. The primary agent interprets the request, specialists produce changes and evidence, and a deterministic engine decides what may run next and whether the recorded work meets the completion rules.
+UltraOpenCode turns an authorized coding request into a saved graph of native OpenCode agents. The primary agent interprets the request, specialists produce changes and evidence, and a deterministic engine decides what may run next and whether the recorded work meets the completion rules.
 
 The central distinction is between a model's claim and an observed result. A submitted result belongs to one worker attempt; accepting it also requires native session settlement. Execution success additionally requires independent review, supported requirement assessments and fresh configured checks. These rules make the process inspectable; correctness still depends on the model's reasoning and the coverage of the checks.
 
@@ -8,11 +8,11 @@ For worked examples, see [Agent coding workflows](agent-workflows.md). The [desi
 
 ## Runtime components
 
-OpenCode owns model execution, sessions, native tools and permission decisions. Ultra supplies the task graph, capability restrictions, saved evidence and scheduling policy. The adapter joins those systems through OpenCode's existing native interfaces.
+OpenCode owns model execution, sessions, native tools and permission decisions. UltraOpenCode supplies the task graph, capability restrictions, saved evidence and scheduling policy. The adapter joins those systems through OpenCode's existing native interfaces.
 
 ```mermaid
 flowchart TD
-    UI["OpenCode UI and Ultra primary agent"] --> Plugin["plugin.ts: native tools, hooks and RPC"]
+    UI["OpenCode UI and UltraOpenCode primary agent"] --> Plugin["plugin.ts: native tools, hooks and RPC"]
     Plugin --> Engine["engine.ts: run transitions and scheduling"]
     Engine --> Coordination["coordination.ts: shared ownership and leases"]
     Engine --> Completion["completion.ts: evidence decisions"]
@@ -31,23 +31,23 @@ flowchart TD
 
 ## Agents and capabilities
 
-The visible primary agent is `ultra`. The two dedicated native subagents are `ultra-supervisor` and `ultra-worker`. Worker roles are task capabilities and instructions applied to the worker session; they are not separate installed agent definitions for every specialist.
+The visible primary agent is `ultraopencode`. The two dedicated native subagents are `ultraopencode-supervisor` and `ultraopencode-worker`. Worker roles are task capabilities and instructions applied to the worker session; they are not separate installed agent definitions for every specialist.
 
 | Participant | Responsibility | Capability boundary |
 | --- | --- | --- |
-| Ultra primary | Understand the request, select a proportionate graph and explain accepted results. | Reads and workflow controls; project edits and commands go through workers. |
-| Supervisor | Call `ultra_execute` to drive the bound run. | The engine chooses eligible work; the supervisor has no project editing or general shell capability. |
+| UltraOpenCode primary | Understand the request, select a proportionate graph and explain accepted results. | Reads and workflow controls; project edits and commands go through workers. |
+| Supervisor | Call `ultraopencode_execute` to drive the bound run. | The engine chooses eligible work; the supervisor has no project editing or general shell capability. |
 | Explorer and researcher | Inspect code, contracts and sources. | Read-only tools; no commands or additional delegation. |
 | Planner and synthesizer | Develop or reconcile a design and assess its coverage. | Read-only; a design-stage planner or synthesizer may propose an execution graph. |
 | Implementer | Change the authorized files and report the actual work. | Writes only within admitted `ownedPaths`; general shell and test execution are unavailable. |
 | Reviewer | Independently inspect the candidate and report findings. | Read-only; review does not execute checks or edit the candidate. |
-| Verifier | Execute assigned configured checks and assess verification coverage. | `ultra_check` accepts only the task's explicit `checkIds`; raw shell is hidden. |
+| Verifier | Execute assigned configured checks and assess verification coverage. | `ultraopencode_check` accepts only the task's explicit `checkIds`; raw shell is hidden. |
 
-Generated preparation and integration tasks are special implementers. They expose fixed `ultra_prepare` or `ultra_integrate` operations for the run's recorded Git changes. They do not accept arbitrary commands or destinations from the model.
+Generated preparation and integration tasks are special implementers. They expose fixed `ultraopencode_prepare` or `ultraopencode_integrate` operations for the run's recorded Git changes. They do not accept arbitrary commands or destinations from the model.
 
-Tool visibility and execution authorization are separate controls. [The adapter](../src/opencode.ts) selects visible tools, attests invocation and session identities, and checks authorized wrappers. [The policy module](../src/policy.ts) intersects native permission decisions with the captured user rules, role and path scope. An existing native ask or deny cannot become an allow through Ultra. Repository text and predecessor results cannot grant permission.
+Tool visibility and execution authorization are separate controls. [The adapter](../src/opencode.ts) selects visible tools, attests invocation and session identities, and checks authorized wrappers. [The policy module](../src/policy.ts) intersects native permission decisions with the captured user rules, role and path scope. An existing native ask or deny cannot become an allow through UltraOpenCode. Repository text and predecessor results cannot grant permission.
 
-These controls use native tool and permission boundaries. Configured commands execute with the host process's operating-system access; Ultra does not add an operating-system sandbox around project test scripts.
+These controls use native tool and permission boundaries. Configured commands execute with the host process's operating-system access; UltraOpenCode does not add an operating-system sandbox around project test scripts.
 
 ## Saved data and provenance
 
@@ -63,11 +63,11 @@ The [domain types](../src/types.ts) separate the requested work from each execut
 | `CheckEvidence` | A native command's identity, configured check, exit status, outcome, timing and workspace fingerprint. |
 | `DependencyResult` | A captured predecessor task, attempt and result hash used by a consumer. |
 
-An attempt is reserved before dispatch. OpenCode's prelaunch callback then supplies the real child identity, which Ultra binds before admitting the task prompt. Model-generated session IDs cannot establish that binding. The input hash covers the task inputs, criteria, authorization, model, configuration and prompt version.
+An attempt is reserved before dispatch. OpenCode's prelaunch callback then supplies the real child identity, which UltraOpenCode binds before admitting the task prompt. Model-generated session IDs cannot establish that binding. The input hash covers the task inputs, criteria, authorization, model, configuration and prompt version.
 
 Worker submission is a two-step boundary. `results.ts` validates the structured payload; `Engine.submit` validates its attribution, criterion IDs and any proposal. The result is a claim until reconciliation observes native success. An interrupted session, an unknown outcome or a successful session without an attributable result cannot silently become an accepted success.
 
-The canonical project stores state at `.ultracode/state.sqlite`, using SQLite WAL mode. Runs, events and leases have separate tables. State mutations use synchronous transactions, optimistic generations and lease epochs. Within a process, location instances and plugin reloads share a coordination record keyed by project and database path. The lease lasts 30 seconds and its heartbeat renews every five seconds. Separate processes contend through database fencing; this is not a distributed scheduler.
+The canonical project stores state at `.ultraopencode/state.sqlite`, using SQLite WAL mode. Runs, events and leases have separate tables. State mutations use synchronous transactions, optimistic generations and lease epochs. Within a process, location instances and plugin reloads share a coordination record keyed by project and database path. The lease lasts 30 seconds and its heartbeat renews every five seconds. Separate processes contend through database fencing; this is not a distributed scheduler.
 
 Workspace and candidate hashes come from [the manifest](../src/workspace.ts), which excludes runtime state and dependencies. They identify the candidate within that manifest's coverage, rather than claiming to capture every file on the machine.
 
@@ -94,7 +94,7 @@ Repairs preserve history and append a bounded writer, reviewer and verifier grap
 
 [Settings navigation](../src/settings-menu.ts) owns the scope chooser, independent Help and About destinations, and editor lifetime. [Help presentation](../src/settings-help-ui.ts) provides focused guides and a direct About dialog with versions and runtime locations. Returning from a guide preserves the selected topic. The initial menu contains no read-only copies of editable values. [The scoped editor](../src/settings-ui.ts) owns drafts, confirmation and the scope-specific advanced editor. It derives dirty state from the same field comparisons as the change preview. Availability rechecks keep the draft and original revision; only a matching scope, path and revision can refresh the block state and model catalogue. Advanced scalar controls live in `settings-advanced-ui.ts`; `settings-instructions-ui.ts` edits per-role text, with resets to inherited/built-in guidance. Every control updates the same scoped draft. Separate [model](../src/settings-models-ui.ts), [limit](../src/settings-limits-ui.ts) and [check](../src/settings-checks-ui.ts) lists retain selection and label Back with the parent destination. Model-variant cancellation returns to model selection. The [check form](../src/settings-check-form-ui.ts) validates each scoped field with the shared config parser, retries invalid answers in place and stages only a completed check. [Presentation](../src/settings-presentation.ts) provides shared scope/source/navigation labels and concrete previews. Scope selection never copies a project draft into global defaults. Leaving a changed draft requires explicit discard. Navigation, replacement command feedback, reconnect and disposal retire the request and retained callbacks.
 
-[Project persistence](../src/settings.ts) resolves the native and project layers. [Global persistence](../src/global-settings.ts) identifies a unique Ultra registration in the active native profile using the host's package metadata and server environment. Global snapshots return Ultra settings without unrelated native credentials. JSONC edits preserve comments, other plugins and unrelated options; instruction updates touch only changed role entries. [Shared validation](../src/settings-values.ts) limits editable fields and checks changed model references against the live catalogue. [File persistence](../src/settings-file.ts) queues writes by target path, including across project instances, backs up originals and replaces files atomically. Temporary files stay outside fingerprinted source. A final synchronous guard checks cancellation and settled workflows before replacement. Optimistic revision checks detect observed external edits; they do not lock independent processes or external editors.
+[Project persistence](../src/settings.ts) resolves the native and project layers. [Global persistence](../src/global-settings.ts) identifies a unique UltraOpenCode registration in the active native profile using the host's package metadata and server environment. Global snapshots return UltraOpenCode settings without unrelated native credentials. JSONC edits preserve comments, other plugins and unrelated options; instruction updates touch only changed role entries. [Shared validation](../src/settings-values.ts) limits editable fields and checks changed model references against the live catalogue. [File persistence](../src/settings-file.ts) queues writes by target path, including across project instances, backs up originals and replaces files atomically. Temporary files stay outside fingerprinted source. A final synchronous guard checks cancellation and settled workflows before replacement. Optimistic revision checks detect observed external edits; they do not lock independent processes or external editors.
 
 The plugin validates the initiating primary session and uses project ownership during saves. Project saves update the existing engine configuration object, so future admissions in that location capture the new values without restarting. Global saves require a native reload to apply across projects, preserving native precedence and project overrides. Persisted run snapshots remain unchanged. A changed project configuration file can invalidate a saved plan's candidate fingerprint. Advanced values are included in settings snapshots. New editors send the optional `replaceAdvanced: true` save flag so omitted advanced overrides reset to inheritance; legacy saves without that flag preserve omitted advanced values. These RPC methods are UI controls, are not exposed as model tools and make no model calls.
 
@@ -102,11 +102,11 @@ The plugin validates the initiating primary session and uses project ownership d
 
 The handoff must fit both `limits.contextChars` and, when metadata is available, [an estimated model allowance](../src/context.ts). The allowance uses UTF-8 bytes conservatively against advertised token capacities, reserving output and native overhead. It is not a tokenizer measurement or a bound on all later native conversation history.
 
-Dependency summaries are shortened with explicit captured references. Aggregate fallback reduces them first to brief previews and then to references alone before refusing mandatory context. `ultra_dependency` retrieves immutable captured results in bounded pages, validating their hashes. Omitted evidence remains uninspected until the worker retrieves or independently examines it.
+Dependency summaries are shortened with explicit captured references. Aggregate fallback reduces them first to brief previews and then to references alone before refusing mandatory context. `ultraopencode_dependency` retrieves immutable captured results in bounded pages, validating their hashes. Omitted evidence remains uninspected until the worker retrieves or independently examines it.
 
 Check logs and routine inspection use bounded model-facing previews. Saved check output retains its existing 100,000-character limit, and exports retain the saved records. If mandatory context still cannot fit, the engine stops before creating a worker attempt and records `waiting_budget` or drains active work toward that state. It does not clip the objective or weaken criteria.
 
-For local/free configurations, the [local profile](../examples/ultracode-local.json) keeps Ultra roles and stages inherited and limits concurrency. Native title, summary and compaction settings also affect model use; selecting a local worker alone does not configure those host agents. Provider compatibility and model quality remain separate from context size.
+For local/free configurations, the [local profile](../examples/ultraopencode-local.json) keeps UltraOpenCode roles and stages inherited and limits concurrency. Native title, summary and compaction settings also affect model use; selecting a local worker alone does not configure those host agents. Provider compatibility and model quality remain separate from context size.
 
 ## Native boundaries and lifecycle
 
@@ -122,7 +122,7 @@ The adapter's native execution bridge relies on tested OpenCode API behavior and
 
 [Artifacts](../src/artifacts.ts) produce JSON, Markdown and a read-only HTML dashboard. [Redaction](../src/redaction.ts) removes recognizable credential patterns from observations and exports; it is not an exhaustive secret scanner. Native event history is incomplete, so exports do not claim exact replay or access to private model reasoning.
 
-Storage is a runtime availability dependency. The recorded SQLite I/O incident caused prompt hooks to return HTTP 500 while reading saved bindings. The module refactor did not establish its root cause or fix it. Do not treat the live SQLite database or its WAL/SHM files as scratch files, or recreate missing state to turn an uncertain worker into an unbound session. `.spike/` contains ignored development experiments; `.ultracode/` contains operational state needed for recovery.
+Storage is a runtime availability dependency. The recorded SQLite I/O incident caused prompt hooks to return HTTP 500 while reading saved bindings. The module refactor did not establish its root cause or fix it. Do not treat the live SQLite database or its WAL/SHM files as scratch files, or recreate missing state to turn an uncertain worker into an unbound session. `.spike/` contains ignored development experiments; `.ultraopencode/` contains operational state needed for recovery.
 
 The [validation record](design.md) distinguishes native runtime tests from real-model evaluations. In particular, successful worker submissions did not make the tested local 4B candidate semantically correct. Keep model-quality claims separate from the evidence and permission contracts above.
 

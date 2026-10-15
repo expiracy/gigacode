@@ -129,7 +129,7 @@ export async function prepareEvaluationFixture(scenario: EvaluationScenario, dir
   const files: Record<string, string> = {
     "protected.txt": "Preserve this sentinel exactly.\n",
     "package.json": JSON.stringify({ private: true, type: "module", scripts: { test: "bun test tests" } }),
-    "ultracode.json": JSON.stringify({
+    "ultraopencode.json": JSON.stringify({
       models: { default: options.modelReference, roles: Object.fromEntries(roles.map(role => [role, options.modelReference])), stages: Object.fromEntries(stages.map(stage => [stage, options.modelReference])) },
       limits: options.limits, parallelWrites: false,
       checks: scenario !== "research" ? [{ id: "fixture-tests", command: "bun run test", criterionIds: ["verification"] }] : [],
@@ -266,7 +266,7 @@ export async function runModelEvaluation(args: string[], runtime: { root?: strin
         return result
       }
       try {
-        const parent = await client.session.create({ location, agent: "ultra", model: options.model, title: `Ultra evaluation: ${scenario}` }, { signal: AbortSignal.timeout(5_000) })
+        const parent = await client.session.create({ location, agent: "ultraopencode", model: options.model, title: `UltraOpenCode evaluation: ${scenario}` }, { signal: AbortSignal.timeout(5_000) })
         parentId = parent.id; scenarioSessions.add(parent.id); sessions.set(parent.id, parent); guard()
         await client.session.prompt({ sessionID: parent.id, text: prompt }, { signal: AbortSignal.timeout(5_000) })
         const deadline = Date.now() + options.limits.runMs

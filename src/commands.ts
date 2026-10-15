@@ -13,7 +13,7 @@ export type UltraCommand =
   | { type: "budget"; id: string; limits: Partial<Limits> }
   | { type: "config" | "on" | "off" }
 
-export const commandUsage = "Usage: /ultracode start|plan <task>; plan --recipe <deep-review|bug-investigation|cross-checked-research> <task>; run <id>@<revision>; status [id]; inspect <id> [task]; pause|resume|cancel|export <id>; retry <id> <task>; input <id> <answer>; budget <id> <limits-json>; config|on|off"
+export const commandUsage = "Usage: /ultraopencode start|plan <task>; plan --recipe <deep-review|bug-investigation|cross-checked-research> <task>; run <id>@<revision>; status [id]; inspect <id> [task]; pause|resume|cancel|export <id>; retry <id> <task>; input <id> <answer>; budget <id> <limits-json>; config|on|off"
 
 function id(value: string | undefined): string {
   if (!value || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)) throw new Error(`Invalid run/task ID. ${commandUsage}`)
@@ -23,7 +23,7 @@ function id(value: string | undefined): string {
 export function parseCommand(text: string): UltraCommand {
   if (typeof text !== "string") throw new Error(commandUsage)
   let input = text.trim()
-  if (/^\/ultracode(?:\s|$)/.test(input)) input = input.replace(/^\/ultracode\s*/, "")
+  if (/^\/ultraopencode(?:\s|$)/.test(input)) input = input.replace(/^\/ultraopencode\s*/, "")
   const match = /^(\S+)(?:\s+([\s\S]*))?$/.exec(input)
   if (!match) throw new Error(commandUsage)
   const verb = match[1]!
@@ -72,6 +72,6 @@ export function parseCommand(text: string): UltraCommand {
     case "config": case "on": case "off":
       if (arguments_.length) throw new Error(commandUsage)
       return { type: verb }
-    default: throw new Error(`Unknown ultracode command: ${verb}. ${commandUsage}`)
+    default: throw new Error(`Unknown ultraopencode command: ${verb}. ${commandUsage}`)
   }
 }

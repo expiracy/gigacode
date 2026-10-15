@@ -6,25 +6,25 @@ import { agentModeFixture } from "./agent-mode-fixture.ts"
 import type { Workflow } from "../src/types.ts"
 
 type Fixture = Awaited<ReturnType<typeof agentModeFixture>>
-function tool(value: Fixture, name: "ultra_task" | "ultra_control") {
+function tool(value: Fixture, name: "ultraopencode_task" | "ultraopencode_control") {
   expect(value.tools.has(name)).toBe(true)
   return value.tools.get(name)!
 }
 async function launch(value: Fixture, update: Record<string, unknown> = {}) {
-  return tool(value, "ultra_task").execute({ objective: "Design a clear workspace status view", mode: "plan" }, value.toolContext(update))
+  return tool(value, "ultraopencode_task").execute({ objective: "Design a clear workspace status view", mode: "plan" }, value.toolContext(update))
 }
 const offeredTools = () => Object.fromEntries([
   "read", "grep", "question", "edit", "write", "shell", "execute", "subagent", "third_party.read", "third_party.edit",
-  "ultra_task", "ultra_control", "ultra_start", "ultra_execute", "ultra_submit", "ultra_check",
+  "ultraopencode_task", "ultraopencode_control", "ultraopencode_start", "ultraopencode_execute", "ultraopencode_submit", "ultraopencode_check",
 ].map(name => [name, { name }]))
 
-describe("Ultra primary agent", () => {
+describe("UltraOpenCode primary agent", () => {
   test("updates the previous default in model context after native config precedence while preserving customization", async () => {
     const bundled = await agentModeFixture({ system: LEGACY_PRIMARY_SYSTEM })
     try {
       const agent = bundled.agents.get(ULTRA_AGENT_ID)
       expect(agent.system).toBe(LEGACY_PRIMARY_SYSTEM)
-      const context = { sessionID: "parent", agent: "ultra", tools: offeredTools(), system: [{ type: "text", text: LEGACY_PRIMARY_SYSTEM }, { type: "text", text: "Preserve project-specific instructions." }] }
+      const context = { sessionID: "parent", agent: "ultraopencode", tools: offeredTools(), system: [{ type: "text", text: LEGACY_PRIMARY_SYSTEM }, { type: "text", text: "Preserve project-specific instructions." }] }
       await bundled.hooks.get("session.context")(context)
       expect(context.system[0]!.text).toBe(ULTRA_PRIMARY_SYSTEM)
       expect(context.system[1]!.text).toBe("Preserve project-specific instructions.")
@@ -35,7 +35,7 @@ describe("Ultra primary agent", () => {
     const customized = LEGACY_PRIMARY_SYSTEM + "\nPrefer detailed explanations of the code."
     const custom = await agentModeFixture({ system: customized })
     try {
-      const context = { sessionID: "parent", agent: "ultra", tools: offeredTools(), system: [{ type: "text", text: customized }] }
+      const context = { sessionID: "parent", agent: "ultraopencode", tools: offeredTools(), system: [{ type: "text", text: customized }] }
       await custom.hooks.get("session.context")(context)
       expect(context.system[0]!.text).toBe(customized)
       expect(custom.agents.get(ULTRA_AGENT_ID).system).toBe(customized)
@@ -48,14 +48,14 @@ describe("Ultra primary agent", () => {
     try {
       expect(value.agents.get(ULTRA_AGENT_ID)).toMatchObject({ name: ULTRA_AGENT_NAME, mode: "primary", hidden: false, model: { providerID: "fixture", id: "test" }, permissions: value.policy })
       expect(value.agents.get("build").name).toBe("Build")
-      expect(value.agents.get("ultra-worker").hidden).toBe(true)
+      expect(value.agents.get("ultraopencode-worker").hidden).toBe(true)
     } finally { await value.close() }
   })
 
   test("configuration and status are ordinary native tool results with no graph or model input", async () => {
     const value = await agentModeFixture()
     try {
-      const control = tool(value, "ultra_control")
+      const control = tool(value, "ultraopencode_control")
       const config = await control.execute({ action: "config" }, value.toolContext())
       const status = await control.execute({ action: "status" }, value.toolContext({ id: "call_2" }))
       expect(config.content).toBeTruthy()
@@ -68,7 +68,7 @@ describe("Ultra primary agent", () => {
     } finally { await value.close() }
   })
 
-  test("conversation in Ultra mode does not admit work from the text alone", async () => {
+  test("conversation in UltraOpenCode mode does not admit work from the text alone", async () => {
     const value = await agentModeFixture()
     try {
       const prompt = { sessionID: "parent", messageID: "message_1", prompt: { text: "Can you explain how this plugin works, including its limits and configuration? ".repeat(3) } }
@@ -84,8 +84,8 @@ describe("Ultra primary agent", () => {
     const value = await agentModeFixture()
     try {
       const context = value.toolContext(), input = { objective: "Design a clear workspace status view", mode: "plan" }
-      const first = await tool(value, "ultra_task").execute(input, context)
-      const replay = await tool(value, "ultra_task").execute(input, context)
+      const first = await tool(value, "ultraopencode_task").execute(input, context)
+      const replay = await tool(value, "ultraopencode_task").execute(input, context)
       expect(first.content).toBeTruthy()
       const progress = JSON.parse(first.content)
       expect(progress.run).toMatchObject({ id: first.output.run.id, objective: input.objective, mode: "plan" })
@@ -97,7 +97,7 @@ describe("Ultra primary agent", () => {
       const run = value.runs()[0]!
       expect(run).toMatchObject({ parentSessionId: "parent", objective: input.objective, mode: "plan", supervisorSessionId: "child_1", capturedModel: { providerID: "fixture", id: "test" }, policy: value.policy })
       expect(value.dispatches).toHaveLength(1)
-      expect(value.dispatches[0]).toMatchObject({ sessionID: "parent", messageID: "message_1", id: "call_1", input: { agent: "ultra-supervisor", background: true, model: "fixture/test" } })
+      expect(value.dispatches[0]).toMatchObject({ sessionID: "parent", messageID: "message_1", id: "call_1", input: { agent: "ultraopencode-supervisor", background: true, model: "fixture/test" } })
       expect(value.progress).toEqual([expect.objectContaining({ sessionID: "child_1", runId: run.id, ultraPrelaunchBound: true })])
       expect(value.sessions.get("child_1").permissions.slice(0, value.policy.length)).toEqual(value.policy)
       expect(value.synthetics).toEqual([])
@@ -114,7 +114,7 @@ describe("Ultra primary agent", () => {
     try {
       const input = { objective: "Reject malformed duration input", mode: "execute", workflow }
       const context = value.toolContext()
-      const result = await tool(value, "ultra_task").execute(input, context)
+      const result = await tool(value, "ultraopencode_task").execute(input, context)
       const saved = value.runs()[0]!
       expect(result.output.run).toMatchObject({ phase: "execution", mode: "execute" })
       expect(saved.plans[0]!.rationale).toBe(workflow.rationale)
@@ -124,8 +124,8 @@ describe("Ultra primary agent", () => {
         { id: "tests", description: "Configured check evidence establishes tests.", required: true, kind: "check" },
       ])
       expect(value.dispatches).toHaveLength(1)
-      expect((await tool(value, "ultra_task").execute(input, context)).output.replay).toBe(true)
-      await expect(tool(value, "ultra_task").execute({ ...input, workflow: { ...workflow, rationale: "Changed graph rationale" } }, context)).rejects.toThrow("replay changed")
+      expect((await tool(value, "ultraopencode_task").execute(input, context)).output.replay).toBe(true)
+      await expect(tool(value, "ultraopencode_task").execute({ ...input, workflow: { ...workflow, rationale: "Changed graph rationale" } }, context)).rejects.toThrow("replay changed")
       expect(value.dispatches).toHaveLength(1)
     } finally { await value.close() }
   })
@@ -133,7 +133,7 @@ describe("Ultra primary agent", () => {
   test("unsafe primary graphs fail before any native child is dispatched", async () => {
     const value = await agentModeFixture()
     try {
-      await expect(tool(value, "ultra_task").execute({ objective: "Fix duration validation", mode: "execute", workflow: {
+      await expect(tool(value, "ultraopencode_task").execute({ objective: "Fix duration validation", mode: "execute", workflow: {
         rationale: "A small change", tasks: [{ id: "fix", title: "Fix duration", role: "implementer", stage: "implementation", instructions: "Change the parser.", dependencies: [], writes: true, ownedPaths: ["src/duration.ts"] }],
       } }, value.toolContext())).rejects.toThrow("review")
       expect(value.runs()).toEqual([])
@@ -144,7 +144,7 @@ describe("Ultra primary agent", () => {
   test("model context guides proportionate delegation and exposes configured check IDs", async () => {
     const value = await agentModeFixture({ checks: [{ id: "tests", command: "bun test", criterionIds: ["tests"] }] })
     try {
-      const context = { sessionID: "parent", agent: "ultra", tools: offeredTools(), system: [] as { type: string; text: string }[] }
+      const context = { sessionID: "parent", agent: "ultraopencode", tools: offeredTools(), system: [] as { type: string; text: string }[] }
       await value.hooks.get("session.context")(context)
       const text = context.system.map(part => part.text).join("\n")
       expect(text).toContain("smallest useful")
@@ -160,7 +160,7 @@ describe("Ultra primary agent", () => {
     try {
       const started = await launch(value)
       const run = value.runs()[0]!
-      const status = await tool(value, "ultra_control").execute({ action: "status", runId: run.id }, value.toolContext({ id: "status_call" }))
+      const status = await tool(value, "ultraopencode_control").execute({ action: "status", runId: run.id }, value.toolContext({ id: "status_call" }))
       expect(status.output).toEqual({ run: started.output.run })
       const progress = JSON.parse(status.content)
       expect(progress.run).toMatchObject({ id: run.id, status: run.status, objective: run.objective })
@@ -175,8 +175,8 @@ describe("Ultra primary agent", () => {
     try {
       await launch(value)
       const context = value.toolContext()
-      await expect(tool(value, "ultra_task").execute({ objective: "Replace the task with a different objective", mode: "plan" }, context)).rejects.toThrow()
-      await expect(tool(value, "ultra_task").execute({ objective: "Design a clear workspace status view", mode: "execute" }, context)).rejects.toThrow()
+      await expect(tool(value, "ultraopencode_task").execute({ objective: "Replace the task with a different objective", mode: "plan" }, context)).rejects.toThrow()
+      await expect(tool(value, "ultraopencode_task").execute({ objective: "Design a clear workspace status view", mode: "execute" }, context)).rejects.toThrow()
       expect(value.runs()).toHaveLength(1)
       expect(value.runs()[0]!.objective).toBe("Design a clear workspace status view")
       expect(value.dispatches).toHaveLength(1)
@@ -191,9 +191,9 @@ describe("Ultra primary agent", () => {
     try {
       value.beforeDispatch(async () => { entered(); await held })
       const context = value.toolContext(), input = { objective: "Design a clear workspace status view", mode: "plan" }
-      first = tool(value, "ultra_task").execute(input, context)
+      first = tool(value, "ultraopencode_task").execute(input, context)
       await Promise.race([entry, first!.then(() => { throw new Error("Task did not enter native dispatch") })])
-      second = tool(value, "ultra_task").execute(input, context)
+      second = tool(value, "ultraopencode_task").execute(input, context)
       release()
       const results = await Promise.all([first, second])
       expect(results[1].output.run.id).toBe(results[0].output.run.id)
@@ -225,7 +225,7 @@ describe("Ultra primary agent", () => {
       value.context.agent.list = async () => {
         if (++reads === 2) {
           if (change === "selection") value.sessions.get("parent").agent = "build"
-          else value.agents.get("ultra").model = { providerID: "fixture", id: "changed" }
+          else value.agents.get("ultraopencode").model = { providerID: "fixture", id: "changed" }
         }
         return original()
       }
@@ -241,36 +241,36 @@ describe("Ultra primary agent", () => {
     try {
       await launch(value)
       const original = value.runs()[0]!
-      await expect(tool(value, "ultra_task").execute({ objective: "Also include more explanatory detail", mode: "execute" }, value.toolContext({ id: "followup_call", messageID: "message_2" }))).rejects.toThrow("active workflow")
+      await expect(tool(value, "ultraopencode_task").execute({ objective: "Also include more explanatory detail", mode: "execute" }, value.toolContext({ id: "followup_call", messageID: "message_2" }))).rejects.toThrow("active workflow")
       expect(value.runs()).toHaveLength(1)
       expect(value.runs()[0]!.objective).toBe(original.objective)
       expect(value.dispatches).toHaveLength(1)
     } finally { await value.close() }
   })
 
-  test("native tool visibility confines Ultra and an active parent after switching to Build", async () => {
+  test("native tool visibility confines UltraOpenCode and an active parent after switching to Build", async () => {
     const value = await agentModeFixture()
     try {
-      const ultra = { sessionID: "parent", agent: "ultra", tools: offeredTools() }
+      const ultra = { sessionID: "parent", agent: "ultraopencode", tools: offeredTools() }
       await value.hooks.get("session.context")(ultra)
       expect(ultra.tools).toHaveProperty("read")
-      expect(ultra.tools).toHaveProperty("ultra_control")
-      expect(ultra.tools).toHaveProperty("ultra_task")
-      for (const name of ["edit", "write", "shell", "execute", "subagent", "third_party.read", "third_party.edit", "ultra_execute", "ultra_submit", "ultra_check"]) expect(ultra.tools).not.toHaveProperty(name)
+      expect(ultra.tools).toHaveProperty("ultraopencode_control")
+      expect(ultra.tools).toHaveProperty("ultraopencode_task")
+      for (const name of ["edit", "write", "shell", "execute", "subagent", "third_party.read", "third_party.edit", "ultraopencode_execute", "ultraopencode_submit", "ultraopencode_check"]) expect(ultra.tools).not.toHaveProperty(name)
       await launch(value)
       value.sessions.get("parent").agent = "build"
       const activeBuild = { sessionID: "parent", agent: "build", tools: offeredTools() }
       await value.hooks.get("session.context")(activeBuild)
       expect(activeBuild.tools).toHaveProperty("read")
-      expect(activeBuild.tools).toHaveProperty("ultra_control")
+      expect(activeBuild.tools).toHaveProperty("ultraopencode_control")
       for (const name of ["edit", "shell", "subagent", "execute", "third_party.edit"]) expect(activeBuild.tools).not.toHaveProperty(name)
       const ordinaryBuild = { sessionID: "other", agent: "build", tools: offeredTools() }
       await value.hooks.get("session.context")(ordinaryBuild)
       expect(ordinaryBuild.tools).toHaveProperty("edit")
       expect(ordinaryBuild.tools).toHaveProperty("shell")
-      expect(ordinaryBuild.tools).not.toHaveProperty("ultra_task")
-      expect(ordinaryBuild.tools).not.toHaveProperty("ultra_control")
-      const status = await tool(value, "ultra_control").execute({ action: "status" }, value.toolContext({ id: "status_build", agent: "build" }))
+      expect(ordinaryBuild.tools).not.toHaveProperty("ultraopencode_task")
+      expect(ordinaryBuild.tools).not.toHaveProperty("ultraopencode_control")
+      const status = await tool(value, "ultraopencode_control").execute({ action: "status" }, value.toolContext({ id: "status_build", agent: "build" }))
       expect(JSON.stringify(status.output)).toContain(value.runs()[0]!.id)
     } finally { await value.close() }
   })
@@ -280,14 +280,14 @@ describe("Ultra primary agent", () => {
     try {
       await launch(value)
       const run = value.runs()[0]!
-      value.sessions.get("other").agent = "ultra"
+      value.sessions.get("other").agent = "ultraopencode"
       const context = value.toolContext({ sessionID: "other", messageID: "other_message", id: "other_call" })
-      const status = await tool(value, "ultra_control").execute({ action: "status" }, context)
+      const status = await tool(value, "ultraopencode_control").execute({ action: "status" }, context)
       expect(status.output).toEqual({ runs: [] })
-      for (const action of ["status", "inspect", "pause"]) await expect(tool(value, "ultra_control").execute({ action, runId: run.id }, context)).rejects.toThrow("initiating session")
+      for (const action of ["status", "inspect", "pause"]) await expect(tool(value, "ultraopencode_control").execute({ action, runId: run.id }, context)).rejects.toThrow("initiating session")
       for (const sessionID of ["child_1", "foreign"]) {
         if (sessionID === "foreign") value.seed(sessionID, { projectID: "foreign-project" })
-        await expect(tool(value, "ultra_control").execute({ action: "config" }, value.toolContext({ sessionID }))).rejects.toThrow()
+        await expect(tool(value, "ultraopencode_control").execute({ action: "config" }, value.toolContext({ sessionID }))).rejects.toThrow()
       }
       expect(value.runs()[0]!.status).toBe(run.status)
       expect(value.dispatches).toHaveLength(1)
@@ -300,7 +300,7 @@ describe("Ultra primary agent", () => {
       await launch(value)
       const runId = value.runs()[0]!.id
       const context = value.toolContext({ id: "pause_call", messageID: "control_message" })
-      const control = tool(value, "ultra_control"), request = { action: "pause", runId }
+      const control = tool(value, "ultraopencode_control"), request = { action: "pause", runId }
       const first = await control.execute(request, context)
       const paused = value.runs()[0]!
       expect(paused.status).toBe("paused")
@@ -323,7 +323,7 @@ describe("Ultra primary agent", () => {
       await launch(value)
       const saved = value.runs()[0]!, runId = saved.id
       const context = value.toolContext({ id: "failed_control", messageID: "control_message" })
-      const control = tool(value, "ultra_control"), request = { action: "run", runId, revision: saved.revision }
+      const control = tool(value, "ultraopencode_control"), request = { action: "run", runId, revision: saved.revision }
       await expect(control.execute(request, context)).rejects.toThrow("not ready")
       expect(value.runs()[0]!).toEqual(saved)
       await expect(control.execute(request, context)).rejects.toThrow("already attempted")
@@ -345,13 +345,13 @@ describe("Ultra primary agent", () => {
     const value = await agentModeFixture()
     try {
       for (const action of ["edit", "write", "shell", "execute", "subagent", "third_party.edit"]) {
-        const event = { sessionID: "parent", agent: "ultra", action, resources: ["*"], effect: "allow" }
+        const event = { sessionID: "parent", agent: "ultraopencode", action, resources: ["*"], effect: "allow" }
         await value.hooks.get("permission.evaluate")(event)
         expect(event.effect).toBe("deny")
       }
       for (const action of ["read", "question", "external_directory"]) {
         for (const effect of ["allow", "ask", "deny"]) {
-          const event = { sessionID: "parent", agent: "ultra", action, resources: ["README.md"], effect }
+          const event = { sessionID: "parent", agent: "ultraopencode", action, resources: ["README.md"], effect }
           await value.hooks.get("permission.evaluate")(event)
           expect(event.effect).toBe(effect)
         }
@@ -367,13 +367,50 @@ describe("Ultra primary agent", () => {
     } finally { await value.close() }
   })
 
+  test("renamed primary tools retain legacy agent permission denials", async () => {
+    const value = await agentModeFixture()
+    try {
+      value.agents.get(ULTRA_AGENT_ID).permissions.push({ action: "ultra_task", resource: "*", effect: "deny" })
+      const event = { sessionID: "parent", agent: ULTRA_AGENT_ID, action: "ultraopencode_task", resources: ["*"], effect: "allow" }
+      await value.hooks.get("permission.evaluate")(event)
+      expect(event.effect).toBe("deny")
+    } finally { await value.close() }
+  })
+
+  test("renamed primary controls retain session asks without weakening native effects", async () => {
+    const value = await agentModeFixture()
+    try {
+      value.sessions.get("parent").permissions.push({ action: "ultra_control", resource: "*", effect: "ask" })
+      for (const effect of ["allow", "ask", "deny"]) {
+        const event = { sessionID: "parent", agent: ULTRA_AGENT_ID, action: "ultraopencode_control", resources: ["*"], effect }
+        await value.hooks.get("permission.evaluate")(event)
+        expect(event.effect).toBe(effect === "deny" ? "deny" : "ask")
+      }
+    } finally { await value.close() }
+  })
+
+  test("native supervisor dispatch retains a legacy session denial", async () => {
+    const value = await agentModeFixture()
+    try {
+      value.sessions.get("parent").permissions.push({ action: "subagent", resource: "ultra-supervisor", effect: "deny" })
+      let effect: string | undefined
+      value.beforeDispatch(async (input, context) => {
+        const event = { sessionID: context.sessionID, agent: ULTRA_AGENT_ID, action: "subagent", resources: [input.agent], source: { type: "tool", id: context.id, messageID: context.messageID }, effect: "allow" }
+        await value.hooks.get("permission.evaluate")(event)
+        effect = event.effect
+      })
+      await launch(value)
+      expect(effect).toBe("deny")
+    } finally { await value.close() }
+  })
+
   test("native supervisor delegation retains an ask and refuses a mismatched invocation source", async () => {
     const value = await agentModeFixture()
     try {
       const effects: string[] = []
       value.beforeDispatch(async (input, context) => {
-        for (const update of [{}, { effect: "deny" }, { source: { type: "tool", id: "foreign_call", messageID: context.messageID } }, { source: { type: "tool", id: context.id, messageID: "foreign_message" } }, { resources: ["ultra-worker"] }]) {
-          const event = { sessionID: context.sessionID, agent: "ultra", action: "subagent", resources: [input.agent], source: { type: "tool", id: context.id, messageID: context.messageID }, effect: "ask", ...update }
+        for (const update of [{}, { effect: "deny" }, { source: { type: "tool", id: "foreign_call", messageID: context.messageID } }, { source: { type: "tool", id: context.id, messageID: "foreign_message" } }, { resources: ["ultraopencode-worker"] }]) {
+          const event = { sessionID: context.sessionID, agent: "ultraopencode", action: "subagent", resources: [input.agent], source: { type: "tool", id: context.id, messageID: context.messageID }, effect: "ask", ...update }
           await value.hooks.get("permission.evaluate")(event)
           effects.push(event.effect)
         }
@@ -419,25 +456,25 @@ describe("Ultra primary agent", () => {
       active = launch(value)
       await Promise.race([entry, active.then(() => { throw new Error("Task did not enter native dispatch") })])
       draining = value.shutdown()
-      const ultra = { sessionID: "parent", agent: "ultra", tools: offeredTools() }
+      const ultra = { sessionID: "parent", agent: "ultraopencode", tools: offeredTools() }
       const ordinary = { sessionID: "other", agent: "build", tools: offeredTools() }
       await value.hooks.get("session.context")(ultra)
       await value.hooks.get("session.context")(ordinary)
       expect(ultra.tools).toEqual({})
       expect(ordinary.tools).toHaveProperty("edit")
-      await expect(Promise.resolve().then(() => tool(value, "ultra_control").execute({ action: "config" }, value.toolContext()))).rejects.toThrow()
+      await expect(Promise.resolve().then(() => tool(value, "ultraopencode_control").execute({ action: "config" }, value.toolContext()))).rejects.toThrow()
       await expect(Promise.resolve().then(() => value.hooks.get("tool.execute.before")({ ...value.toolContext(), tool: "read", input: {} }))).rejects.toThrow()
       await expect(Promise.resolve().then(() => value.hooks.get("tool.execute.before")({ ...value.toolContext({ sessionID: "other", agent: "build" }), tool: "edit", input: {} }))).resolves.toBeUndefined()
-      const permission = { sessionID: "parent", agent: "ultra", action: "read", resources: ["README.md"], effect: "allow" }
+      const permission = { sessionID: "parent", agent: "ultraopencode", action: "read", resources: ["README.md"], effect: "allow" }
       await value.hooks.get("permission.evaluate")(permission)
       expect(permission.effect).toBe("deny")
     } finally { release(); await Promise.allSettled([active]); await draining; await value.close() }
   })
 
   test.each([
-    ["permission.evaluate", "parent", "ultra"], ["permission.evaluate", "other", "build"],
-    ["session.context", "parent", "ultra"], ["session.context", "other", "build"],
-    ["tool.execute.before", "parent", "ultra"], ["tool.execute.before", "other", "build"],
+    ["permission.evaluate", "parent", "ultraopencode"], ["permission.evaluate", "other", "build"],
+    ["session.context", "parent", "ultraopencode"], ["session.context", "other", "build"],
+    ["tool.execute.before", "parent", "ultraopencode"], ["tool.execute.before", "other", "build"],
   ])("shutdown drains %s while native session lookup is pending in %s", async (name, sessionID, agent) => {
     const value = await agentModeFixture()
     let entered!: () => void, release!: () => void
@@ -455,10 +492,10 @@ describe("Ultra primary agent", () => {
       expect(completed).toBe(false)
       release()
       const result = await active
-      if (agent === "ultra" && name === "tool.execute.before") expect(String(result.error)).toMatch(/shutting down|reloading/i)
+      if (agent === "ultraopencode" && name === "tool.execute.before") expect(String(result.error)).toMatch(/shutting down|reloading/i)
       else expect(result.error).toBeUndefined()
-      if (agent === "ultra" && name === "permission.evaluate") expect(event.effect).toBe("deny")
-      if (agent === "ultra" && name === "session.context") expect(event.tools).toEqual({})
+      if (agent === "ultraopencode" && name === "permission.evaluate") expect(event.effect).toBe("deny")
+      if (agent === "ultraopencode" && name === "session.context") expect(event.tools).toEqual({})
       if (agent === "build" && name === "permission.evaluate") expect(event.effect).toBe("ask")
       if (agent === "build" && name === "session.context") expect(event.tools).toHaveProperty("edit")
       await draining
@@ -473,7 +510,7 @@ describe("Ultra primary agent", () => {
       value.sessions.get("parent").agent = "build"
       await value.shutdown()
       value.context.session.get = async () => { throw new Error("A retired callback attempted native session lookup") }
-      for (const [sessionID, agent] of [["parent", "build"], ["child_1", "ultra-supervisor"], ["other", "build"]]) {
+      for (const [sessionID, agent] of [["parent", "build"], ["child_1", "ultraopencode-supervisor"], ["other", "build"]]) {
         const workflow = sessionID !== "other"
         const permission = { sessionID: sessionID!, agent: agent!, action: "read", resources: ["README.md"], effect: "ask" }
         await value.hooks.get("permission.evaluate")(permission)
@@ -484,7 +521,7 @@ describe("Ultra primary agent", () => {
         else {
           await request
           if (workflow) expect(context.tools).toEqual({})
-          else { expect(context.tools).toHaveProperty("edit"); expect(context.tools).not.toHaveProperty("ultra_control") }
+          else { expect(context.tools).toHaveProperty("edit"); expect(context.tools).not.toHaveProperty("ultraopencode_control") }
         }
         const execute = Promise.resolve().then(() => value.hooks.get("tool.execute.before")({ ...value.toolContext({ sessionID, agent }), tool: "read", input: {} }))
         if (workflow) await expect(execute).rejects.toMatchObject({ _tag: "Tool.Error" })

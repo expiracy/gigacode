@@ -24,6 +24,27 @@ async function fixture() {
 }
 
 describe("project installer and local CLI", () => {
+  test("exposes the ultraopencode package executable with the renamed help and slash command", async () => {
+    const manifest = JSON.parse(await readFile(join(productionPluginDirectory, "package.json"), "utf8"))
+    expect(manifest.bin?.ultraopencode).toBe("scripts/cli.ts")
+    const command = Bun.spawnSync([process.execPath, manifest.bin.ultraopencode, "help"], { cwd: productionPluginDirectory, stdout: "pipe", stderr: "pipe" })
+    expect(command.exitCode).toBe(0)
+    const help = new TextDecoder().decode(command.stdout)
+    expect(help).toContain("UltraOpenCode local CLI")
+    expect(help).toContain("bun run ultraopencode")
+    expect(help).toContain("/ultraopencode inside OpenCode")
+  })
+
+  test("reads options from the open-ultra-code native package registration", async () => {
+    const { directory } = await fixture()
+    const configDirectory = join(directory, "global")
+    mkdirSync(configDirectory)
+    await writeFile(join(configDirectory, "opencode.json"), JSON.stringify({ plugins: [{ package: "open-ultra-code", options: { limits: { workers: 2 } } }] }))
+    const result = await executeLocalCommand(["validate"], { directory, configDirectory })
+    expect(result.exitCode).toBe(0)
+    expect(JSON.parse(result.output).config.limits.workers).toBe(2)
+  })
+
   test("renders an explicit read-only recipe offline without creating workflow state", async () => {
     const { directory } = await fixture()
     const result = await executeLocalCommand(["render", "--recipe", "bug-investigation", "Inspect zero-duration behavior"], { directory })
@@ -32,24 +53,24 @@ describe("project installer and local CLI", () => {
     expect(plan.tasks.map((task: any) => task.role)).toEqual(["explorer", "explorer", "planner"])
     expect(plan.tasks.every((task: any) => !task.writes)).toBe(true)
     expect(plan.criteria).toEqual([{ id: "request", description: "Inspect zero-duration behavior", required: true, kind: "assessment" }])
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
     for (const args of [["render", "--recipe", "unknown", "Inspect"], ["render", "--recipe", "deep-review", "--execute", "Inspect"], ["validate", "--recipe", "deep-review"]]) {
       expect((await executeLocalCommand(args, { directory })).exitCode).toBe(1)
     }
   })
-  test("validates global defaults with partial native and Ultra project overrides without a project installation", async () => {
+  test("validates global defaults with partial native and UltraOpenCode project overrides without a project installation", async () => {
     const { directory } = await fixture()
     const configDirectory = join(directory, "global")
     mkdirSync(configDirectory)
     await writeFile(join(configDirectory, "opencode.json"), JSON.stringify({
       providers: { private: { settings: { apiKey: "global-provider-secret" } } },
-      plugins: [{ package: "ultra-open-code", options: {
+      plugins: [{ package: "open-ultra-code", options: {
         models: { default: "global/default", roles: { planner: "global/planner", reviewer: "global/reviewer" }, stages: { review: "global/review-stage" } },
         limits: { workers: 3, attempts: 15 }, prompts: { planner: "Global planning instructions", reviewer: "Global review instructions" },
         checks: [{ id: "global", command: "bun run global", criterionIds: ["verification"] }],
       } }],
     }))
-    await writeFile(join(directory, "ultracode.json"), JSON.stringify({ models: { roles: { planner: "project/planner" } }, limits: { workers: 1 }, prompts: { planner: "Project planning instructions" } }))
+    await writeFile(join(directory, "ultraopencode.json"), JSON.stringify({ models: { roles: { planner: "project/planner" } }, limits: { workers: 1 }, prompts: { planner: "Project planning instructions" } }))
     const validated = await executeLocalCommand(["validate", "--global-config", configDirectory], { directory })
     expect(validated.exitCode).toBe(0)
     const config = JSON.parse(validated.output).config
@@ -60,16 +81,16 @@ describe("project installer and local CLI", () => {
     expect(validated.output).not.toContain("global-provider-secret")
     expect(existsSync(join(directory, "opencode.json"))).toBe(false)
     expect(existsSync(join(directory, "opencode.jsonc"))).toBe(false)
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
   })
 
-  test("native project registration replaces global options before Ultra and explicit overrides", async () => {
+  test("native project registration replaces global options before UltraOpenCode and explicit overrides", async () => {
     const { directory } = await fixture()
     const configDirectory = join(directory, "global")
     mkdirSync(configDirectory)
     await writeFile(join(configDirectory, "opencode.jsonc"), `// global options\n${JSON.stringify({ plugins: [{ package: productionPluginDirectory, options: { limits: { workers: 3, attempts: 17 }, models: { roles: { planner: "global/planner", reviewer: "global/reviewer" } }, checks: [{ id: "global", command: "bun run global", criterionIds: ["verification"] }] } }] })}`)
     await writeFile(join(directory, "opencode.json"), JSON.stringify({ plugins: [{ package: productionPluginDirectory, options: { limits: { workers: 2 }, models: { roles: { planner: "native/planner" } } } }] }))
-    await writeFile(join(directory, "ultracode.json"), JSON.stringify({ models: { roles: { planner: "project/planner" } }, checks: [] }))
+    await writeFile(join(directory, "ultraopencode.json"), JSON.stringify({ models: { roles: { planner: "project/planner" } }, checks: [] }))
     await writeFile(join(directory, "package.json"), JSON.stringify({ scripts: { test: "bun test" } }))
     const configPath = join(directory, "explicit.json")
     await writeFile(configPath, JSON.stringify({ models: { roles: { planner: "explicit/planner" } }, limits: { workers: 1 } }))
@@ -80,7 +101,7 @@ describe("project installer and local CLI", () => {
     const rendered = await executeLocalCommand(["render", "--execute", "Inspect merged configuration"], { directory, configDirectory })
     expect(rendered.exitCode).toBe(0)
     expect(JSON.parse(rendered.output).tasks.find((task: any) => task.id === "verify").checkIds).toEqual([])
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
   })
 
   test("an empty native project registration replaces global checks and restores project discovery", async () => {
@@ -94,20 +115,20 @@ describe("project installer and local CLI", () => {
     expect(validated.exitCode).toBe(0)
     expect(JSON.parse(validated.output).config.limits.workers).toBe(4)
     expect(JSON.parse(validated.output).config.checks).toEqual([{ id: "test", command: "npm run test", criterionIds: ["verification"] }])
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
   })
 
   test("rejects ambiguous package aliases across global and native project registrations", async () => {
     const { directory } = await fixture()
     const configDirectory = join(directory, "global")
     mkdirSync(configDirectory)
-    await writeFile(join(configDirectory, "opencode.json"), JSON.stringify({ plugins: [{ package: "ultra-open-code", options: { limits: { workers: 2 } } }] }))
+    await writeFile(join(configDirectory, "opencode.json"), JSON.stringify({ plugins: [{ package: "open-ultra-code", options: { limits: { workers: 2 } } }] }))
     await writeFile(join(directory, "opencode.json"), JSON.stringify({ plugins: [{ package: productionPluginDirectory, options: { limits: { workers: 1 } } }] }))
     const validated = await executeLocalCommand(["validate"], { directory, configDirectory })
     expect(validated.exitCode).toBe(1)
-    expect(validated.output).toContain("Ambiguous Ultra plugin registrations")
-    expect(validated.output).toContain("ultracode.json")
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(validated.output).toContain("Ambiguous UltraOpenCode plugin registrations")
+    expect(validated.output).toContain("ultraopencode.json")
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
   })
 
   test("resolves local global plugin entries against their config directory and ignores similarly named packages", async () => {
@@ -115,7 +136,7 @@ describe("project installer and local CLI", () => {
     const configDirectory = join(directory, "global")
     mkdirSync(configDirectory)
     await writeFile(join(configDirectory, "opencode.json"), JSON.stringify({ plugins: [
-      { package: "some-ultra-open-code-wrapper", options: { limits: { workers: 999 } } },
+      { package: "some-open-ultra-code-wrapper", options: { limits: { workers: 999 } } },
       { package: relative(configDirectory, join(productionPluginDirectory, "index.ts")), options: { limits: { workers: 2 } } },
     ] }))
     const validated = await executeLocalCommand(["validate"], { directory, configDirectory })
@@ -123,7 +144,7 @@ describe("project installer and local CLI", () => {
     expect(JSON.parse(validated.output).config.limits.workers).toBe(2)
   })
 
-  test("accepts native string plugins alongside file URL options for the known Ultra package", async () => {
+  test("accepts native string plugins alongside file URL options for the known UltraOpenCode package", async () => {
     const { directory } = await fixture()
     const configDirectory = join(directory, "global")
     mkdirSync(configDirectory)
@@ -136,7 +157,7 @@ describe("project installer and local CLI", () => {
     expect(validated.exitCode).toBe(0)
     expect(JSON.parse(validated.output).config.limits.workers).toBe(2)
     expect(existsSync(join(directory, "opencode.json"))).toBe(false)
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
   })
 
   test("fails closed for invalid global and project options without copying credentials or creating runtime state", async () => {
@@ -144,18 +165,18 @@ describe("project installer and local CLI", () => {
     const configDirectory = join(directory, "global")
     mkdirSync(configDirectory)
     const path = join(configDirectory, "opencode.json")
-    await writeFile(path, JSON.stringify({ plugins: [{ package: "ultra-open-code", options: { limits: { workers: 0 } } }] }))
+    await writeFile(path, JSON.stringify({ plugins: [{ package: "open-ultra-code", options: { limits: { workers: 0 } } }] }))
     const invalidGlobal = await executeLocalCommand(["validate"], { directory, configDirectory })
     expect(invalidGlobal.exitCode).toBe(1)
     expect(invalidGlobal.output).toContain("limits.workers")
-    await writeFile(path, JSON.stringify({ plugins: [{ package: "ultra-open-code", options: { limits: { workers: 2 } } }] }))
-    await writeFile(join(directory, "ultracode.json"), '{"providerSecrets":"must-not-forward"}')
+    await writeFile(path, JSON.stringify({ plugins: [{ package: "open-ultra-code", options: { limits: { workers: 2 } } }] }))
+    await writeFile(join(directory, "ultraopencode.json"), '{"providerSecrets":"must-not-forward"}')
     const invalidProject = await executeLocalCommand(["validate"], { directory, configDirectory })
     expect(invalidProject.exitCode).toBe(1)
     expect(invalidProject.output).toContain("Unknown configuration field")
     expect(invalidProject.output).not.toContain("must-not-forward")
     expect((await executeLocalCommand(["validate", "--global-config"], { directory, configDirectory })).output).toContain("Missing --global-config argument")
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
   })
 
   test("snapshot commands never load global or project configuration", async () => {
@@ -163,12 +184,12 @@ describe("project installer and local CLI", () => {
     const configDirectory = join(directory, "global")
     mkdirSync(configDirectory)
     await writeFile(join(configDirectory, "opencode.json"), "malformed global configuration")
-    await writeFile(join(directory, "ultracode.json"), "malformed project configuration")
+    await writeFile(join(directory, "ultraopencode.json"), "malformed project configuration")
     const status = await executeLocalCommand(["status"], { directory, configDirectory })
     expect(status.exitCode).toBe(0)
     expect(JSON.parse(status.output).runs).toEqual([])
     expect((await executeLocalCommand(["status", "--global-config", configDirectory], { directory })).exitCode).toBe(1)
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
   })
 
   test("reports ambiguous or malformed native configuration without exposing its source", async () => {
@@ -186,7 +207,7 @@ describe("project installer and local CLI", () => {
     expect(ambiguous.exitCode).toBe(1)
     expect(ambiguous.output).toContain("Both opencode.json and opencode.jsonc")
     expect(existsSync(join(directory, "opencode.json"))).toBe(false)
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
   })
 
   test("merges native project settings without forwarding or printing credentials", async () => {
@@ -201,10 +222,10 @@ describe("project installer and local CLI", () => {
     expect(result.permissions).toEqual(native.permissions)
     expect(result.plugins).toEqual([{ package: "another-plugin", options: { active: true } }, { package: plugin }])
     expect(result.experimental).toEqual({ anotherFlag: true, subagent_depth: 2 })
-    expect(result.agents.ultra).toMatchObject({ mode: "primary", hidden: false })
-    expect(result.agents.ultra.permissions).toBeUndefined()
-    expect(result.agents["ultra-supervisor"].mode).toBe("subagent")
-    expect(result.agents["ultra-worker"].permissions).toContainEqual({ action: "subagent", resource: "*", effect: "deny" })
+    expect(result.agents.ultraopencode).toMatchObject({ mode: "primary", hidden: false })
+    expect(result.agents.ultraopencode.permissions).toBeUndefined()
+    expect(result.agents["ultraopencode-supervisor"].mode).toBe("subagent")
+    expect(result.agents["ultraopencode-worker"].permissions).toContainEqual({ action: "subagent", resource: "*", effect: "deny" })
     expect(await readFile(installed.backup!, "utf8")).toBe(JSON.stringify(native))
     expect(JSON.stringify(installed)).not.toContain("secret-credential")
     await installProject({ directory, pluginPath: plugin, hostVersion: "2.0.25" })
@@ -225,10 +246,10 @@ describe("project installer and local CLI", () => {
   test("fails before mutation for incompatible runtime and conflicting reserved agents", async () => {
     const { directory, plugin } = await fixture()
     const path = join(directory, "opencode.json")
-    await writeFile(path, '{"agents":{"ultra-supervisor":{"mode":"primary"}}}')
+    await writeFile(path, '{"agents":{"ultraopencode-supervisor":{"mode":"primary"}}}')
     const original = await readFile(path, "utf8")
     await expect(installProject({ directory, pluginPath: plugin, hostVersion: "2.0.27" })).rejects.toThrow("2.0.25")
-    await expect(installProject({ directory, pluginPath: plugin, hostVersion: "2.0.25" })).rejects.toThrow("ultra-supervisor")
+    await expect(installProject({ directory, pluginPath: plugin, hostVersion: "2.0.25" })).rejects.toThrow("ultraopencode-supervisor")
     expect(await readFile(path, "utf8")).toBe(original)
   })
 
@@ -245,7 +266,7 @@ describe("project installer and local CLI", () => {
     const status = await executeLocalCommand(["status"], { directory })
     expect(status.exitCode).toBe(0)
     expect(JSON.parse(status.output).runs).toEqual([])
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
     expect((await executeLocalCommand(["start", "Fix it"], { directory })).exitCode).toBe(1)
     expect((await executeLocalCommand(["help"], { directory })).output).toContain("OpenCode")
   })
@@ -267,7 +288,7 @@ describe("project installer and local CLI", () => {
     const plan = JSON.parse(rendered.output)
     expect(plan.tasks.find((task: any) => task.id === "verify").checkIds).toEqual(["test", "typecheck", "lint"])
     expect(plan.criteria.find((criterion: any) => criterion.id === "verification")).toMatchObject({ required: true, kind: "check" })
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
   })
 
   test("an explicit empty check list remains disabled despite available project scripts", async () => {
@@ -294,9 +315,9 @@ describe("project installer and local CLI", () => {
     expect(JSON.parse(explicit.output).config.checks).toEqual(checks)
   })
 
-  test("lists and exports saved run snapshots with sanitized history", async () => {
+  test.each([".ultraopencode", ".ultracode"])("lists and exports saved run snapshots from %s with sanitized history", async runtimeName => {
     const { directory } = await fixture()
-    const state = join(directory, ".ultracode")
+    const state = join(directory, runtimeName)
     const store = new SQLiteStore(join(state, "state.sqlite"))
     const run: Run = { id: "run_cli", projectId: "project", directory, parentSessionId: "ses_parent", intentId: "intent", intentExpiresAt: 0, objective: "Inspect persisted evidence", mode: "plan", status: "ready", phase: "planning", revision: 1, plans: [], tasks: [], criteria: [], capturedModel: { providerID: "provider", id: "model" }, modelOptions: {}, config: parseConfig({}), policy: [], workspaceHash: "hash", createdAt: 1, updatedAt: 2, activeMs: 0, repairRound: 0, continuation: 0, ownerEpoch: 0, generation: 0, errors: [], notifications: [] }
     store.create(run)
@@ -317,7 +338,7 @@ describe("project installer and local CLI", () => {
     const { directory } = await fixture()
     const worktree = join(directory, "worktree")
     mkdirSync(worktree)
-    const databasePath = join(directory, ".ultracode", "state.sqlite")
+    const databasePath = join(directory, ".ultraopencode", "state.sqlite")
     const store = new SQLiteStore(databasePath)
     const run: Run = { id: "run_worktree", projectId: "shared-project", directory: worktree, parentSessionId: "ses_parent", intentId: "intent", intentExpiresAt: 0, objective: "Inspect worktree evidence", mode: "plan", status: "ready", phase: "planning", revision: 1, plans: [], tasks: [], criteria: [], capturedModel: { providerID: "provider", id: "model" }, modelOptions: {}, config: parseConfig({}), policy: [], workspaceHash: "hash", createdAt: 1, updatedAt: 2, activeMs: 0, repairRound: 0, continuation: 0, ownerEpoch: 7, generation: 3, errors: [], notifications: [] }
     store.create(run)
@@ -336,9 +357,9 @@ describe("project installer and local CLI", () => {
     const exported = await executeLocalCommand(["export", run.id, ...select], { directory })
     expect(exported.exitCode).toBe(0)
     const paths = JSON.parse(exported.output)
-    expect(paths.json).toContain(join(directory, ".ultracode", "artifacts"))
+    expect(paths.json).toContain(join(directory, ".ultraopencode", "artifacts"))
     expect(JSON.parse(await readFile(paths.json, "utf8")).data.run.directory).toBe(worktree)
-    expect(existsSync(join(worktree, ".ultracode"))).toBe(false)
+    expect(existsSync(join(worktree, ".ultraopencode"))).toBe(false)
     expect((await executeLocalCommand(["inspect", run.id, "--project", directory, "--state", databasePath])).exitCode).toBe(1)
     const after = new SQLiteStore(databasePath)
     try {
@@ -350,10 +371,10 @@ describe("project installer and local CLI", () => {
 
   test("explicit state selection is rejected for configuration and graph rendering commands", async () => {
     const { directory } = await fixture()
-    const databasePath = join(directory, ".ultracode", "state.sqlite")
+    const databasePath = join(directory, ".ultraopencode", "state.sqlite")
     expect((await executeLocalCommand(["validate", "--state", databasePath], { directory })).exitCode).toBe(1)
     expect((await executeLocalCommand(["render", "Describe the workflow", "--state", databasePath], { directory })).exitCode).toBe(1)
     expect((await executeLocalCommand(["list", "--state"], { directory })).output).toContain("Missing --state argument")
-    expect(existsSync(join(directory, ".ultracode"))).toBe(false)
+    expect(existsSync(join(directory, ".ultraopencode"))).toBe(false)
   })
 })

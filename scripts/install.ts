@@ -33,7 +33,7 @@ function bareBinaryVersion(binary: string): { version: string; source: string } 
   // Even --version initializes OpenCode logging. Give the explicitly selected
   // executable a disposable profile, no project config, and no provider secrets.
   const temporaryRoot = resolve(tmpdir())
-  const profile = mkdtempSync(join(temporaryRoot, "ultra-host-version-"))
+  const profile = mkdtempSync(join(temporaryRoot, "ultraopencode-host-version-"))
   if (dirname(profile) !== temporaryRoot) throw new Error("Invalid temporary OpenCode version profile")
   const environment: Record<string, string> = {}
   for (const name of ["PATH", "Path", "SystemRoot", "SYSTEMROOT", "WINDIR", "ComSpec", "COMSPEC", "PATHEXT", "OS", "LANG"]) {
@@ -94,13 +94,32 @@ function object(value: unknown, name: string): Record<string, any> {
   return value as Record<string, any>
 }
 
+const supervisorSystem = "Use the supplied run instructions to call ultraopencode_execute with the exact runId and intentId. Do not edit project files or independently spawn agents."
+const workerSystem = "Follow the supplied UltraOpenCode task instructions, respect scoped permissions, and submit a structured result using ultraopencode_submit. Do not spawn additional agents."
+
+/** Move former reserved IDs without silently choosing between user definitions. */
+function migrateAgent(agents: Record<string, any>, previous: string, current: string) {
+  if (agents[previous] === undefined) return
+  if (agents[current] !== undefined) throw new Error(`Both legacy agent ${previous} and reserved agent ${current} exist; retain one definition before installing`)
+  const settings = object(agents[previous], previous)
+  if (previous === "ultra-supervisor") {
+    if (settings.system === "Use the supplied run instructions to call ultra_execute with the exact runId and intentId. Do not edit project files or independently spawn agents.") settings.system = supervisorSystem
+    if (settings.description === "Ultra Open Code workflow supervisor") settings.description = "UltraOpenCode workflow supervisor"
+  } else if (previous === "ultra-worker") {
+    if (settings.system === "Follow the supplied Ultra task instructions, respect scoped permissions, and submit a structured result using ultra_submit. Do not spawn additional agents.") settings.system = workerSystem
+    if (settings.description === "Ultra Open Code workflow worker") settings.description = "UltraOpenCode workflow worker"
+  }
+  agents[current] = settings
+  delete agents[previous]
+}
+
 function agent(existing: unknown, name: string, system: string, permissions: Rule[]): Record<string, unknown> {
   const settings = existing === undefined ? {} : object(existing, name)
   if (settings.mode !== undefined && settings.mode !== "subagent") throw new Error(`Reserved agent ${name} already has another mode; resolve the naming conflict before installing`)
   if (settings.permissions !== undefined && !Array.isArray(settings.permissions)) throw new Error(`${name}.permissions must be native OpenCode 2 rules`)
   const inherited = structuredClone(settings.permissions ?? []) as Rule[]
   for (const rule of permissions) if (!inherited.some(current => current.action === rule.action && current.resource === rule.resource && current.effect === rule.effect)) inherited.push(rule)
-  return { ...settings, mode: "subagent", description: settings.description ?? `Ultra Open Code ${name === "ultra-supervisor" ? "workflow supervisor" : "workflow worker"}`, system: settings.system ?? system, permissions: inherited }
+  return { ...settings, mode: "subagent", description: settings.description ?? `UltraOpenCode ${name === "ultraopencode-supervisor" ? "workflow supervisor" : "workflow worker"}`, system: settings.system ?? system, permissions: inherited }
 }
 
 function primaryAgent(existing: unknown): Record<string, unknown> {
@@ -149,7 +168,7 @@ async function install(scope: "global" | "project", options: InstallOptions): Pr
   if (!Array.isArray(plugins)) throw new Error("plugins must be a native OpenCode 2 array")
   for (const entry of plugins) if (typeof entry !== "string" && (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.package !== "string")) throw new Error("Existing plugin entries must use a native package string or {package, options?} shape")
   const matching = plugins.map((entry, index) => packageMatches(typeof entry === "string" ? entry : entry.package, packagePath, directory) ? index : -1).filter(index => index !== -1)
-  if (matching.length > 1) throw new Error("Multiple Ultra plugin registrations exist; retain one registration before installing so later entries cannot hide the requested options")
+  if (matching.length > 1) throw new Error("Multiple UltraOpenCode plugin registrations exist; retain one registration before installing so later entries cannot hide the requested options")
   const existingIndex = matching[0] ?? -1
   if (existingIndex !== -1) {
     const existing = typeof plugins[existingIndex] === "string" ? { package: packagePath } : plugins[existingIndex]
@@ -160,9 +179,13 @@ async function install(scope: "global" | "project", options: InstallOptions): Pr
   } else plugins.push({ package: packagePath, ...(persisted === undefined ? {} : { options: persisted }) })
   configuration.plugins = plugins
   const agents = configuration.agents === undefined ? {} : object(configuration.agents, "agents")
+  migrateAgent(agents, "ultra", ULTRA_AGENT_ID)
+  migrateAgent(agents, "ultra-supervisor", "ultraopencode-supervisor")
+  migrateAgent(agents, "ultra-worker", "ultraopencode-worker")
+  if (configuration.default_agent === "ultra") configuration.default_agent = ULTRA_AGENT_ID
   agents[ULTRA_AGENT_ID] = primaryAgent(agents[ULTRA_AGENT_ID])
-  agents["ultra-supervisor"] = agent(agents["ultra-supervisor"], "ultra-supervisor", "Use the supplied run instructions to call ultra_execute with the exact runId and intentId. Do not edit project files or independently spawn agents.", ["edit", "write", "patch", "shell"].map(action => ({ action, resource: "*", effect: "deny" })))
-  agents["ultra-worker"] = agent(agents["ultra-worker"], "ultra-worker", "Follow the supplied Ultra task instructions, respect scoped permissions, and submit a structured result using ultra_submit. Do not spawn additional agents.", [{ action: "subagent", resource: "*", effect: "deny" }])
+  agents["ultraopencode-supervisor"] = agent(agents["ultraopencode-supervisor"], "ultraopencode-supervisor", supervisorSystem, ["edit", "write", "patch", "shell"].map(action => ({ action, resource: "*", effect: "deny" })))
+  agents["ultraopencode-worker"] = agent(agents["ultraopencode-worker"], "ultraopencode-worker", workerSystem, [{ action: "subagent", resource: "*", effect: "deny" }])
   configuration.agents = agents
   const experimental = configuration.experimental === undefined ? {} : object(configuration.experimental, "experimental")
   if (experimental.subagent_depth !== undefined && (!Number.isSafeInteger(experimental.subagent_depth) || experimental.subagent_depth < 0)) throw new Error("experimental.subagent_depth is invalid")
@@ -173,11 +196,11 @@ async function install(scope: "global" | "project", options: InstallOptions): Pr
   if (output === original) return { ...result, changes: [] }
   // Validate everything before creating directories or replacing user files.
   await mkdir(directory, { recursive: true })
-  const temporary = `${path}.ultra-${crypto.randomUUID()}.tmp`
+  const temporary = `${path}.ultraopencode-${crypto.randomUUID()}.tmp`
   let backup: string | undefined
   try {
     if (original !== undefined) {
-      backup = `${path}.ultra-backup-${crypto.randomUUID()}`
+      backup = `${path}.ultraopencode-backup-${crypto.randomUUID()}`
       await writeFile(backup, original, { flag: "wx", mode: 0o600 })
       if (!present(path) || await readFile(path, "utf8") !== original) throw new Error("Configuration changed during installation; retry after reviewing it")
     } else if (present(path)) throw new Error("A configuration appeared during installation; retry after reviewing it")
@@ -186,18 +209,18 @@ async function install(scope: "global" | "project", options: InstallOptions): Pr
   } finally {
     if (existsSync(temporary)) await unlink(temporary)
   }
-  return { ...result, ...(backup ? { backup } : {}), changes: [`Registered local Ultra plugin package in ${scope} configuration`, "Configured the visible Ultra primary agent and dedicated supervisor and worker agents without changing user permission rules", "Enabled native delegation depth of at least two", "Kept all provider and model settings"] }
+  return { ...result, ...(backup ? { backup } : {}), changes: [`Registered local UltraOpenCode plugin package in ${scope} configuration`, "Configured the visible UltraOpenCode primary agent and dedicated supervisor and worker agents without changing user permission rules", "Enabled native delegation depth of at least two", "Kept all provider and model settings"] }
 }
 
-/** Global availability; project state and ultracode.json overrides stay in each project. */
+/** Global availability; project state and ultraopencode.json overrides stay in each project. */
 export async function installGlobal(options: Omit<InstallOptions, "directory"> = {}): Promise<InstallResult> { return install("global", options) }
 /** Optional standalone project installation, retained for backwards compatibility. */
 export async function installProject(options: Omit<InstallOptions, "configDirectory"> = {}): Promise<InstallResult> { return install("project", options) }
 
-export const installHelp = `bun scripts/install.ts [--global | --local | --project <directory>] [--config-dir <global-directory>] [--plugin <package-or-entrypoint>] [--config <ultra-options.json>]
+export const installHelp = `bun scripts/install.ts [--global | --local | --project <directory>] [--config-dir <global-directory>] [--plugin <package-or-entrypoint>] [--config <ultraopencode-options.json>]
 Defaults to global installation. Requires OpenCode ${supportedVersion}. Preserves existing settings and an original backup when changed.
 Global path: OPENCODE_CONFIG_DIR, otherwise XDG_CONFIG_HOME/opencode or ~/.config/opencode.
-Optional project overrides: ultracode.json in the project directory; no project installation is required.`
+Optional project overrides: ultraopencode.json in the project directory; no project installation is required.`
 
 export async function parseInstallArguments(args: string[]): Promise<InstallOptions & { scope: "global" | "project" }> {
   const options: InstallOptions & { scope: "global" | "project" } = { scope: "global" }

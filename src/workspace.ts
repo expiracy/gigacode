@@ -2,9 +2,10 @@ import { createHash } from "node:crypto"
 import { createReadStream, lstatSync } from "node:fs"
 import { lstat, readdir, readlink, realpath } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { runtimeNames } from "./paths.ts"
 
 export interface Manifest { hash: string; files: Record<string, string> }
-const ignored = new Set([".git", ".ultracode", ".ultra-spike", ".spike", "node_modules", ".cache", ".next", "coverage", "dist", "build", "target", "__pycache__"])
+const ignored = new Set([".git", ...runtimeNames, ".ultraopencode-spike", ".ultra-spike", ".spike", "node_modules", ".cache", ".next", "coverage", "dist", "build", "target", "__pycache__"])
 export function inside(root: string, path: string): boolean {
   const part = relative(resolve(root), resolve(path))
   return part === "" || (!isAbsolute(part) && part !== ".." && !part.startsWith("../") && !part.startsWith("..\\"))

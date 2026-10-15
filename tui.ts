@@ -10,7 +10,7 @@ type Setting = DialogSelectOption<string> & { detail: string }
 
 const json = (value: unknown) => JSON.stringify(value, null, 2)
 
-/** Native root hydration loads immediate children only; Ultra workers are grandchildren. */
+/** Native root hydration loads immediate children only; UltraOpenCode workers are grandchildren. */
 async function hydrateFamily(ctx: Context, sessionID: string, signal: AbortSignal) {
   let root = sessionID
   const ancestors = new Set<string>()
@@ -43,7 +43,7 @@ async function hydrateFamily(ctx: Context, sessionID: string, signal: AbortSigna
       if (cursor) cursors.add(cursor)
     } while (cursor)
   }
-  await children(root, "ultra-supervisor", supervisor => children(supervisor, "ultra-worker", async () => {}))
+  await children(root, "ultraopencode-supervisor", supervisor => children(supervisor, "ultraopencode-worker", async () => {}))
 }
 
 type WorkflowOption = Setting & { runId?: string; sessionId?: string }
@@ -76,7 +76,7 @@ function workflowOptions(snapshot: WorkflowSnapshot): WorkflowOption[] {
 }
 
 export default Plugin.define({
-  id: "ultra.open-code",
+  id: "open-ultra-code",
   setup(ctx) {
     const rpc = ctx.client.rpc(UltraRpc)
     let disposed = false
@@ -93,7 +93,7 @@ export default Plugin.define({
       const controller = loading = new AbortController()
       void hydrateFamily(ctx, id, controller.signal).catch(() => {
         if (disposed || controller.signal.aborted) return
-        ctx.ui.toast.show({ title: "Ultra subagents", message: "Unable to load existing subagents. Reopen this conversation or reconnect to retry.", variant: "error", sessionID: id })
+        ctx.ui.toast.show({ title: "UltraOpenCode subagents", message: "Unable to load existing subagents. Reopen this conversation or reconnect to retry.", variant: "error", sessionID: id })
       })
     }
     const disposeRoot = createRoot(dispose => {
@@ -161,7 +161,7 @@ export default Plugin.define({
           await refresh(true)
         } catch (cause) {
           if (current()) {
-            ctx.ui.toast.show({ title: "Ultra control error", message: cause instanceof Error ? cause.message : String(cause), variant: "error", sessionID: id })
+            ctx.ui.toast.show({ title: "UltraOpenCode control error", message: cause instanceof Error ? cause.message : String(cause), variant: "error", sessionID: id })
             await refresh(true)
           }
         }
@@ -182,7 +182,7 @@ export default Plugin.define({
         timer = setInterval(() => { void refresh() }, 2000)
         timer.unref()
         opened = true
-        const selected = await ctx.ui.dialog.select({ title: "Ultra workflows", placeholder: "Search tasks, results, blockers and evidence",
+        const selected = await ctx.ui.dialog.select({ title: "UltraOpenCode workflows", placeholder: "Search tasks, results, blockers and evidence",
           get options() { return rows().map(({ detail, runId, sessionId, ...row }) => row) },
           get actions(): DialogSelectAction<string>[] {
             const controls: DialogSelectAction<string>[] = error() || controlling() ? [] : ([{ action: "pause", title: "Pause", bind: "ctrl+g" }, { action: "resume", title: "Resume", bind: "ctrl+y" }, { action: "cancel", title: "Cancel", bind: "ctrl+x" }] as const)
@@ -209,10 +209,10 @@ export default Plugin.define({
       if (route.type !== "session" || route.sessionID !== data.sessionId) return
       settingsController?.abort()
       workflowStop?.()
-      if (data.error) { await ctx.ui.dialog.alert({ title: "Ultra command error", message: data.error }); return }
+      if (data.error) { await ctx.ui.dialog.alert({ title: "UltraOpenCode command error", message: data.error }); return }
       if (data.command.trim() === "config") await configuration(data.result, data.sessionId)
       else if (/^status(?:\s|$)/.test(data.command.trim())) void workflow(data.sessionId, data.command.trim().split(/\s+/)[1])
-      else await ctx.ui.dialog.alert({ title: "Ultra command result", message: json(data.result) })
+      else await ctx.ui.dialog.alert({ title: "UltraOpenCode command result", message: json(data.result) })
     })
     return () => { if (!disposed) { disposed = true; settingsController?.abort(); workflowStop?.(); loading?.abort(); disposeRoot(); reconnect(); unsubscribe() } }
   },

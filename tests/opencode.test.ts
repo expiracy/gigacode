@@ -40,7 +40,7 @@ function bridgeFixture() {
   adapter.workspace = async () => "workspace"
   const context = (sessionID: string, messageID = "message", id = "call") => {
     seed(sessionID)
-    return { sessionID, messageID, id, agent: "ultra", signal: new AbortController().signal, async progress() {} } as any
+    return { sessionID, messageID, id, agent: "ultraopencode", signal: new AbortController().signal, async progress() {} } as any
   }
   const run = (sessionId: string): Run => ({ id: `run_${sessionId}`, projectId: "project", directory, parentSessionId: sessionId, supervisorSessionId: sessionId, intentId: "intent", policy: [{ action: "*", resource: "*", effect: "allow" }], status: "running", ownerEpoch: 1, tasks: [] } as unknown as Run)
   const worker = (sessionId: string): Binding => {
@@ -82,7 +82,7 @@ describe("native adapter boundaries", () => {
     const run = f.run("parent")
     await f.adapter.publish(run, "notification_saved", "Verified candidate")
     await f.adapter.publish(run, "notification_saved", "Verified candidate")
-    expect(notices.map(item => item.id)).toEqual(["msg_ultra_notification_saved", "msg_ultra_notification_saved"])
+    expect(notices.map(item => item.id)).toEqual(["msg_ultraopencode_notification_saved", "msg_ultraopencode_notification_saved"])
     expect(notices[0]).toMatchObject({ sessionID: "parent", delivery: "queue", resume: false, metadata: { ultraRunId: run.id } })
   })
   test("only an active fixed preparation command removes Git overrides before the native shell spawn", () => {
@@ -116,7 +116,7 @@ describe("native adapter boundaries", () => {
     } finally { clearTimeout(timer); release(); await first }
   })
   test("moved workers bind only at their recorded destination while the source can reconcile them", async () => {
-    const f = bridgeFixture(), saved = f.run("supervisor"), worker = f.worker("worker"), destination = f.directory + "/.ultracode/test-worktree"
+    const f = bridgeFixture(), saved = f.run("supervisor"), worker = f.worker("worker"), destination = f.directory + "/.ultraopencode/test-worktree"
     saved.tasks = worker.run.tasks
     saved.tasks[0]!.attempts[0]!.worktree = { directory: destination, state: "ready" }
     f.context("worker"); f.sessions.get("worker").location.directory = destination
@@ -130,7 +130,7 @@ describe("native adapter boundaries", () => {
     await expect(source.scoped("worker", destination as any)).resolves.toMatchObject({ id: "worker" })
   })
   test("destination hooks must be ready and retiring an old adapter cannot erase a replacement", () => {
-    const f = bridgeFixture(), saved = f.run("supervisor"), worker = f.worker("worker"), destination = f.directory + "/.ultracode/ready-worktree"
+    const f = bridgeFixture(), saved = f.run("supervisor"), worker = f.worker("worker"), destination = f.directory + "/.ultraopencode/ready-worktree"
     saved.tasks = worker.run.tasks; saved.tasks[0]!.attempts[0]!.worktree = { directory: destination, state: "ready" }
     const store = { list() { return [saved] }, event() { return true } } as unknown as Store
     const ctx = { ...f.ctx, location: { directory: destination, project: { id: "project" } } }
@@ -144,7 +144,7 @@ describe("native adapter boundaries", () => {
     expect(source.destinationReady(destination, "worker")).toBe(false)
   })
   test("native delegated worktree children move and establish destination hooks before prompt release", async () => {
-    const f = bridgeFixture(), context = f.context("supervisor"), saved = f.run("supervisor"), destination = f.directory + "/.ultracode/prelaunch-worktree", order: string[] = []
+    const f = bridgeFixture(), context = f.context("supervisor"), saved = f.run("supervisor"), destination = f.directory + "/.ultraopencode/prelaunch-worktree", order: string[] = []
     const task = { id: "writer", title: "Write", role: "implementer", stage: "implementation", instructions: "Write", dependencies: [], writes: true, ownedPaths: ["a.txt"] } as any
     const attempt = { id: "attempt-writer", taskId: task.id, model: f.model, prompt: "Write", status: "reserved", ownerEpoch: 1, worktree: { directory: destination, state: "ready" } } as any
     saved.tasks = [{ spec: task, status: "running", attempts: [attempt] }]
@@ -168,7 +168,7 @@ describe("native adapter boundaries", () => {
     } finally { target.retire(); await f.settle([operation]) }
   })
   test("placement observes source cancellation even when native idle wait ignores request options", async () => {
-    const f = bridgeFixture(), controller = new AbortController(), context = f.context("supervisor"), saved = f.run("supervisor"), destination = f.directory + "/.ultracode/aborted-placement"
+    const f = bridgeFixture(), controller = new AbortController(), context = f.context("supervisor"), saved = f.run("supervisor"), destination = f.directory + "/.ultraopencode/aborted-placement"
     context.signal = controller.signal
     const task = { id: "writer", title: "Write", role: "implementer", stage: "implementation", instructions: "Write", dependencies: [], writes: true, ownedPaths: ["a.txt"] } as any
     const attempt = { id: "attempt-writer", taskId: task.id, model: f.model, prompt: "Write", status: "reserved", ownerEpoch: 1, worktree: { directory: destination, state: "ready" } } as any
@@ -199,12 +199,12 @@ describe("native adapter boundaries", () => {
     await expect(checkedInput({ name: "probe", input: {} } as any, {})).rejects.toThrow("Unsupported")
   })
   test("workers cannot expose raw shell, delegation or codemode escape hatches", () => {
-    const tools = Object.fromEntries(["read", "write", "edit", "shell", "execute", "subagent", "ultra_submit", "ultra_check", "ultra_execute", "ultra_start", "third_party"].map(name => [name, {}]))
-    expect(Object.keys(visibleTools(tools, "reviewer"))).toEqual(["read", "ultra_submit"])
-    expect(Object.keys(visibleTools(tools, "implementer"))).toEqual(["read", "write", "edit", "ultra_submit"])
-    expect(Object.keys(visibleTools(tools, "verifier"))).toEqual(["read", "ultra_submit", "ultra_check"])
-    expect(Object.keys(visibleTools(tools, "supervisor"))).toEqual(["ultra_execute"])
-    expect(visibleTools({ "third_party.read": {}, "third_party.write": {}, "third_party.ultra_execute": {} }, "implementer")).toEqual({})
+    const tools = Object.fromEntries(["read", "write", "edit", "shell", "execute", "subagent", "ultraopencode_submit", "ultraopencode_check", "ultraopencode_execute", "ultraopencode_start", "third_party"].map(name => [name, {}]))
+    expect(Object.keys(visibleTools(tools, "reviewer"))).toEqual(["read", "ultraopencode_submit"])
+    expect(Object.keys(visibleTools(tools, "implementer"))).toEqual(["read", "write", "edit", "ultraopencode_submit"])
+    expect(Object.keys(visibleTools(tools, "verifier"))).toEqual(["read", "ultraopencode_submit", "ultraopencode_check"])
+    expect(Object.keys(visibleTools(tools, "supervisor"))).toEqual(["ultraopencode_execute"])
+    expect(visibleTools({ "third_party.read": {}, "third_party.write": {}, "third_party.ultraopencode_execute": {} }, "implementer")).toEqual({})
   })
   test("a model assertion or missing native exit is never a passed check", () => {
     expect(checkOutcome({ exit: 0 })).toBe("passed")
@@ -220,7 +220,7 @@ describe("native adapter boundaries", () => {
       await f.entered(2)
       expect(f.adapter.delegations.size).toBe(2)
       f.calls[0]!.release(); await operations[0]
-      expect([...f.adapter.delegations.values()]).toEqual([expect.objectContaining({ sessionId: b.sessionID, messageId: b.messageID, agent: "ultra-supervisor" })])
+      expect([...f.adapter.delegations.values()]).toEqual([expect.objectContaining({ sessionId: b.sessionID, messageId: b.messageID, agent: "ultraopencode-supervisor" })])
       f.calls[1]!.release(); await operations[1]
       expect(f.adapter.delegations.size).toBe(0)
     } finally { await f.settle(operations) }
@@ -232,7 +232,7 @@ describe("native adapter boundaries", () => {
     const attempt = { model: f.model, prompt: "Inspect" } as any
     const operations = [f.adapter.launch(saved, attempt, task, invocation(context), async () => {}), f.adapter.launch(saved, attempt, task, invocation(context), async () => {})]
     const binding: Binding = { run: saved, role: "supervisor" }
-    const event = { sessionID: context.sessionID, action: "subagent", resources: ["ultra-worker"], source: { messageID: context.messageID, id: context.id }, effect: "ask" as const }
+    const event = { sessionID: context.sessionID, action: "subagent", resources: ["ultraopencode-worker"], source: { messageID: context.messageID, id: context.id }, effect: "ask" as const }
     try {
       await f.entered(2)
       expect(f.adapter.delegations.size).toBe(1)
@@ -261,7 +261,7 @@ describe("native adapter boundaries", () => {
       await new Promise(done => setTimeout(done, 10))
       expect(outcome).toBeInstanceOf(Error)
       expect(f.calls).toHaveLength(1)
-      expect([...f.adapter.delegations.values()][0]?.agent).toBe("ultra-supervisor")
+      expect([...f.adapter.delegations.values()][0]?.agent).toBe("ultraopencode-supervisor")
       f.calls.forEach(call => call.release()); await Promise.allSettled([first, second])
     } finally { await f.settle([first]) }
   })

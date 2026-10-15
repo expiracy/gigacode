@@ -89,14 +89,14 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 export default Plugin.define({
-  id: "ultra.compatibility",
+  id: "open-ultra-code.compatibility",
   async setup(ctx) {
     if (ctx.app.version !== HOST_VERSION) {
       throw new Error(`Compatibility spike requires OpenCode ${HOST_VERSION}; received ${ctx.app.version}`)
     }
     // Every fixture location gets its own DB even when the host shares a project ID.
     const directory = resolve(ctx.location.directory)
-    const requested = resolve(String(ctx.options.stateDirectory ?? join(directory, ".ultra-spike")))
+    const requested = resolve(String(ctx.options.stateDirectory ?? join(directory, ".ultraopencode-spike")))
     const local = relative(directory, requested)
     if (local.startsWith("..") || isAbsolute(local)) throw new Error("Spike stateDirectory must be inside the fixture location")
     mkdirSync(requested, { recursive: true })
@@ -136,7 +136,7 @@ export default Plugin.define({
     record("setup", null, { hostVersion: ctx.app.version, sourceCommit: SOURCE_COMMIT, directory, projectID: ctx.location.project.id, runtime: process.versions.bun ?? "not-bun", sqlite: true })
 
     registrations.push(await ctx.command.transform(editor => editor.add({
-      name: "ultra-spike",
+      name: "ultraopencode-spike",
       description: "Record a deterministic compatibility command without a model request",
       async execute(input) {
         await bind(input.sessionID, "root")
@@ -146,7 +146,7 @@ export default Plugin.define({
 
     registrations.push(await ctx.tool.transform(editor => {
       editor.add({
-        name: "ultra_probe",
+        name: "ultraopencode_probe",
         description: "Compatibility fixture: record genuine tool identity and optionally wait with interruption support",
         input: ProbeInput,
         output: Schema.Unknown,
@@ -171,7 +171,7 @@ export default Plugin.define({
         },
       })
       editor.add({
-        name: "ultra_permission_probe",
+        name: "ultraopencode_permission_probe",
         description: "Compatibility fixture: native shell permissions gate a fixed harmless check",
         input: Schema.Struct({}),
         output: Schema.Unknown,
@@ -189,7 +189,7 @@ export default Plugin.define({
         },
       })
       editor.add({
-        name: "ultra_bridge",
+        name: "ultraopencode_bridge",
         description: "Compatibility fixture: invoke the registered native subagent with this genuine invocation context",
         input: BridgeInput,
         output: Schema.Unknown,
@@ -199,8 +199,8 @@ export default Plugin.define({
           const native = (await ctx.tool.list()).find(tool => tool.name === "subagent")
           if (!native) throw new Error("Required native subagent tool is absent")
           const arguments_ = await validateNative(native, {
-            agent: input.agent ?? "ultra-worker",
-            description: input.description ?? "Ultra compatibility worker",
+            agent: input.agent ?? "ultraopencode-worker",
+            description: input.description ?? "UltraOpenCode compatibility worker",
             prompt: input.prompt,
             background: input.background ?? true,
             ...(input.model ? { model: input.model } : {}),
@@ -215,7 +215,7 @@ export default Plugin.define({
                 if (typeof update.sessionID !== "string") throw new Error("Native prelaunch callback did not provide a child sessionID")
                 if (childID && childID !== update.sessionID) throw new Error("Native callback changed child identity")
                 childID = update.sessionID
-                const child = await bind(childID, input.agent ?? "ultra-worker", context.sessionID)
+                const child = await bind(childID, input.agent ?? "ultraopencode-worker", context.sessionID)
                 record("bridge.prelaunch", childID, { ...identity(context), childID, inheritedPermissions: child.permissions })
                 if (input.failPrelaunch) {
                   record("bridge.prelaunch.rejected", childID, { reason: "Explicit compatibility failure injection" })
@@ -226,7 +226,7 @@ export default Plugin.define({
                   .map(action => ({ action, resource: "*", effect: mode === "ask-edit" ? "ask" : "deny" }))
                 // Session allows follow agent rules in the host and can override an agent's own deny.
                 // Install worker delegation limits on the child session itself, including inherit mode.
-                if ((input.agent ?? "ultra-worker") !== "ultra-supervisor") {
+                if ((input.agent ?? "ultraopencode-worker") !== "ultraopencode-supervisor") {
                   restrictions.push({ action: "subagent", resource: "*", effect: "deny" })
                 }
                 if (restrictions.length > 0) {
@@ -270,7 +270,7 @@ export default Plugin.define({
         },
       })
       editor.add({
-        name: "ultra_native_check",
+        name: "ultraopencode_native_check",
         description: "Compatibility fixture: run the registered native shell and preserve its structured evidence",
         input: CheckInput,
         output: Schema.Unknown,

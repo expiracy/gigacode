@@ -27,6 +27,35 @@ describe("workflow permission intersection", () => {
     expect(restrictPermission("allow", [{ action: "read", resource: "*", effect: "deny" }], "explorer", "read", ["src/a.ts"], undefined, root)).toBe("deny")
   })
 
+  test("retains captured legacy denials for renamed workflow tools", () => {
+    const rules: Rule[] = [...allow, { action: "ultra_check", resource: "*", effect: "deny" }]
+    expect(restrictPermission("allow", rules, "verifier", "ultraopencode_check", ["*"], undefined, root)).toBe("deny")
+  })
+
+  test("retains captured legacy subagent restrictions after renaming", () => {
+    const rules: Rule[] = [...allow, { action: "subagent", resource: "ultra-worker", effect: "deny" }]
+    expect(restrictPermission("allow", rules, "supervisor", "subagent", ["ultraopencode-worker"], undefined, root)).toBe("deny")
+  })
+
+  test("preserves ordered overrides across legacy and current identifiers", () => {
+    const rules: Rule[] = [...allow, { action: "ultra_*", resource: "*", effect: "deny" }, { action: "ultraopencode_check", resource: "*", effect: "ask" }]
+    expect(evaluateRules(rules, "ultraopencode_check", "*")).toBe("ask")
+    expect(evaluateRules([...rules, { action: "ultra_check", resource: "*", effect: "deny" }], "ultraopencode_check", "*")).toBe("deny")
+  })
+
+  test("legacy grants cannot widen current rules or an unmatched default", () => {
+    expect(evaluateRules([{ action: "ultra_check", resource: "*", effect: "allow" }], "ultraopencode_check", "*")).toBe("ask")
+    expect(evaluateRules([{ action: "ultraopencode_check", resource: "*", effect: "deny" }, { action: "ultra_check", resource: "*", effect: "allow" }], "ultraopencode_check", "*")).toBe("deny")
+    expect(evaluateRules([{ action: "subagent", resource: "ultra-worker", effect: "allow" }], "subagent", "ultraopencode-worker")).toBe("ask")
+  })
+
+  test("retains legacy asks for every renamed reserved agent", () => {
+    expect(evaluateRules([...allow, { action: "subagent", resource: "ultra", effect: "ask" }], "subagent", "ultraopencode")).toBe("ask")
+    expect(evaluateRules([...allow, { action: "subagent", resource: "ultra-supervisor", effect: "ask" }], "subagent", "ultraopencode-supervisor")).toBe("ask")
+    expect(evaluateRules([...allow, { action: "subagent", resource: "ultra-worker", effect: "ask" }], "subagent", "ultraopencode-worker")).toBe("ask")
+    expect(evaluateRules([...allow, { action: "ultra_check", resource: "*", effect: "ask" }], "ultraopencode_check", "*")).toBe("ask")
+  })
+
   test("checks every resource and denies read-only mutations and unknown unsafe actions", () => {
     expect(restrictPermission("allow", allow, "reviewer", "write", ["src/a.ts"], ["**"], root)).toBe("deny")
     expect(restrictPermission("allow", allow, "researcher", "shell", ["echo x"], undefined, root)).toBe("deny")
@@ -45,12 +74,16 @@ describe("workflow permission intersection", () => {
 
   test("protects scope, metadata, and nested delegation", () => {
     expect(restrictPermission("allow", allow, "implementer", "write", ["../outside.txt"], ["**"], root)).toBe("deny")
-    expect(restrictPermission("allow", allow, "implementer", "write", [".ultracode/state.sqlite"], ["**"], root)).toBe("deny")
+    expect(restrictPermission("allow", allow, "implementer", "write", [".ultraopencode/state.sqlite"], ["**"], root)).toBe("deny")
     expect(restrictPermission("allow", allow, "reviewer", "read", ["../outside.txt"], undefined, root)).toBe("deny")
     expect(restrictPermission("allow", allow, "implementer", "subagent", ["explorer"], undefined, root)).toBe("deny")
     expect(restrictPermission("allow", allow, "supervisor", "subagent", ["explorer"], undefined, root)).toBe("allow")
     expect(restrictPermission("allow", allow, "supervisor", "edit", ["src/a.ts"], ["**"], root)).toBe("deny")
     expect(restrictPermission("allow", allow, "verifier", "shell", ["bun test"], undefined, root)).toBe("allow")
+  })
+
+  test("protects legacy runtime metadata retained during a branding upgrade", () => {
+    expect(restrictPermission("allow", allow, "implementer", "write", [".ultracode/state.sqlite"], ["**"], root)).toBe("deny")
   })
 
   test("resolves existing symlink parents before allowing a scoped write", () => {
