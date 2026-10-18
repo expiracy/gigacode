@@ -1,8 +1,17 @@
 # Changelog
 
-## 0.1.0-alpha.1 — 2026-10-18
+## 0.1.0-beta.1 — unreleased
 
-The first `opencode-gigacode` alpha uses npm tag `next` and an [MIT licence](LICENSE). Public guides are included in the npm package; the source repository remains private.
+The current candidate is a beta with planned npm tag `next`. It has not been published. Rehearse the local tarball and verify this version's release checks; the alpha evidence below does not certify the beta. The source repository remains private, and online guide links are pinned to the candidate version for use after publication.
+
+- Updated candidate version and installation/documentation links to `0.1.0-beta.1`.
+- Fixed a recovery race that could reject a valid worker while ownership moved to a replacement supervisor.
+- Added automatic type/unit/workflow checks, package lifecycle checks on three platforms, native host checks, and a manual exact-artifact release rehearsal. Optional future OIDC staging still requires separate authorisation and human npm approval; pushes and tags cannot publish.
+- Retained the workflow controls, explicit setup, doctor diagnostics, requirements, and limitations described in the alpha baseline below.
+
+## 0.1.0-alpha.1 — prepared baseline, 2026-10-18
+
+The first `opencode-gigacode` alpha was prepared with npm tag `next` and an [MIT licence](LICENSE). It was staged but never approved for publication. Its validation results are historical evidence, not beta verification. Guides are included in the package artifact; the source repository remains private.
 
 ### Included
 
@@ -22,4 +31,4 @@ The first `opencode-gigacode` alpha uses npm tag `next` and an [MIT licence](LIC
 - Writers are serial by default. Optional isolated parallel writing requires a clean committed Git root and is limited to disjoint plain UTF-8 additions/modifications; see the [full restrictions](docs/commands.md#persistence-and-limits).
 - Run state and exports live under the canonical project's `.gigacode/`. Inspection is bounded; exported redacted audits retain history, but neither provides private model reasoning or a complete provider/native-event replay.
 
-See [installation](docs/installation.md) for the alpha setup flow and [the README](README.md) for a first workflow.
+See [installation](docs/installation.md) for the current candidate's setup flow and [the README](README.md) for a first workflow.

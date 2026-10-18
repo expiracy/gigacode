@@ -12,6 +12,7 @@ import { promptVersion } from "../src/workflow.ts"
 import { GIGACODE_PRIMARY_SYSTEM } from "../src/agents.ts"
 import { manifest } from "../src/workspace.ts"
 import { SQLiteStore } from "../src/store.ts"
+import { sanitizeEventData } from "../src/redaction.ts"
 import type { SettingsView } from "../src/settings.ts"
 import type { WorkflowSnapshot } from "../src/workflow-view.ts"
 import { createWorkflowFixture, fixtureExecutionWorkflow, fixturePlanningWorkflow } from "./workflow-fixture.ts"
@@ -381,6 +382,8 @@ export async function runOpenCodeIntegration() {
         assert.equal(otherState.list(saved.projectId).length, 1)
         assert.equal(primaryState.list(saved.projectId).length, 0)
       } finally { otherState.close(); primaryState.close() }
+      assert.ok(saved.supervisorSessionId)
+      await client.session.wait({ sessionID: saved.supervisorSessionId }, { signal: AbortSignal.timeout(10_000) })
       await client.session.wait({ sessionID: otherParent.id }, { signal: AbortSignal.timeout(10_000) })
       for (const directory of [host!.project, host!.otherProject]) for (const file of ["opencode.json", "opencode.jsonc"]) assert.equal(existsSync(join(directory, file)), false)
       return { oneGlobalPlugin: installed.plugins[0].package, primary: primaryConfig, other: otherConfig, otherRun: { id: saved.id, projectId: saved.projectId, status: saved.status, planner: planner.model, reviewer: reviewer.model }, primaryRuns: 0, projectNativeConfigurations: 0 }
@@ -422,6 +425,8 @@ export async function runOpenCodeIntegration() {
       assert.ok(fixture.requests.some(request => request.runId === runId && request.role === "planner" && request.model === "alternate"))
       return { runId, revision: ready.revision, proposal: ready.proposal, plannerModel: planner.model }
     })
+    assert.ok(ready.supervisorSessionId)
+    await client.session.wait({ sessionID: ready.supervisorSessionId }, { signal: AbortSignal.timeout(15_000) })
     await client.session.wait({ sessionID: parent.id }, { signal: AbortSignal.timeout(15_000) })
     const readySnapshot = await check("status panel snapshot carries the saved proposal identity", async () => {
       const before = fixture.requests.length
@@ -554,7 +559,26 @@ export async function runOpenCodeIntegration() {
         assert(before?.supervisorSessionId)
         runId = before.id
         const accepted = before.tasks[0]!.acceptedAttemptId!, originalSupervisor = before.supervisorSessionId
-        await waitFor("scheduler continues observing a held native worker", async () => runs(await rpc.status({ runId }, options()))[0], run => !!run && run.generation > before.generation, 3_000)
+        // A healthy observation of an unchanged held worker is a no-op and need
+        // not advance its durable generation. Inject a stale observation so the
+        // proof requires the live scheduler to reconcile a real state change.
+        const observationStore = new SQLiteStore(join(host!.project, ".gigacode", "state.sqlite"))
+        let injectedGeneration: number
+        try {
+          injectedGeneration = observationStore.mutate(runId, run => {
+            const planner = run.tasks.find(task => task.spec.id === "design-successor")!
+            const attempt = planner.attempts.at(-1)!
+            assert.equal(attempt.status, "running")
+            assert.ok(attempt.sessionId)
+            planner.status = "waiting_permission"
+            attempt.status = "waiting_permission"
+            return run.generation + 1
+          })
+        } finally { observationStore.close() }
+        const observing = await waitFor("scheduler continues observing a held native worker", async () => runs(await rpc.status({ runId }, options()))[0], run => {
+          const planner = run?.tasks.find(task => task.spec.id === "design-successor")
+          return !!run && run.generation > injectedGeneration && planner?.status === "running" && planner.attempts.at(-1)?.status === "running"
+        }, 3_000)
         await client.session.interrupt({ sessionID: originalSupervisor, resume: false })
         await client.session.wait({ sessionID: originalSupervisor }, { signal: AbortSignal.timeout(5_000) })
         assert.equal((await client.session.get({ sessionID: originalSupervisor })).outcome, "interrupted")
@@ -573,7 +597,26 @@ export async function runOpenCodeIntegration() {
         assert.equal(fixture.requests.filter(request => request.runId === runId && request.taskId === "inspect-prefix" && request.calls.includes("gigacode_submit")).length, 1)
         await client.session.wait({ sessionID: ready.supervisorSessionId! }, { signal: AbortSignal.timeout(10_000) })
         const delivered = await waitFor("native completion notice is delivered", async () => runs(await rpc.status({ runId }, options()))[0], run => !!run && run.notifications.length > 0 && run.notifications.every(notice => notice.delivered), 5_000)
-        return { runId, status: ready.status, originalSupervisor, replacementSupervisor: ready.supervisorSessionId, acceptedPredecessor: accepted, notificationsDelivered: delivered!.notifications.length, duplicateSuccessfulAttempts: 0 }
+        return { runId, status: ready.status, originalSupervisor, replacementSupervisor: ready.supervisorSessionId, acceptedPredecessor: accepted, observationReconciled: { injectedGeneration, observedGeneration: observing!.generation }, notificationsDelivered: delivered!.notifications.length, duplicateSuccessfulAttempts: 0 }
+      } catch (error) {
+        const diagnostics: Record_ = { stage, runId, error: errorMessage(error), requests: fixture.requests }
+        try {
+          const inspected = runId ? await rpc.inspect({ runId }, options()) as { run: Run; events: unknown[] } : undefined
+          diagnostics.inspection = inspected
+          if (inspected) finalRun = inspected.run
+          const sessionIds = new Set([initiating.id, ...(inspected?.run.supervisorHistory ?? []), inspected?.run.supervisorSessionId, ...inspected?.run.tasks.flatMap(task => task.attempts.map(attempt => attempt.sessionId)) ?? []].filter((id): id is string => !!id))
+          diagnostics.sessions = await Promise.all([...sessionIds].map(async id => {
+            const readOptions = { signal: AbortSignal.timeout(5_000) }
+            const [session, context] = await Promise.allSettled([client.session.get({ sessionID: id as typeof initiating.id }, readOptions), client.session.context({ sessionID: id as typeof initiating.id }, readOptions)])
+            return { sessionId: id,
+              session: session.status === "fulfilled" ? session.value : { error: errorMessage(session.reason) },
+              context: context.status === "fulfilled" ? context.value : { error: errorMessage(context.reason) },
+            }
+          }))
+        } catch (inspectionError) { diagnostics.inspectionError = errorMessage(inspectionError) }
+        try { await writeFile(join(root, "recovery-failure.json"), JSON.stringify(sanitizeEventData(diagnostics), null, 2) + "\n") }
+        catch (captureError) { console.error(`Recovery diagnostic capture failed: ${errorMessage(captureError)}`) }
+        throw error
       } finally {
         fixture.release(hold)
         if (runId) await rpc.control({ text: `cancel ${runId}`, sessionId: initiating.id }, options()).catch(() => {})
@@ -973,9 +1016,11 @@ export async function runOpenCodeIntegration() {
     console.error(`FAIL integration at ${stage}: ${errorMessage(error)}\nEvidence: ${join(root, "integration.json")}`)
     throw error
   } finally {
-    await host?.stop()
-    await fixture.stop()
-    if (installationRoot) await rm(installationRoot, { recursive: true, force: true })
+    try { await host?.stop() }
+    finally {
+      try { await fixture.stop() }
+      finally { if (installationRoot) await rm(installationRoot, { recursive: true, force: true }) }
+    }
   }
 }
 

@@ -1,7 +1,44 @@
 import { expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
-import { expectedHostVersion, isolatedEnvironment, prepareHostConfiguration } from "./host.ts"
+import { pathToFileURL } from "node:url"
+import { expectedHostVersion, isolatedEnvironment, prepareHostConfiguration, prepareIsolatedGit, stopHostProcess } from "./host.ts"
+
+async function fixtureProcess(ignoreTerm: boolean) {
+  const child = Bun.spawn([process.execPath, "--eval", `process.on("SIGTERM", () => { ${ignoreTerm ? "" : "process.exit(0)"} }); console.log("ready"); setInterval(() => {}, 1000);`], {
+    env: {}, stdin: "ignore", stdout: "pipe", stderr: "ignore", windowsHide: true,
+  })
+  const reader = child.stdout.getReader()
+  const timer = setTimeout(() => child.kill("SIGKILL"), 5_000)
+  try {
+    const ready = await reader.read()
+    expect(new TextDecoder().decode(ready.value)).toContain("ready")
+    return child
+  } catch (error) { child.kill("SIGKILL"); await child.exited; throw error }
+  finally { clearTimeout(timer); await reader.cancel() }
+}
+
+test.skipIf(process.platform === "win32")("a graceful isolated host exits normally without forced termination", async () => {
+  const child = await fixtureProcess(false)
+  try {
+    await stopHostProcess(child, 1_000)
+    expect(child.exitCode).toBe(0)
+    expect(child.signalCode).toBeNull()
+  } finally { if (child.exitCode === null) child.kill("SIGKILL"); await child.exited }
+})
+
+test.skipIf(process.platform === "win32")("an isolated host ignoring SIGTERM is killed within a deadline and still fails cleanup", async () => {
+  const child = await fixtureProcess(true)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const started = Date.now()
+  try {
+    const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Host shutdown remained pending")), 2_000) })
+    await expect(Promise.race([stopHostProcess(child, 100), deadline])).rejects.toThrow("shutdown timed out")
+    expect(child.signalCode).toBe("SIGKILL")
+    expect(() => process.kill(child.pid, 0)).toThrow()
+    expect(Date.now() - started).toBeLessThan(2_000)
+  } finally { clearTimeout(timer); if (child.exitCode === null) child.kill("SIGKILL"); await child.exited }
+})
 
 test("native compatibility candidates are explicit and default to the original tested version", () => {
   expect(expectedHostVersion(undefined)).toBe("2.0.25")
@@ -34,6 +71,40 @@ test("child environment excludes inherited provider credentials and redirects st
   } finally {
     delete process.env.GIGACODE_SPIKE_PRIVATE_TEST
   }
+})
+
+test("the isolated native host selects a disposable home and Git configuration", () => {
+  const root = resolve(".spike", "isolated-host-profile")
+  const environment = isolatedEnvironment(root, "fixture-password")
+  expect(environment.HOME).toBe(join(root, "home"))
+  expect(environment.GIT_CONFIG_GLOBAL).toBe(join(root, "empty.gitconfig"))
+  expect(environment.GIT_CONFIG_NOSYSTEM).toBe("1")
+})
+
+test.skipIf(process.platform === "win32")("fixture Git isolation survives stripped environment flags and preserves local filter refusal", async () => {
+  const root = await mkdtemp(resolve(".spike", "git-profile-"))
+  const project = join(root, "project")
+  try {
+    await mkdir(join(root, "home"))
+    await mkdir(project)
+    await writeFile(join(root, "home", ".gitconfig"), '[filter "fixture-global"]\n  clean = cat\n')
+    await prepareIsolatedGit(root)
+    expect(await readFile(join(root, "empty.gitconfig"), "utf8")).toBe("\n")
+    // Production readGit deliberately removes GIT_* before spawning Git.
+    const environment = Object.fromEntries(Object.entries(isolatedEnvironment(root, "fixture-password")).filter(([name]) => !name.startsWith("GIT_")))
+    const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd: project, env: environment, stdout: "pipe", stderr: "pipe" })
+    expect(git("config", "--get-regexp", "^filter\\.").exitCode).toBe(1)
+    expect(git("init", "--quiet", "--initial-branch=main").exitCode).toBe(0)
+    await writeFile(join(project, "base.txt"), "baseline\n")
+    expect(git("add", "base.txt").exitCode).toBe(0)
+    expect(git("-c", "user.name=GigaCode fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "--no-gpg-sign", "-m", "Fixture baseline").exitCode).toBe(0)
+    expect(git("config", "filter.fixture-local.clean", "cat").exitCode).toBe(0)
+    expect(new TextDecoder().decode(git("config", "--get-regexp", "^filter\\.").stdout)).toContain("filter.fixture-local.clean")
+    const source = pathToFileURL(resolve("src/worktrees.ts")).href
+    const probe = Bun.spawnSync([process.execPath, "--eval", `import { parallelBaseline } from ${JSON.stringify(source)}; try { await parallelBaseline(process.cwd()); process.exitCode = 1 } catch (error) { console.log(error.message) }`], { cwd: project, env: environment, stdout: "pipe", stderr: "pipe" })
+    expect(probe.exitCode).toBe(0)
+    expect(new TextDecoder().decode(probe.stdout)).toContain("Parallel writers do not support configured Git filters")
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test("global fixture bootstrap uses production installer and leaves projects without native configuration", async () => {

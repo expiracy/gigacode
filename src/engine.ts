@@ -309,7 +309,7 @@ export class Engine {
       let run = this.required(runId)
       if (run.supervisorSessionId !== invocation.sessionId) throw new Error("Scheduler invocation is not the bound supervisor")
       if (terminalRuns.has(run.status) || ["paused", "waiting_input", "waiting_budget"].includes(run.status)) { await this.deliver(runId); return this.required(runId) }
-      this.change(runId, saved => { saved.ownerEpoch = lease.epoch }, lease)
+      this.change(runId, saved => { this.adoptOwnerEpoch(saved, lease.epoch) }, lease)
       await this.reconcile(runId, lease)
       invocation.signal.throwIfAborted()
       run = this.required(runId)
@@ -478,6 +478,15 @@ export class Engine {
     if (run.activeSince) run.activeMs += Date.now() - run.activeSince
     run.activeSince = undefined
   }
+  private adoptOwnerEpoch(run: Run, epoch: number) {
+    if (run.ownerEpoch === epoch) return
+    const previousEpoch = run.ownerEpoch
+    run.ownerEpoch = epoch
+    for (const task of run.tasks) {
+      const attempt = latest(task)
+      if (attempt?.sessionId && ["running", "waiting_permission"].includes(attempt.status) && attempt.ownerEpoch === previousEpoch) attempt.ownerEpoch = epoch
+    }
+  }
   private async reconcile(runId: string, lease?: Lease) {
     const run = this.required(runId)
     let gap = false
@@ -490,7 +499,12 @@ export class Engine {
       if (!current || !activeAttempts.has(current.status) || current.sessionId !== attempt.sessionId) continue
       if (snapshot.state === "unknown") {
         gap = true
-        this.change(runId, saved => { if (saved.status !== "cancelling") saved.status = "waiting_input" }, lease)
+        this.change(runId, saved => {
+          const current = latest(saved.tasks.find(item => item.spec.id === task.spec.id)!)
+          // Zero is unowned: only a confirmed native observation can readopt this session.
+          if (current?.id === attempt.id && current.sessionId === attempt.sessionId && ["running", "waiting_permission"].includes(current.status)) current.ownerEpoch = 0
+          if (saved.status !== "cancelling") saved.status = "waiting_input"
+        }, lease)
         this.audit(runId, "snapshot.gap", { sessionId: attempt.sessionId }, attempt); continue
       }
       // Moving an unprompted child has its own idle outcome, before the task's model request.
@@ -756,7 +770,7 @@ export class Engine {
         if (this.driving.has(run.id)) continue
         const preserve = ["paused", "ready", "succeeded", "partial", "failed", "cancelled"].includes(run.status)
         this.change(run.id, saved => {
-          if (!preserve) saved.ownerEpoch = lease.epoch
+          if (!preserve) this.adoptOwnerEpoch(saved, lease.epoch)
             if (!preserve && saved.supervisorSessionId && this.store.events(this.projectId, saved.id).some(event => event.kind === "supervisor.interrupted" && (event.data as { sessionId?: string; waitingOwnership?: boolean }).sessionId === saved.supervisorSessionId && (event.data as { waitingOwnership?: boolean }).waitingOwnership)) saved.status = "recovering"
           if (saved.status === "starting" && !saved.supervisorSessionId && saved.intentExpiresAt > 0 && saved.intentExpiresAt <= Date.now()) { saved.status = "waiting_input"; saved.errors.push("Unconsumed start intent expired; resume creates a fresh intent") }
           for (const task of saved.tasks) for (const attempt of task.attempts) if (activeAttempts.has(attempt.status) && !attempt.sessionId) {
