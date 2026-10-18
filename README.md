@@ -14,7 +14,7 @@ GigaCode is independent and is not affiliated with or endorsed by Anthropic, Ope
 - OpenCode **2.0.25, 2.0.26, or 2.0.28**. Only these exact versions are accepted; this can be a CLI installation or an explicitly selected bundled executable.
 - A connected model with tool support. By default, every role inherits your conversation's model and variant.
 
-Prior alpha validation passed native integration on macOS for all three supported hosts and isolated parallel workflows on 2.0.28. Alpha package installation checks passed on Ubuntu, macOS, and Windows. These results do not certify the new beta or native workflow compatibility on every platform. Git is optional for ordinary workflows and required for isolated parallel writers.
+CI checks the installed package lifecycle on Ubuntu, macOS, and Windows, native integration on Linux against all three accepted OpenCode versions, and isolated parallel workflows on 2.0.28. Native macOS checks have also been run locally; native Windows integration is not part of this CI matrix. Git is optional for ordinary workflows and required for isolated parallel writers.
 
 ## Rehearse the beta locally
 
