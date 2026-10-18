@@ -1,16 +1,17 @@
 import * as Plugin from "@opencode/plugin/tui/plugin"
 import type { Context, DialogSelectAction, DialogSelectOption } from "@opencode/plugin/tui/context"
 import { createEffect, createRoot, createSignal } from "solid-js"
-import { UltraRpc } from "./src/rpc.ts"
+import { GigaCodeRpc } from "./src/rpc.ts"
 import type { WorkflowRun, WorkflowSnapshot } from "./src/workflow-view.ts"
 import { openSettingsMenu } from "./src/settings-menu.ts"
+import { showWorkflowInspection, showWorkflowExport } from "./src/workflow-inspection-ui.ts"
 
 interface CommandResult { sessionId: string; command: string; result?: object; error?: string }
 type Setting = DialogSelectOption<string> & { detail: string }
 
 const json = (value: unknown) => JSON.stringify(value, null, 2)
 
-/** Native root hydration loads immediate children only; UltraOpenCode workers are grandchildren. */
+/** Native root hydration loads immediate children only; GigaCode workers are grandchildren. */
 async function hydrateFamily(ctx: Context, sessionID: string, signal: AbortSignal) {
   let root = sessionID
   const ancestors = new Set<string>()
@@ -43,7 +44,7 @@ async function hydrateFamily(ctx: Context, sessionID: string, signal: AbortSigna
       if (cursor) cursors.add(cursor)
     } while (cursor)
   }
-  await children(root, "ultraopencode-supervisor", supervisor => children(supervisor, "ultraopencode-worker", async () => {}))
+  await children(root, "gigacode-supervisor", supervisor => children(supervisor, "gigacode-worker", async () => {}))
 }
 
 type WorkflowOption = Setting & { runId?: string; sessionId?: string }
@@ -54,7 +55,10 @@ function workflowOptions(snapshot: WorkflowSnapshot): WorkflowOption[] {
     description: description.replaceAll(/\s+/g, " ").slice(0, 120),
   })
   for (const run of snapshot.runs) {
-    add(run, run.objective, json({ status: run.status, phase: run.phase, revision: run.revision, directory: run.directory }), "Workflow", `${run.phase} · ${run.status}`, run.supervisorSessionId)
+    add(run, run.objective, json({ id: run.id, status: run.status, phase: run.phase, revision: run.revision, proposalRevision: run.proposalRevision, directory: run.directory }), "Workflow", `${run.id} · ${run.phase} · ${run.status}${run.proposalRevision === undefined ? "" : ` · saved proposal @${run.proposalRevision}`}`, run.supervisorSessionId)
+    add(run, "Run ID", run.id, "Workflow", run.id, undefined, "run-id")
+    add(run, "Status", `${run.phase} · ${run.status}`, "Workflow", undefined, undefined, "status")
+    add(run, "Saved proposal revision", run.proposalRevision === undefined ? "No saved proposal" : String(run.proposalRevision), "Workflow", run.proposalRevision === undefined ? "No saved proposal" : `@${run.proposalRevision}`, undefined, "saved-proposal")
     const usage = run.usage
     add(run, "Observed worker usage", json(usage), "Usage", `${usage.workers}/${usage.limits.workers} workers · ${usage.attempts}/${usage.limits.attempts} attempts · tokens ${usage.tokens ?? "unknown"} (${usage.tokenObservations}/${usage.attempts} observed) · cost ${usage.cost ?? "unknown"} (${usage.costObservations}/${usage.attempts} observed)`)
     for (const task of run.tasks) {
@@ -76,9 +80,9 @@ function workflowOptions(snapshot: WorkflowSnapshot): WorkflowOption[] {
 }
 
 export default Plugin.define({
-  id: "open-ultra-code",
+  id: "gigacode",
   setup(ctx) {
-    const rpc = ctx.client.rpc(UltraRpc)
+    const rpc = ctx.client.rpc(GigaCodeRpc)
     let disposed = false
     let workflowRefresh: ((force?: boolean) => Promise<void>) | undefined
     let workflowStop: (() => void) | undefined
@@ -93,7 +97,7 @@ export default Plugin.define({
       const controller = loading = new AbortController()
       void hydrateFamily(ctx, id, controller.signal).catch(() => {
         if (disposed || controller.signal.aborted) return
-        ctx.ui.toast.show({ title: "UltraOpenCode subagents", message: "Unable to load existing subagents. Reopen this conversation or reconnect to retry.", variant: "error", sessionID: id })
+        ctx.ui.toast.show({ title: "GigaCode subagents", message: "Unable to load existing subagents. Reopen this conversation or reconnect to retry.", variant: "error", sessionID: id })
       })
     }
     const disposeRoot = createRoot(dispose => {
@@ -121,6 +125,12 @@ export default Plugin.define({
       const controller = new AbortController()
       let pending: Promise<void> | undefined
       let opened = false, active = true
+      let panelOpen = false, panelNumber = 0, interaction = 0
+      let request: AbortController | undefined
+      let selection: string | undefined
+      let presentation: { kind: "inspect" | "export"; result: unknown } | undefined
+      let menuSelection: string | undefined
+      let proposal: { id: string; revision: number; objective: string } | undefined
       let timer: ReturnType<typeof setInterval> | undefined
       const current = () => {
         const route = ctx.ui.router.current()
@@ -150,56 +160,134 @@ export default Plugin.define({
       const allowed = (action: "pause" | "resume" | "cancel", run: WorkflowRun) => action === "cancel"
         ? !["succeeded", "partial", "failed", "cancelled", "cancelling"].includes(run.status)
         : (action === "pause" ? ["starting", "planning", "running", "recovering", "waiting_input", "waiting_budget"] : ["paused", "waiting_budget"]).includes(run.status)
-      const control = async (action: "pause" | "resume" | "cancel", value: string) => {
-        if (!current() || controlling() || error()) return
+      const selectedRun = (value: string) => {
         const row = rows().find(row => row.value === value)
         const run = snapshot().runs.find(run => run.id === row?.runId)
-        if (!run || run.parentSessionId !== id || !allowed(action, run)) return
+        return run?.parentSessionId === id ? run : undefined
+      }
+      const ready = (run: WorkflowRun) => run.status === "ready" && Number.isSafeInteger(run.proposalRevision) && run.proposalRevision! > 0
+      const control = async (action: "pause" | "resume" | "cancel" | "inspect" | "export" | "run", run: WorkflowRun, value: string, revision?: number) => {
+        if (!current() || error()) return
+        const token = interaction
+        const ownRequest = request = new AbortController()
+        const valid = () => current() && interaction === token && !ownRequest.signal.aborted
         setControlling(true)
         try {
-          await rpc.control({ text: `${action} ${run.id}`, sessionId: id }, { location, signal: controller.signal })
-          await refresh(true)
+          const result = await rpc.control({ text: `${action} ${run.id}${action === "run" ? `@${revision}` : ""}`, sessionId: id }, { location, signal: AbortSignal.any([controller.signal, ownRequest.signal]) })
+          if (!valid()) return
+          if (action === "inspect" || action === "export") {
+            selection = value
+            presentation = { kind: action, result }
+            ctx.ui.dialog.clear()
+          } else await refresh(true)
         } catch (cause) {
-          if (current()) {
-            ctx.ui.toast.show({ title: "UltraOpenCode control error", message: cause instanceof Error ? cause.message : String(cause), variant: "error", sessionID: id })
+          if (valid()) {
+            ctx.ui.toast.show({ title: "GigaCode control error", message: cause instanceof Error ? cause.message : String(cause), variant: "error", sessionID: id })
             await refresh(true)
           }
         }
-        finally { setControlling(false) }
+        finally { if (request === ownRequest) { request = undefined; setControlling(false) }; ownRequest.abort() }
       }
       const stop = () => {
         if (!active) return
-        active = false; controller.abort(); clearInterval(timer)
-        if (workflowRefresh === refresh) workflowRefresh = undefined
+        active = false; controller.abort(); request?.abort(); clearInterval(timer)
+        if (workflowRefresh === reconnectRefresh) workflowRefresh = undefined
         if (workflowStop === stop) workflowStop = undefined
         if (opened) { opened = false; ctx.ui.dialog.clear() }
       }
+      const reconnectRefresh = (force = false) => {
+        interaction++; request?.abort(); request = undefined; setControlling(false)
+        if (opened && !panelOpen) { stop(); return Promise.resolve() }
+        return refresh(force)
+      }
       workflowStop = stop
-      workflowRefresh = refresh
+      workflowRefresh = reconnectRefresh
       try {
         await refresh()
         if (!current()) return
         timer = setInterval(() => { void refresh() }, 2000)
         timer.unref()
-        opened = true
-        const selected = await ctx.ui.dialog.select({ title: "UltraOpenCode workflows", placeholder: "Search tasks, results, blockers and evidence",
-          get options() { return rows().map(({ detail, runId, sessionId, ...row }) => row) },
-          get actions(): DialogSelectAction<string>[] {
-            const controls: DialogSelectAction<string>[] = error() || controlling() ? [] : ([{ action: "pause", title: "Pause", bind: "ctrl+g" }, { action: "resume", title: "Resume", bind: "ctrl+y" }, { action: "cancel", title: "Cancel", bind: "ctrl+x" }] as const)
-              .filter(item => snapshot().runs.some(run => run.parentSessionId === id && allowed(item.action, run)))
-              .map(item => ({ title: item.title, bind: item.bind, onTrigger: value => { void control(item.action, value) } }))
-            return [...controls, { title: "Open agent session", bind: "ctrl+o", onTrigger(value) {
-              if (!current()) return
-              const row = rows().find(row => row.value === value)
-              if (row?.sessionId) ctx.ui.router.navigate({ type: "session", sessionID: row.sessionId })
-            } }]
-          },
-        })
-        opened = false
-        const row = rows().find(value => value.value === selected)
-        const show = row && current()
-        stop()
-        if (show) await ctx.ui.dialog.alert({ title: row!.title, message: row!.detail })
+        while (current()) {
+          opened = panelOpen = true
+          const panel = ++panelNumber
+          const selected = await ctx.ui.dialog.select({ title: "GigaCode workflows", placeholder: "Search workflows, tasks and evidence; use actions for the selected workflow", current: selection,
+            get options() { return rows().map(({ detail, runId, sessionId, ...row }) => row) },
+            get actions(): DialogSelectAction<string>[] {
+              const epoch = interaction
+              return error() || controlling() || !snapshot().runs.length ? [] : [{ title: "Actions", bind: "ctrl+a", onTrigger(value) {
+                if (!current() || !panelOpen || panelNumber !== panel || interaction !== epoch || controlling() || error()) return
+                if (!selectedRun(value)) return
+                menuSelection = value
+                panelOpen = false
+                ctx.ui.dialog.clear()
+              } }]
+            },
+          })
+          opened = panelOpen = false
+          if (!current()) break
+          if (!presentation) {
+            const value = menuSelection ?? selected
+            menuSelection = undefined
+            const row = rows().find(row => row.value === value)
+            if (!row) break
+            selection = value
+            if (error() || controlling()) continue
+            interaction++; request?.abort(); request = undefined; setControlling(false)
+            const run = selectedRun(value!)
+            if (!run) break
+            const revision = run.proposalRevision
+            const controls = ([{ action: "pause", title: "Pause" }, { action: "resume", title: "Resume" }, { action: "cancel", title: "Cancel" }] as const)
+              .filter(item => allowed(item.action, run)).map(item => ({ title: item.title, value: item.action }))
+            opened = true
+            const action = await ctx.ui.dialog.select({ title: "GigaCode workflow actions", placeholder: run.objective, options: [
+              { title: "Inspect", value: "inspect", description: "Proposal, task results and observed evidence" },
+              { title: "Run saved proposal", value: "run", disabled: !ready(run), description: ready(run) ? `Execute saved proposal @${revision}` : "Requires a ready workflow with a saved proposal" },
+              { title: "Export", value: "export", description: "Save the full audit as JSON, Markdown and HTML" },
+              ...controls,
+              ...(row.sessionId ? [{ title: "Open agent session", value: "session", description: row.sessionId }] : []),
+              { title: "Back to workflows", value: "back" },
+            ] })
+            opened = false
+            if (!current()) break
+            if (error() || controlling()) continue
+            const latest = selectedRun(value!)
+            if (!latest) continue
+            if (action === "inspect" || action === "export") { void control(action, latest, value!); continue }
+            if (action === "run" && ready(run)) {
+              proposal = { id: run.id, revision: revision!, objective: run.objective }; setControlling(true)
+            } else if (action === "pause" || action === "resume" || action === "cancel") {
+              if (allowed(action, latest)) void control(action, latest, value!)
+              continue
+            } else if (action === "session" && row.sessionId) {
+              ctx.ui.router.navigate({ type: "session", sessionID: row.sessionId }); continue
+            } else continue
+          }
+          if (proposal) {
+            const captured = proposal; proposal = undefined
+            const epoch = interaction
+            const objective = captured.objective.replaceAll(/\s+/g, " ")
+            const preview = objective.length > 240 ? `${objective.slice(0, 240)} [truncated]` : objective
+            opened = true
+            const confirmed = await ctx.ui.dialog.confirm({ title: "Run saved proposal?", message: `Run: ${captured.id}\nSaved proposal revision: ${captured.revision}\n\nObjective${objective.length > 240 ? " (preview)" : ""}: ${preview}\n\nExecute this revision with captured settings and native permissions?`, label: { confirm: "Run saved proposal", cancel: "Back to workflows" } })
+            opened = false
+            if (!current() || interaction !== epoch) break
+            if (confirmed) {
+              await refresh(true)
+              if (!current() || interaction !== epoch) break
+              const run = snapshot().runs.find(run => run.id === captured.id && run.parentSessionId === id)
+              if (!error() && run && ready(run) && run.proposalRevision === captured.revision) void control("run", run, selection!, captured.revision)
+              else { setControlling(false); ctx.ui.toast.show({ title: "GigaCode saved proposal", message: "The selected proposal changed or is no longer ready. Review the workflow before running it.", variant: "info", sessionID: id }) }
+            } else setControlling(false)
+            continue
+          }
+          if (presentation) {
+            const result = presentation; presentation = undefined
+            opened = true
+            await (result.kind === "inspect" ? showWorkflowInspection : showWorkflowExport)(ctx, result.result, current)
+            opened = false
+            continue
+          }
+        }
       } finally { stop() }
     }
     const unsubscribe = rpc.events.on("commandResult", async event => {
@@ -209,10 +297,10 @@ export default Plugin.define({
       if (route.type !== "session" || route.sessionID !== data.sessionId) return
       settingsController?.abort()
       workflowStop?.()
-      if (data.error) { await ctx.ui.dialog.alert({ title: "UltraOpenCode command error", message: data.error }); return }
+      if (data.error) { await ctx.ui.dialog.alert({ title: "GigaCode command error", message: data.error }); return }
       if (data.command.trim() === "config") await configuration(data.result, data.sessionId)
       else if (/^status(?:\s|$)/.test(data.command.trim())) void workflow(data.sessionId, data.command.trim().split(/\s+/)[1])
-      else await ctx.ui.dialog.alert({ title: "UltraOpenCode command result", message: json(data.result) })
+      else await ctx.ui.dialog.alert({ title: "GigaCode command result", message: json(data.result) })
     })
     return () => { if (!disposed) { disposed = true; settingsController?.abort(); workflowStop?.(); loading?.abort(); disposeRoot(); reconnect(); unsubscribe() } }
   },

@@ -38,6 +38,13 @@ test("workflow snapshots expose durable state and worker identity without captur
   for (const marker of ["PRIVATE_PROMPT", "PRIVATE_INSTRUCTIONS", "intentId", "policy"]) expect(JSON.stringify(view)).not.toContain(marker)
 })
 
+test("workflow snapshots expose the saved proposal revision independently of the graph revision", () => {
+  const original = run()
+  original.mode = "plan"; original.phase = "planning"; original.status = "ready"; original.revision = 9
+  original.proposal = { revision: 4, rationale: "A saved proposal", tasks: [], criteria: [] }
+  expect(workflowView(original)).toMatchObject({ id: "run_1", revision: 9, proposalRevision: 4, status: "ready" })
+})
+
 test("worker usage preserves missing observations and reports the observed coverage", () => {
   const original = run(), attempt = original.tasks[0]!.attempts[0]!
   expect(workflowView(original).usage).toMatchObject({ tokens: null, cost: null, tokenObservations: 0, costObservations: 0 })

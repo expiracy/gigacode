@@ -8,15 +8,15 @@ interface Configuration { config: Config; hostVersion?: string; promptVersion?: 
 /** One entry point: choose the scope, then use its editable sections. */
 export async function openSettingsMenu(ctx: Context, value: unknown, sessionId: string, rpc: SettingsRpc, current: () => boolean, signal: AbortSignal): Promise<void> {
   const active = () => !signal.aborted && current()
-  if (!value || typeof value !== "object" || !("config" in value)) throw new Error("UltraOpenCode returned no effective configuration. Check the installation and restart OpenCode.")
+  if (!value || typeof value !== "object" || !("config" in value)) throw new Error("GigaCode returned no effective configuration. Check the installation and restart OpenCode.")
   const configuration = value as Configuration
   let selection: string | undefined
   while (active()) {
-    const selected = await ctx.ui.dialog.select({ title: "UltraOpenCode settings", placeholder: "Choose a scope, Help or About", current: selection, options: [
+    const selected = await ctx.ui.dialog.select({ title: "GigaCode settings", placeholder: "Choose a scope, Help or About", current: selection, options: [
       { title: "This project", value: "Configuration/Edit project settings", description: configuration.directory ? `${configuration.directory} · overrides global defaults` : "Override global defaults for this project" },
       { title: "Global defaults", value: "Configuration/Edit global defaults", description: "All projects using this profile; project overrides still apply" },
       { title: "Help", value: "help", description: "Guides to settings and workflows" },
-      { title: "About UltraOpenCode", value: "about", description: "Versions and runtime locations" },
+      { title: "About GigaCode", value: "about", description: "Versions and runtime locations" },
     ] })
     if (!active() || !selected) return
     selection = selected

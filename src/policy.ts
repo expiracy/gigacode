@@ -1,14 +1,13 @@
 import { lstatSync, realpathSync } from "node:fs"
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path"
-import { runtimeNames } from "./paths.ts"
+import { runtimeName } from "./paths.ts"
 import type { Role, Rule } from "./types.ts"
 
 type Effect = Rule["effect"]
 const ranks: Record<Effect, number> = { allow: 0, ask: 1, deny: 2 }
 const mutations = new Set(["edit", "write", "patch", "apply_patch", "delete", "move", "mkdir"])
 const pathActions = new Set(["read", "glob", "grep", "list", "external_directory", ...mutations])
-const safeActions = new Set(["read", "glob", "grep", "list", "lsp", "webfetch", "websearch", "search", "models", "skill", "question", "todoread", "todowrite", "ultraopencode_submit", "ultraopencode_dependency"])
-const legacyAgents = new Map([["ultraopencode", "ultra"], ["ultraopencode-supervisor", "ultra-supervisor"], ["ultraopencode-worker", "ultra-worker"]])
+const safeActions = new Set(["read", "glob", "grep", "list", "lsp", "webfetch", "websearch", "search", "models", "skill", "question", "todoread", "todowrite", "gigacode_submit", "gigacode_dependency"])
 const normalize = (value: string) => value.replaceAll("\\", "/")
 const equalCase = (value: string) => process.platform === "win32" ? value.toLowerCase() : value
 const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -21,16 +20,8 @@ function hostMatch(pattern: string, value: string): boolean {
 /** Match the host's ordered permission rules; the caller supplies the unmatched effect. */
 export function evaluateRules(rules: Rule[], action: string, resource: string, defaultEffect: Effect = "ask"): Effect {
   let effect = defaultEffect
-  let compatible = defaultEffect
-  const legacyAction = action.startsWith("ultraopencode_") ? action.replace(/^ultraopencode_/, "ultra_") : undefined
-  const legacyResource = action === "subagent" ? legacyAgents.get(resource) : undefined
-  for (const rule of rules) {
-    const currentAction = hostMatch(rule.action, action), currentResource = hostMatch(rule.resource, resource)
-    if (currentAction && currentResource) effect = rule.effect
-    if ((currentAction || legacyAction && hostMatch(rule.action, legacyAction)) && (currentResource || legacyResource && hostMatch(rule.resource, legacyResource))) compatible = rule.effect
-  }
-  // Legacy identifiers can retain restrictions, but cannot grant new permissions.
-  return strictest(effect, compatible)
+  for (const rule of rules) if (hostMatch(rule.action, action) && hostMatch(rule.resource, resource)) effect = rule.effect
+  return effect
 }
 
 function strictest(...effects: Effect[]): Effect {
@@ -88,10 +79,10 @@ function roleEffect(role: Role, action: string): Effect {
   if (action === "subagent") return role === "supervisor" ? "allow" : "deny"
   if (action === "shell") return role === "implementer" || role === "verifier" ? "allow" : "deny"
   if (mutations.has(action)) return role === "implementer" ? "allow" : "deny"
-  if (action === "ultraopencode_check") return role === "verifier" ? "allow" : "deny"
-  if (action === "ultraopencode_integrate") return role === "implementer" ? "allow" : "deny"
-  if (action === "ultraopencode_prepare") return role === "implementer" ? "allow" : "deny"
-  if (action === "ultraopencode_execute") return role === "supervisor" ? "allow" : "deny"
+  if (action === "gigacode_check") return role === "verifier" ? "allow" : "deny"
+  if (action === "gigacode_integrate") return role === "implementer" ? "allow" : "deny"
+  if (action === "gigacode_prepare") return role === "implementer" ? "allow" : "deny"
+  if (action === "gigacode_execute") return role === "supervisor" ? "allow" : "deny"
   if (action === "external_directory") return "allow" // The separate path boundary still applies.
   return safeActions.has(action) ? "allow" : "deny"
 }
@@ -117,7 +108,7 @@ export function restrictPermission(hostEffect: Effect, runRules: Rule[], role: R
         for (const rule of runRules) if (hostMatch(rule.action, action) && names.some(name => hostMatch(rule.resource, name))) captured = rule.effect
         effect = strictest(effect, captured)
         if (mutations.has(action)) {
-          if (equalCase(scope.relative).split("/").some(part => part === ".git" || runtimeNames.some(name => name === part))) return "deny"
+          if (equalCase(scope.relative).split("/").some(part => part === ".git" || part === runtimeName)) return "deny"
           if (!ownedPaths?.some(pattern => owned(pattern, scope.relative))) return "deny"
         }
       } catch { return "deny" }

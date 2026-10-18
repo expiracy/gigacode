@@ -1,12 +1,12 @@
 import { identifier, modelReference, nonempty, roles, stages, strictRecord } from "./config.ts"
-import { runtimeNames } from "./paths.ts"
+import { runtimeName } from "./paths.ts"
 import type { Config, Criterion, Plan, Role, Stage, TaskSpec } from "./types.ts"
 
 function paths(value: unknown, label: string): string[] {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`)
   const result = value.map(value => {
     const path = nonempty(value, label).replaceAll("\\", "/")
-    if (/^(?:\/|~|[A-Za-z]:)/.test(path) || path.split("/").some(part => part === ".." || runtimeNames.some(name => part === name)) || /[\0\r\n]/.test(path)) {
+    if (/^(?:\/|~|[A-Za-z]:)/.test(path) || path.split("/").some(part => part === ".." || part === runtimeName) || /[\0\r\n]/.test(path)) {
       throw new Error(`Unsafe owned path: ${path}`)
     }
     return path.replace(/^\.\//, "")

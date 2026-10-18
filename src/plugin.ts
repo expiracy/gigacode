@@ -8,12 +8,12 @@ import { SQLiteStore } from "./store.ts"
 import { sanitizeEventData } from "./redaction.ts"
 import { ArtifactStore } from "./artifacts.ts"
 import { loadProjectConfig, resolveModel } from "./config.ts"
-import { parseCommand, type UltraCommand } from "./commands.ts"
-import { ULTRA_AGENT_ID, ULTRA_AGENT_NAME, primarySystem, projectGuidance, workflowGuidance } from "./agents.ts"
+import { parseCommand, type GigaCodeCommand } from "./commands.ts"
+import { GIGACODE_AGENT_ID, GIGACODE_AGENT_NAME, projectGuidance, workflowGuidance } from "./agents.ts"
 import { agentControlSchema, agentTaskSchema, checkContent, controlCommand, inspectionContent, progressContent, primaryPermissionAllowed, primaryToolAllowed } from "./agent-control.ts"
 import { Error as NativeToolError, type ToolContext } from "@opencode/plugin/promise/tool"
 import { OpenCodeAdapter, invocation, invocationKey, sessionID, visibleTools } from "./opencode.ts"
-import { UltraRpc, type CommandResult } from "./rpc.ts"
+import { GigaCodeRpc, type CommandResult } from "./rpc.ts"
 import type { RpcRegistration } from "@opencode/plugin/promise/rpc"
 import { assertPlainPath } from "./workspace.ts"
 import { submitInputSchema, taskResultSchema } from "./results.ts"
@@ -25,7 +25,6 @@ import { assertHostVersion } from "./compatibility.ts"
 import { ProjectSettings, type EditableSettings, type SettingsModel, type SettingsScope } from "./settings.ts"
 import { GlobalSettings } from "./global-settings.ts"
 import { globalConfigDirectory } from "./native-config.ts"
-import { evaluateRules } from "./policy.ts"
 import { runtimeDirectory } from "./paths.ts"
 import type { Run, TaskSpec } from "./types.ts"
 
@@ -33,10 +32,10 @@ const supervisorSpec: TaskSpec = { id: "supervisor", title: "Coordinate workflow
 const terminal = new Set(["ready", "succeeded", "partial", "failed", "cancelled"])
 const busy = (run: Run) => run.tasks.some(task => task.attempts.some(attempt => ["reserved", "running", "waiting_permission", "cancelling", "ambiguous"].includes(attempt.status)))
 const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
-const intentText = (run: Run) => `ULTRA_START_INTENT\n${JSON.stringify({ runId: run.id, intentId: run.intentId })}\nThis workflow was explicitly authorized in this initiating conversation. Call ultraopencode_start({runId:${JSON.stringify(run.id)},intentId:${JSON.stringify(run.intentId)}}) once to launch its native supervisor. Do not implement this task while the workflow is active. The durable tools own orchestration and will report status.`
+const intentText = (run: Run) => `GIGACODE_START_INTENT\n${JSON.stringify({ runId: run.id, intentId: run.intentId })}\nThis workflow was explicitly authorized in this initiating conversation. Call gigacode_start({runId:${JSON.stringify(run.id)},intentId:${JSON.stringify(run.intentId)}}) once to launch its native supervisor. Do not implement this task while the workflow is active. The durable tools own orchestration and will report status.`
 
 export default Plugin.define({
-  id: "open-ultra-code",
+  id: "gigacode",
   async setup(ctx) {
     const hostVersion = ctx.app.version
     assertHostVersion(hostVersion)
@@ -76,8 +75,8 @@ export default Plugin.define({
         if (scope === "project") return projectSettings
         if (scope !== "global") throw new Error("Choose project or global settings.")
         return globalSettings ??= (async () => {
-          const source = (await ctx.plugin.list()).data.find(plugin => plugin.id === "open-ultra-code")?.source
-          if (!source || source.type !== "local" && source.type !== "package") throw new Error("Cannot identify the active UltraOpenCode package for global settings.")
+          const source = (await ctx.plugin.list()).data.find(plugin => plugin.id === "gigacode")?.source
+          if (!source || source.type !== "local" && source.type !== "package") throw new Error("Cannot identify the active GigaCode package for global settings.")
           const packagePath = source.type === "package" ? source.target : (await stat(source.path)).isFile() ? dirname(source.path) : source.path
           return new GlobalSettings({ ...globalProfile, packagePath }, guardSettings)
         })()
@@ -119,17 +118,17 @@ export default Plugin.define({
           for (const id of [run.supervisorSessionId, ...(run.supervisorHistory ?? []), ...run.tasks.flatMap(task => task.attempts.map(attempt => attempt.sessionId))]) if (id) { retiringSessions.add(id); retiringWorkers.add(id) }
         }
       }
-      const primaryCaller = async (context: ToolContext, requireUltra = false) => {
+      const primaryCaller = async (context: ToolContext, requireGigaCode = false) => {
         const caller = await adapter.scoped(context.sessionID)
         if (adapter.binding(context.sessionID) || caller.parentID) throw new Error("Workflow tools require an initiating primary conversation")
-        if (requireUltra ? context.agent !== ULTRA_AGENT_ID || caller.agent !== ULTRA_AGENT_ID : context.agent !== ULTRA_AGENT_ID && caller.agent !== ULTRA_AGENT_ID && !parentRuns(context.sessionID).length) throw new Error("Select UltraOpenCode mode before using workflow tools")
+        if (requireGigaCode ? context.agent !== GIGACODE_AGENT_ID || caller.agent !== GIGACODE_AGENT_ID : context.agent !== GIGACODE_AGENT_ID && caller.agent !== GIGACODE_AGENT_ID && !parentRuns(context.sessionID).length) throw new Error("Select GigaCode mode before using workflow tools")
         return caller
       }
       const start = async (objective: string, mode: "plan" | "execute", id: string, admission?: StartOptions["admission"], source?: ToolContext, workflow?: StartOptions["workflow"], recipe?: StartOptions["recipe"]) => {
         const session = await adapter.scoped(id)
         if (adapter.binding(id) || session.parentID) throw new Error("Start is only available in an initiating primary conversation")
         const agents = (await ctx.agent.list()).data
-        if (!["ultraopencode-supervisor", "ultraopencode-worker"].every(name => agents.some(agent => agent.id === name))) throw new Error("Install ultraopencode-supervisor and ultraopencode-worker agent configuration with bun run install:global, then restart OpenCode")
+        if (!["gigacode-supervisor", "gigacode-worker"].every(name => agents.some(agent => agent.id === name))) throw new Error("Install gigacode-supervisor and gigacode-worker agent configuration with gigacode setup --global, then restart OpenCode")
         const primary = agents.find(agent => agent.id === (session.agent ?? "build"))
         if (!primary || !["primary", "all"].includes(primary.mode)) throw new Error("The initiating primary agent is unavailable; authorization cannot be captured")
         const inherited = session.model ?? primary.model ?? (await ctx.model.default()).data
@@ -142,7 +141,7 @@ export default Plugin.define({
         // Validate the supervisor model before reserving capacity as well as each worker model in Engine.start.
         resolveModel(supervisorSpec, { capturedModel, modelOptions: {}, config }, catalog)
         const beforeAdmission = source ? async () => {
-          const currentPrimary = (await ctx.agent.list()).data.find(agent => agent.id === ULTRA_AGENT_ID)
+          const currentPrimary = (await ctx.agent.list()).data.find(agent => agent.id === GIGACODE_AGENT_ID)
           const current = await primaryCaller(source, true)
           if (JSON.stringify(current.model) !== JSON.stringify(session.model) || JSON.stringify(current.permissions) !== JSON.stringify(session.permissions) || JSON.stringify(currentPrimary?.permissions) !== JSON.stringify(primary.permissions) || JSON.stringify(currentPrimary?.model) !== JSON.stringify(primary.model)) throw new Error("The initiating model or permissions changed during admission; submit the task again")
           source.signal.throwIfAborted()
@@ -158,11 +157,11 @@ export default Plugin.define({
       }
       const enqueue = async (run: Run) => {
         try {
-          await ctx.session.synthetic({ sessionID: sessionID(run.parentSessionId), text: intentText(run), delivery: "queue", resume: true, metadata: { ultraRunId: run.id, ultraIntent: run.intentId } })
+          await ctx.session.synthetic({ sessionID: sessionID(run.parentSessionId), text: intentText(run), delivery: "queue", resume: true, metadata: { gigacodeRunId: run.id, gigacodeIntent: run.intentId } })
         } catch (error) { await engine.launchFailed(run.id, error); throw error }
         adapter.record(run, "intent.enqueued", { intentId: run.intentId, parentSessionId: run.parentSessionId })
       }
-      const controlRaw = async (command: UltraCommand, id: string, source?: ToolContext) => {
+      const controlRaw = async (command: GigaCodeCommand, id: string, source?: ToolContext) => {
         const caller = await adapter.scoped(id)
         if (adapter.binding(id)) throw new Error("Workflow workers cannot issue user control commands")
         switch (command.type) {
@@ -200,7 +199,7 @@ export default Plugin.define({
         const command = parseCommand(text)
         return ["status", "inspect", "config", "export"].includes(command.type) ? controlRaw(command, id) : engine.withOwnership(stop.signal, () => controlRaw(command, id))
       })
-      let rpcRegistration: RpcRegistration<typeof UltraRpc> | undefined
+      let rpcRegistration: RpcRegistration<typeof GigaCodeRpc> | undefined
       const feedback = async (value: CommandResult) => {
         try {
           if (!rpcRegistration) throw new Error("Command feedback is not registered")
@@ -210,8 +209,8 @@ export default Plugin.define({
           try { store.event(ctx.location.project.id, { kind: "command.feedback.failed", data: { sessionId: value.sessionId, command: value.command, error: String(error) } }) } catch {}
         }
       }
-      registrations.push(await ctx.agent.transform(editor => editor.update(ULTRA_AGENT_ID, agent => { agent.name = ULTRA_AGENT_NAME as unknown as typeof agent.name })))
-      registrations.push(await ctx.command.transform(editor => editor.add({ name: "ultraopencode", description: "Transparent design, implementation, review and verification workflow", async execute(input) { return track(async () => {
+      registrations.push(await ctx.agent.transform(editor => editor.update(GIGACODE_AGENT_ID, agent => { agent.name = GIGACODE_AGENT_NAME as unknown as typeof agent.name })))
+      registrations.push(await ctx.command.transform(editor => editor.add({ name: "gigacode", description: "Transparent design, implementation, review and verification workflow", async execute(input) { return track(async () => {
         let result: Record<string, unknown>
         try { result = await control(input.prompt.text, input.sessionID) }
         catch (error) {
@@ -227,7 +226,7 @@ export default Plugin.define({
           const native = { ...context, signal: AbortSignal.any([context.signal, stop.signal]) }
           return engine.withOwnership(native.signal, () => tool.execute(input, native))
         }) })
-        editor.add({ name: "ultraopencode_task", description: "Start one authorized project task in UltraOpenCode mode. Preserve the user's request and constraints in objective. Choose the smallest useful workflow graph after reading enough relevant context. plan permits only read-only investigation/design; a supplied execute graph starts implementation directly and requires scoped writers, independent review after every writer, and final verification of configured checks after every writer. Add specialists only for useful separate work. Omit workflow for a single planning worker. Answer simple questions using read tools without spawning a workflow. Use ultraopencode_control for settings or existing work; never start a second active workflow.", input: agentTaskSchema, output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
+        editor.add({ name: "gigacode_task", description: "Start one authorized project task in GigaCode mode. Preserve the user's request and constraints in objective. Choose the smallest useful workflow graph after reading enough relevant context. plan permits only read-only investigation/design; a supplied execute graph starts implementation directly and requires scoped writers, independent review after every writer, and final verification of configured checks after every writer. Add specialists only for useful separate work. Omit workflow for a single planning worker. Answer simple questions using read tools without spawning a workflow. Use gigacode_control for settings or existing work; never start a second active workflow.", input: agentTaskSchema, output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           await primaryCaller(context, true)
           const admission = { messageId: context.messageID, callId: context.id, requestHash: fingerprint(input) }
           const existing = parentRuns(context.sessionID).find(run => run.admission?.messageId === admission.messageId && run.admission.callId === admission.callId)
@@ -240,7 +239,7 @@ export default Plugin.define({
           const saved = engine.get(run.id)!
           return { content: progressContent(saved), output: { run: summary(saved), ...(saved.supervisorSessionId ? { sessionId: saved.supervisorSessionId } : {}) } }
         } })
-        editor.add({ name: "ultraopencode_control", description: "Read or control this initiating conversation's workflows. config takes no other fields; status optionally takes runId; inspect requires runId and optionally taskId. pause/resume/cancel/export require runId. run requires runId and the exact saved revision. retry requires runId and taskId; input requires runId and the user's answer; budget requires runId and explicitly authorized limits. Read current status before changing it. Resume, retry, run and input may launch native work. Never invent authorization, answers or revisions.", input: agentControlSchema, output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
+        editor.add({ name: "gigacode_control", description: "Read or control this initiating conversation's workflows. config takes no other fields; status optionally takes runId; inspect requires runId and optionally taskId. pause/resume/cancel/export require runId. run requires runId and the exact saved revision. retry requires runId and taskId; input requires runId and the user's answer; budget requires runId and explicitly authorized limits. Read current status before changing it. Resume, retry, run and input may launch native work. Never invent authorization, answers or revisions.", input: agentControlSchema, output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           await primaryCaller(context)
           const command = controlCommand(input)
           if ("id" in command && command.id) {
@@ -268,14 +267,14 @@ export default Plugin.define({
           if (receiptId) store.event(ctx.location.project.id, { id: `${receiptId}_result`, kind: "agent.control.result", ...("id" in command ? { runId: required(command.id!).id } : {}), data: output })
           return { content: command.type === "inspect" ? inspectionContent((output as { run: Run }).run, command.taskId) : command.type === "status" && command.id ? progressContent(required(command.id)) : JSON.stringify(output), output }
         } })
-        editor.add({ name: "ultraopencode_start", description: "Consume an authorized UltraOpenCode start intent and launch its native supervisor.", input: Schema.Struct({ runId: Schema.String, intentId: Schema.String }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
+        editor.add({ name: "gigacode_start", description: "Consume an authorized GigaCode start intent and launch its native supervisor.", input: Schema.Struct({ runId: Schema.String, intentId: Schema.String }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           const run = required(input.runId)
           await adapter.scoped(context.sessionID)
           if (input.intentId !== run.intentId) throw new Error("Start intent does not match the saved run")
           const child = await launch(run, context)
           return { content: progressContent(required(run.id)), output: { runId: run.id, ...child } }
         } })
-        editor.add({ name: "ultraopencode_execute", description: "Drive and reconcile the bound run graph from its native supervisor. Await completion; do not call twice concurrently.", input: Schema.Struct({ runId: Schema.String, intentId: Schema.optionalKey(Schema.String) }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
+        editor.add({ name: "gigacode_execute", description: "Drive and reconcile the bound run graph from its native supervisor. Await completion; do not call twice concurrently.", input: Schema.Struct({ runId: Schema.String, intentId: Schema.optionalKey(Schema.String) }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           const run = required(input.runId)
           if (run.supervisorSessionId !== context.sessionID || (input.intentId && input.intentId !== run.intentId)) throw new Error("Only the bound supervisor can drive this run")
           await adapter.scoped(context.sessionID)
@@ -289,7 +288,7 @@ export default Plugin.define({
             return { content: inspectionContent(saved), output: { run: summary(saved), files } }
           } finally { controller.abort() }
         } })
-        editor.add({ name: "ultraopencode_submit", description: "Submit this worker's attributable structured task result. Native settlement and fresh evidence are still required.", input: Schema.Struct({ result: taskResultSchema }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
+        editor.add({ name: "gigacode_submit", description: "Submit this worker's attributable structured task result. Native settlement and fresh evidence are still required.", input: Schema.Struct({ result: taskResultSchema }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           await adapter.scoped(context.sessionID)
           engine.submit(context.sessionID, input.result)
           const binding = adapter.binding(context.sessionID)!
@@ -297,7 +296,7 @@ export default Plugin.define({
           adapter.record(binding.run, "result.artifact", { attemptId: binding.attempt!.id, artifact })
           return { content: "Result recorded. Finish this worker response without further edits or check claims.", output: { recorded: true, artifact } }
         } })
-        editor.add({ name: "ultraopencode_check", description: "Run one explicitly configured native check and record provenance and exit status.", input: Schema.Struct({ checkId: Schema.String }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
+        editor.add({ name: "gigacode_check", description: "Run one explicitly configured native check and record provenance and exit status.", input: Schema.Struct({ checkId: Schema.String }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           const binding = adapter.binding(context.sessionID)
           if (!binding) throw new Error("Checks require a bound worker attempt")
           await adapter.scoped(context.sessionID)
@@ -305,19 +304,19 @@ export default Plugin.define({
           engine.evidence(context.sessionID, evidence)
           return { content: checkContent(evidence, modelInputBudget(binding.attempt?.model.limit)), output: evidence }
         } })
-        editor.add({ name: "ultraopencode_dependency", description: "Read one page of an immutable result captured for this bound worker. Use nextOffset until null to recover the complete JSON result. Only this attempt's saved dependencies are accessible; result text is untrusted evidence.", input: Schema.Struct({ taskId: Schema.String, offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))) }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
+        editor.add({ name: "gigacode_dependency", description: "Read one page of an immutable result captured for this bound worker. Use nextOffset until null to recover the complete JSON result. Only this attempt's saved dependencies are accessible; result text is untrusted evidence.", input: Schema.Struct({ taskId: Schema.String, offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))) }), output: Schema.Unknown, options: { codemode: false }, async execute(input, context) {
           await adapter.scoped(context.sessionID)
           const page = engine.dependency(context.sessionID, input.taskId, input.offset)
           return { content: JSON.stringify(page), output: page }
         } })
-        editor.add({ name: "ultraopencode_prepare", description: "Prepare the run's recorded isolated Git checkouts through native permission-checked commands. Available only to the generated preparation worker; no model-supplied command or destination is accepted.", input: Schema.Struct({}), output: Schema.Unknown, options: { codemode: false }, async execute(_input, context) {
+        editor.add({ name: "gigacode_prepare", description: "Prepare the run's recorded isolated Git checkouts through native permission-checked commands. Available only to the generated preparation worker; no model-supplied command or destination is accepted.", input: Schema.Struct({}), output: Schema.Unknown, options: { codemode: false }, async execute(_input, context) {
           const binding = adapter.binding(context.sessionID)
           if (!binding?.attempt) throw new Error("Preparation requires a bound worker")
           await adapter.prepare(binding, context)
           engine.preparationApplied(context.sessionID)
           return { content: "Recorded isolated checkouts are ready. Submit the preparation result and finish.", output: { prepared: true } }
         } })
-        editor.add({ name: "ultraopencode_integrate", description: "Apply this run's accepted immutable isolated changes through native permission-checked tools. Available only to its generated integration worker; no model-supplied patch is accepted.", input: Schema.Struct({}), output: Schema.Unknown, options: { codemode: false }, async execute(_input, context) {
+        editor.add({ name: "gigacode_integrate", description: "Apply this run's accepted immutable isolated changes through native permission-checked tools. Available only to its generated integration worker; no model-supplied patch is accepted.", input: Schema.Struct({}), output: Schema.Unknown, options: { codemode: false }, async execute(_input, context) {
           const binding = adapter.binding(context.sessionID)
           if (!binding?.attempt) throw new Error("Integration requires a bound worker")
           const workspaceHash = await adapter.integrate(binding, context)
@@ -326,26 +325,17 @@ export default Plugin.define({
         } })
       }))
       registrations.push(await ctx.permission.hook("evaluate", event => {
-        if (stop.signal.aborted) { if (event.agent === ULTRA_AGENT_ID || retiringSessions.has(event.sessionID)) event.effect = "deny"; return }
+        if (stop.signal.aborted) { if (event.agent === GIGACODE_AGENT_ID || retiringSessions.has(event.sessionID)) event.effect = "deny"; return }
         const binding = adapter.binding(event.sessionID)
         if (!binding) {
           return track(async () => {
             const caller = await adapter.scoped(event.sessionID)
-            if (caller.parentID || (event.agent !== ULTRA_AGENT_ID && caller.agent !== ULTRA_AGENT_ID && !guarded(event.sessionID))) return
+            if (caller.parentID || (event.agent !== GIGACODE_AGENT_ID && caller.agent !== GIGACODE_AGENT_ID && !guarded(event.sessionID))) return
             if (stop.signal.aborted) { event.effect = "deny"; return }
             if (event.action === "subagent") {
               const delegation = event.source && adapter.delegations.get(invocationKey(event.sessionID, event.source.messageID, event.source.id))
-              if (!delegation || delegation.sessionId !== event.sessionID || delegation.messageId !== event.source?.messageID || delegation.agent !== "ultraopencode-supervisor" || !event.resources.length || !event.resources.every(agent => agent === delegation.agent)) event.effect = "deny"
+              if (!delegation || delegation.sessionId !== event.sessionID || delegation.messageId !== event.source?.messageID || delegation.agent !== "gigacode-supervisor" || !event.resources.length || !event.resources.every(agent => agent === delegation.agent)) event.effect = "deny"
             } else if (!primaryPermissionAllowed(event.action)) event.effect = "deny"
-            if (event.effect !== "deny" && (event.action.startsWith("ultraopencode_") || event.action === "subagent")) {
-              const primary = (await ctx.agent.list()).data.find(agent => agent.id === (caller.agent ?? event.agent))
-              if (stop.signal.aborted) { event.effect = "deny"; return }
-              const rules = [...(primary?.permissions ?? []), ...(caller.permissions ?? [])]
-              for (const resource of event.resources.length ? event.resources : ["*"]) {
-                const captured = evaluateRules(rules, event.action, resource, event.effect)
-                if (captured === "deny" || captured === "ask" && event.effect === "allow") event.effect = captured
-              }
-            }
             // Native asks and denies are preserved for genuine dispatch and reads.
           })
         }
@@ -357,41 +347,39 @@ export default Plugin.define({
       registrations.push(await ctx.session.hook("context", event => {
         if (stop.signal.aborted) {
           if (retiringWorkers.has(event.sessionID)) stop.signal.throwIfAborted()
-          if (event.agent === ULTRA_AGENT_ID || retiringSessions.has(event.sessionID)) event.tools = {}
-          else for (const name of ["ultraopencode_task", "ultraopencode_control", "ultraopencode_execute", "ultraopencode_submit", "ultraopencode_check", "ultraopencode_dependency", "ultraopencode_integrate", "ultraopencode_prepare"]) delete event.tools[name]
+          if (event.agent === GIGACODE_AGENT_ID || retiringSessions.has(event.sessionID)) event.tools = {}
+          else for (const name of ["gigacode_task", "gigacode_control", "gigacode_execute", "gigacode_submit", "gigacode_check", "gigacode_dependency", "gigacode_integrate", "gigacode_prepare"]) delete event.tools[name]
           return
         }
         const binding = adapter.binding(event.sessionID)
         if (!binding) {
           // These tools are internal capabilities, made visible only to their bound sessions.
-          for (const name of ["ultraopencode_execute", "ultraopencode_submit", "ultraopencode_check", "ultraopencode_dependency", "ultraopencode_integrate", "ultraopencode_prepare"]) delete event.tools[name]
+          for (const name of ["gigacode_execute", "gigacode_submit", "gigacode_check", "gigacode_dependency", "gigacode_integrate", "gigacode_prepare"]) delete event.tools[name]
           return track(async () => {
             const caller = await adapter.scoped(event.sessionID)
             const active = guarded(event.sessionID)
-            if (!caller.parentID && (event.agent === ULTRA_AGENT_ID || caller.agent === ULTRA_AGENT_ID || active)) {
+            if (!caller.parentID && (event.agent === GIGACODE_AGENT_ID || caller.agent === GIGACODE_AGENT_ID || active)) {
               if (stop.signal.aborted) { event.tools = {}; return }
               const intent = parentRuns(event.sessionID).some(run => run.status === "starting" && run.intentExpiresAt > Date.now() && !run.supervisorSessionId)
-              event.tools = Object.fromEntries(Object.entries(event.tools).filter(([name]) => primaryToolAllowed(name) && (name !== "ultraopencode_task" || (event.agent === ULTRA_AGENT_ID && caller.agent === ULTRA_AGENT_ID && !active)) && (name !== "ultraopencode_start" || intent)))
-              // Configured system text is applied after agent transforms; migrate the exact old default at request time.
-              if (event.agent === ULTRA_AGENT_ID && event.system) event.system = event.system.map(part => ({ ...part, text: primarySystem(part.text) }))
-              if (event.agent === ULTRA_AGENT_ID && event.system) event.system.push({ type: "text", text: workflowGuidance(config.checks) })
+              event.tools = Object.fromEntries(Object.entries(event.tools).filter(([name]) => primaryToolAllowed(name) && (name !== "gigacode_task" || (event.agent === GIGACODE_AGENT_ID && caller.agent === GIGACODE_AGENT_ID && !active)) && (name !== "gigacode_start" || intent)))
+              if (event.agent === GIGACODE_AGENT_ID && event.system) event.system.push({ type: "text", text: workflowGuidance(config.checks) })
               if (event.system) event.system.push({ type: "text", text: projectGuidance(parentRuns(event.sessionID).filter(run => !terminal.has(run.status) || busy(run)).map(summary), active) })
             } else {
-              delete event.tools.ultraopencode_task
-              if (caller.parentID || !parentRuns(event.sessionID).length) delete event.tools.ultraopencode_control
+              delete event.tools.gigacode_task
+              if (caller.parentID || !parentRuns(event.sessionID).length) delete event.tools.gigacode_control
             }
           })
         }
         return track(async () => {
           if (binding.retired) { event.tools = {}; return }
           event.tools = visibleTools(event.tools, binding.role, !!binding.task && binding.task.id === binding.run.parallel?.integrationTaskId, !!binding.task && binding.task.id === binding.run.parallel?.preparationTaskId)
-          if (binding.task && event.tools.ultraopencode_submit) event.tools.ultraopencode_submit = { ...event.tools.ultraopencode_submit, input: submitInputSchema(binding.task, binding.run.criteria) }
+          if (binding.task && event.tools.gigacode_submit) event.tools.gigacode_submit = { ...event.tools.gigacode_submit, input: submitInputSchema(binding.task, binding.run.criteria) }
           const artifact = await artifacts.put({ sessionId: event.sessionID, model: event.model, role: binding.role, system: event.system, messages: event.messages, tools: event.tools, options: event.options })
           adapter.record(binding.run, "context.observed", { sessionId: event.sessionID, attemptId: binding.attempt?.id, role: binding.role, model: event.model, tools: Object.keys(event.tools), artifact })
         })
       }))
       registrations.push(await ctx.session.hook("model.request", event => {
-        if (stop.signal.aborted) { if (event.agent === ULTRA_AGENT_ID || retiringSessions.has(event.sessionID)) stop.signal.throwIfAborted(); return }
+        if (stop.signal.aborted) { if (event.agent === GIGACODE_AGENT_ID || retiringSessions.has(event.sessionID)) stop.signal.throwIfAborted(); return }
         const binding = adapter.binding(event.sessionID)
         if (!binding) return
         stop.signal.throwIfAborted()
@@ -401,24 +389,24 @@ export default Plugin.define({
       registrations.push(await ctx.session.hook("prompt", event => {
         if (stop.signal.aborted) { if (retiringSessions.has(event.sessionID) || auto.get(event.sessionID)) stop.signal.throwIfAborted(); return }
         if (adapter.binding(event.sessionID)) { stop.signal.throwIfAborted(); return }
-        if (!auto.get(event.sessionID) || event.prompt.text.length < config.autoThreshold || /^(?:ULTRA_|<subagent|\/ultraopencode)/.test(event.prompt.text.trim())) return
+        if (!auto.get(event.sessionID) || event.prompt.text.length < config.autoThreshold || /^(?:GIGACODE_|<subagent|\/gigacode)/.test(event.prompt.text.trim())) return
         return track(async () => {
-          if ((await adapter.scoped(event.sessionID)).agent === ULTRA_AGENT_ID) return // UltraOpenCode interprets requests through typed tools, without a length classifier.
+          if ((await adapter.scoped(event.sessionID)).agent === GIGACODE_AGENT_ID) return // GigaCode interprets requests through typed tools, without a length classifier.
           if (engine.list().some(run => run.parentSessionId === event.sessionID && !terminal.has(run.status))) return
           const run = await start(event.prompt.text, "execute", event.sessionID)
           event.prompt.text = intentText(run)
-          event.metadata = { ...event.metadata, ultraRunId: run.id, ultraIntent: run.intentId }
+          event.metadata = { ...event.metadata, gigacodeRunId: run.id, gigacodeIntent: run.intentId }
         })
       }))
       registrations.push(await ctx.tool.hook("execute.before", event => {
         if (stop.signal.aborted) {
-          if (event.agent === ULTRA_AGENT_ID || retiringSessions.has(event.sessionID)) throw new NativeToolError({ message: "Plugin is reloading or shutting down" })
+          if (event.agent === GIGACODE_AGENT_ID || retiringSessions.has(event.sessionID)) throw new NativeToolError({ message: "Plugin is reloading or shutting down" })
           return
         }
         if (adapter.binding(event.sessionID)) return
         return track(async () => {
           const caller = await adapter.scoped(event.sessionID)
-          if (caller.parentID || (event.agent !== ULTRA_AGENT_ID && caller.agent !== ULTRA_AGENT_ID && !guarded(event.sessionID))) return
+          if (caller.parentID || (event.agent !== GIGACODE_AGENT_ID && caller.agent !== GIGACODE_AGENT_ID && !guarded(event.sessionID))) return
           if (stop.signal.aborted) throw new NativeToolError({ message: "Plugin is reloading or shutting down" })
           if (!primaryToolAllowed(event.tool)) throw new NativeToolError({ message: "The workflow coordinator uses workflow and read-only tools; settle or cancel active work before direct project changes" })
         })
@@ -432,7 +420,7 @@ export default Plugin.define({
         if (stop.signal.aborted) return
         return track(async () => { adapter.preparationShell(event) })
       }))
-      rpcRegistration = await ctx.rpc.register(UltraRpc, {
+      rpcRegistration = await ctx.rpc.register(GigaCodeRpc, {
         async workflow(input) { return track(async () => {
           const value = input as { sessionId: string; runId?: string }
           const caller = await adapter.scoped(value.sessionId)
@@ -496,7 +484,7 @@ export default Plugin.define({
       return cleanup
     } catch (error) {
       try { await cleanup() }
-      catch (cleanupError) { throw new AggregateError([error, cleanupError], `UltraOpenCode setup failed: ${String(error)}; cleanup also failed`, { cause: error }) }
+      catch (cleanupError) { throw new AggregateError([error, cleanupError], `GigaCode setup failed: ${String(error)}; cleanup also failed`, { cause: error }) }
       throw error
     }
   },

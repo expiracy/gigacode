@@ -35,7 +35,7 @@ export class ProjectSettings {
     return { path, revision, overrides: editableSettings(options), inherited, effective }
   }
   save(revision: string, overrides: EditableSettings, models: readonly AvailableModel[], signal?: AbortSignal, replaceAdvanced = false): Promise<SettingsSnapshot & { backup?: string }> {
-    return serializeSettingsWrite(join(this.directory, "ultraopencode.json"), async () => {
+    return serializeSettingsWrite(join(this.directory, "gigacode.json"), async () => {
       signal?.throwIfAborted()
       this.beforeWrite()
       const before = await this.document()

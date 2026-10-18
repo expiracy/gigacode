@@ -16,7 +16,7 @@ const catalog: AvailableModel[] = [
 const run = (modelOptions: ModelOptions = {}, config: Config = parseConfig({})): Pick<Run, "modelOptions" | "capturedModel" | "config"> => ({ modelOptions, config, capturedModel: { providerID: "a", id: "base", variant: "deep" } })
 
 async function withProject(body: (directory: string) => Promise<void>): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "ultraopencode-config-"))
+  const directory = await mkdtemp(join(tmpdir(), "gigacode-config-"))
   try { await body(directory) } finally { await rm(directory, { recursive: true, force: true }) }
 }
 
@@ -138,7 +138,7 @@ describe("global defaults and optional project overrides", () => {
 
   test("automatically layers a project file over global defaults", async () => {
     await withProject(async directory => {
-      await writeFile(join(directory, "ultraopencode.json"), JSON.stringify({ models: { roles: { planner: "b/code" } }, limits: { workers: 1 }, prompts: { planner: "Local." } }))
+      await writeFile(join(directory, "gigacode.json"), JSON.stringify({ models: { roles: { planner: "b/code" } }, limits: { workers: 1 }, prompts: { planner: "Local." } }))
       const config = await loadProjectConfig({ models: { default: "a/base", roles: { reviewer: "b/review" } }, limits: { attempts: 9 }, prompts: { reviewer: "Global." } }, directory)
       expect(config.models).toEqual({ default: "a/base", roles: { reviewer: "b/review", planner: "b/code" }, stages: {} })
       expect(config.limits).toMatchObject({ workers: 1, attempts: 9, repairRounds: 2 })
@@ -146,12 +146,11 @@ describe("global defaults and optional project overrides", () => {
     })
   })
 
-  test("keeps legacy project settings until the renamed override is supplied", async () => {
+  test("ignores previous product override files", async () => {
     await withProject(async directory => {
+      await writeFile(join(directory, "ultraopencode.json"), "{invalid")
       await writeFile(join(directory, "ultracode.json"), JSON.stringify({ limits: { workers: 1 } }))
-      expect((await loadProjectConfig({ limits: { workers: 2 } }, directory)).limits.workers).toBe(1)
-      await writeFile(join(directory, "ultraopencode.json"), JSON.stringify({ limits: { workers: 3 } }))
-      expect((await loadProjectConfig({ limits: { workers: 2 } }, directory)).limits.workers).toBe(3)
+      expect((await loadProjectConfig({ limits: { workers: 2 } }, directory)).limits.workers).toBe(2)
     })
   })
 
@@ -159,9 +158,9 @@ describe("global defaults and optional project overrides", () => {
     await withProject(async directory => {
       await writeFile(join(directory, "package.json"), JSON.stringify({ scripts: { test: "bun test" } }))
       const defaults = { checks: [{ id: "global", command: "echo global", criterionIds: ["verification"] }] }
-      await writeFile(join(directory, "ultraopencode.json"), JSON.stringify({ checks: [{ id: "local", command: "echo local", criterionIds: ["verification"] }] }))
+      await writeFile(join(directory, "gigacode.json"), JSON.stringify({ checks: [{ id: "local", command: "echo local", criterionIds: ["verification"] }] }))
       expect((await loadProjectConfig(defaults, directory)).checks.map(check => check.id)).toEqual(["local"])
-      await writeFile(join(directory, "ultraopencode.json"), JSON.stringify({ checks: [] }))
+      await writeFile(join(directory, "gigacode.json"), JSON.stringify({ checks: [] }))
       expect((await loadProjectConfig(defaults, directory)).checks).toEqual([])
       expect((await loadProjectConfig(undefined, directory)).checks).toEqual([])
     })
@@ -171,7 +170,7 @@ describe("global defaults and optional project overrides", () => {
     await withProject(async directory => {
       await writeFile(join(directory, "package.json"), JSON.stringify({ scripts: { test: "bun test", typecheck: "tsc", lint: "eslint" } }))
       await writeFile(join(directory, "bun.lock"), "")
-      await writeFile(join(directory, "ultraopencode.json"), JSON.stringify({ models: { default: "b/code" } }))
+      await writeFile(join(directory, "gigacode.json"), JSON.stringify({ models: { default: "b/code" } }))
       expect((await loadProjectConfig({ limits: { workers: 2 } }, directory)).checks.map(check => check.command)).toEqual(["bun run test", "bun run typecheck", "bun run lint"])
       const explicit = { checks: [{ id: "global", command: "echo global", criterionIds: [] }] }
       expect((await loadProjectConfig(explicit, directory)).checks).toEqual(explicit.checks)
@@ -182,7 +181,7 @@ describe("global defaults and optional project overrides", () => {
     await withProject(async directory => {
       const first = join(directory, "first"), second = join(directory, "second")
       await mkdir(first); await mkdir(second)
-      await writeFile(join(first, "ultraopencode.json"), JSON.stringify({ models: { roles: { planner: "b/code" } } }))
+      await writeFile(join(first, "gigacode.json"), JSON.stringify({ models: { roles: { planner: "b/code" } } }))
       const options = { models: { roles: { planner: "a/base" } }, checks: [] }
       const local = await loadProjectConfig(options, first)
       expect(local.models.roles?.planner).toBe("b/code")
@@ -198,14 +197,14 @@ describe("global defaults and optional project overrides", () => {
     await withProject(async directory => {
       const child = join(directory, "child")
       await mkdir(child)
-      await writeFile(join(directory, "ultraopencode.json"), JSON.stringify({ models: { default: "b/code" } }))
+      await writeFile(join(directory, "gigacode.json"), JSON.stringify({ models: { default: "b/code" } }))
       expect((await loadProjectConfig({ models: { default: "a/base" } }, child)).models.default).toBe("a/base")
     })
   })
 
   test("applies explicit preview options last without hiding invalid project options", async () => {
     await withProject(async directory => {
-      const path = join(directory, "ultraopencode.json")
+      const path = join(directory, "gigacode.json")
       await writeFile(path, JSON.stringify({ models: { roles: { planner: "b/code" } }, limits: { workers: 2 }, checks: [] }))
       const config = await loadProjectConfig({ models: { default: "a/base" }, limits: { attempts: 10 } }, directory, { models: { roles: { planner: "b/review" } }, limits: { workers: 1 } })
       expect(config.models).toMatchObject({ default: "a/base", roles: { planner: "b/review" } })
@@ -218,7 +217,7 @@ describe("global defaults and optional project overrides", () => {
 
   test("rejects malformed project configuration with its path in the error", async () => {
     await withProject(async directory => {
-      const path = join(directory, "ultraopencode.json")
+      const path = join(directory, "gigacode.json")
       await writeFile(path, "{broken")
       await expect(loadProjectConfig(undefined, directory)).rejects.toThrow(path)
       await writeFile(path, JSON.stringify({ unknown: true }))
@@ -230,7 +229,7 @@ describe("global defaults and optional project overrides", () => {
 
   test("malformed project JSON reports its path without exposing source fragments", async () => {
     await withProject(async directory => {
-      const path = join(directory, "ultraopencode.json"), secret = "synthetic-secret-fragment"
+      const path = join(directory, "gigacode.json"), secret = "synthetic-secret-fragment"
       await writeFile(path, `{"checks":[],"apiKey":"${secret}" broken}`)
       const error = await loadProjectConfig(undefined, directory).then(() => undefined, error => error as Error)
       expect(error).toBeInstanceOf(Error)

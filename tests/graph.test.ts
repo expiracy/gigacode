@@ -40,7 +40,7 @@ describe("validated workflow graphs", () => {
   })
 
   test("rejects absolute, traversal, and runtime metadata writer paths", () => {
-    for (const path of ["../other/**", "/tmp/**", "C:\\outside\\**", "\\\\server\\share", "src/../outside", ".ultraopencode/**", ".ultracode/**", "~/.ssh/**"]) {
+    for (const path of ["../other/**", "/tmp/**", "C:\\outside\\**", "\\\\server\\share", "src/../outside", ".gigacode/**", "~/.ssh/**"]) {
       const task = { ...reader("writer"), role: "implementer", stage: "implementation", writes: true, ownedPaths: [path] }
       expect(() => validatePlan({ ...plan(), tasks: [task] }, "execute", config)).toThrow()
     }

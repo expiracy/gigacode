@@ -18,6 +18,6 @@ export function resourceCleanup(resources: Resources): () => Promise<void> {
       try { await registration.dispose() } catch (error) { failures.push(error) }
     }
     try { resources.close() } catch (error) { failures.push(error) }
-    if (failures.length) throw new AggregateError(failures, "UltraOpenCode cleanup failed")
+    if (failures.length) throw new AggregateError(failures, "GigaCode cleanup failed")
   })()
 }

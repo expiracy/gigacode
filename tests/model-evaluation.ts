@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { OpenCode } from "@opencode/client"
 import { assertHostVersion } from "../src/compatibility.ts"
-import { UltraRpc } from "../src/rpc.ts"
+import { GigaCodeRpc } from "../src/rpc.ts"
 import { sanitizeEventData } from "../src/redaction.ts"
 
 export function evaluationUsage(sessions: EvaluationSession[]): { cost: number | null; knownCost: number; tokens: number | null; unknownCostSessions: string[] } {
@@ -129,7 +129,7 @@ export async function prepareEvaluationFixture(scenario: EvaluationScenario, dir
   const files: Record<string, string> = {
     "protected.txt": "Preserve this sentinel exactly.\n",
     "package.json": JSON.stringify({ private: true, type: "module", scripts: { test: "bun test tests" } }),
-    "ultraopencode.json": JSON.stringify({
+    "gigacode.json": JSON.stringify({
       models: { default: options.modelReference, roles: Object.fromEntries(roles.map(role => [role, options.modelReference])), stages: Object.fromEntries(stages.map(stage => [stage, options.modelReference])) },
       limits: options.limits, parallelWrites: false,
       checks: scenario !== "research" ? [{ id: "fixture-tests", command: "bun run test", criterionIds: ["verification"] }] : [],
@@ -228,7 +228,7 @@ export async function runModelEvaluation(args: string[], runtime: { root?: strin
     if (usage.cost === null) throw new Error(`Observed cost is unknown for ${usage.unknownCostSessions.join(", ")}; evaluation stopped`)
     if (usage.knownCost >= options.maxCost) throw new Error("Observed cost allowance exhausted; evaluation stopped before further model work")
   }
-  const rpc = client.rpc(UltraRpc)
+  const rpc = client.rpc(GigaCodeRpc)
   try {
     for (const scenario of options.scenarios) {
       guard()
@@ -266,7 +266,7 @@ export async function runModelEvaluation(args: string[], runtime: { root?: strin
         return result
       }
       try {
-        const parent = await client.session.create({ location, agent: "ultraopencode", model: options.model, title: `UltraOpenCode evaluation: ${scenario}` }, { signal: AbortSignal.timeout(5_000) })
+        const parent = await client.session.create({ location, agent: "gigacode", model: options.model, title: `GigaCode evaluation: ${scenario}` }, { signal: AbortSignal.timeout(5_000) })
         parentId = parent.id; scenarioSessions.add(parent.id); sessions.set(parent.id, parent); guard()
         await client.session.prompt({ sessionID: parent.id, text: prompt }, { signal: AbortSignal.timeout(5_000) })
         const deadline = Date.now() + options.limits.runMs

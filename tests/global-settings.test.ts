@@ -6,17 +6,28 @@ import { GlobalSettings } from "../src/global-settings.ts"
 
 const directories: string[] = []
 async function fixture() {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), "ultra-global-settings-")))
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "gigacode-global-settings-")))
   directories.push(directory)
-  const packagePath = join(directory, "ultra")
+  const packagePath = join(directory, "gigacode")
   const path = join(directory, "opencode.json")
   return { directory, packagePath, path, settings: new GlobalSettings({ configDirectory: directory, packagePath }) }
 }
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }) })
 
-test("global settings expose only UltraOpenCode options and built-in defaults, never native credentials", async () => {
+test("former package registrations do not supply editable GigaCode defaults", async () => {
   const f = await fixture()
-  const source = JSON.stringify({ providers: { private: { apiKey: "fixture-secret" } }, plugins: [{ package: f.packagePath, options: { limits: { workers: 2 }, prompts: { reviewer: "Keep contracts" } } }] })
+  const source = JSON.stringify({ plugins: [
+    { package: "open-ultra-code", options: { limits: { workers: 2 } } },
+    { package: "ultra-open-code", options: { limits: { workers: 0 } } },
+  ] })
+  await writeFile(f.path, source)
+  await expect(f.settings.read()).rejects.toThrow("GigaCode is not registered")
+  expect(await readFile(f.path, "utf8")).toBe(source)
+})
+
+test("global settings expose only GigaCode options and built-in defaults, never native credentials", async () => {
+  const f = await fixture()
+  const source = JSON.stringify({ providers: { private: { apiKey: "fixture-secret" } }, plugins: [{ package: "opencode-gigacode", options: { limits: { workers: 2 }, prompts: { reviewer: "Keep contracts" } } }] })
   await writeFile(f.path, source)
   const view = await f.settings.read()
   expect(view.path).toBe(f.path)
@@ -27,7 +38,7 @@ test("global settings expose only UltraOpenCode options and built-in defaults, n
   expect(await readFile(f.path, "utf8")).toBe(source)
 })
 
-test("global saves change only UltraOpenCode editable fields and preserve JSONC comments and unrelated configuration", async () => {
+test("global saves change only GigaCode editable fields and preserve JSONC comments and unrelated configuration", async () => {
   const f = await fixture()
   const source = `{
   // Keep provider credentials and explanation.
@@ -86,12 +97,12 @@ test("editing one global role preserves comments and instructions on the other r
 
 test("an explicit shared profile resolves relative plugin paths beside that file", async () => {
   const f = await fixture()
-  await writeFile(f.path, JSON.stringify({ plugins: [{ package: "./ultra", options: { limits: { workers: 2 } } }] }))
+  await writeFile(f.path, JSON.stringify({ plugins: [{ package: "./gigacode", options: { limits: { workers: 2 } } }] }))
   const settings = new GlobalSettings({ path: f.path, configDirectory: join(f.directory, "other-default-profile"), packagePath: f.packagePath })
   expect((await settings.read()).effective.limits.workers).toBe(2)
 })
 
-test("concurrent editors in different instances cannot overwrite the first global save", async () => {
+test("concurrent editors in different instances cannot overwrite the winning global save", async () => {
   const f = await fixture()
   await writeFile(f.path, JSON.stringify({ plugins: [{ package: f.packagePath }] }))
   const other = new GlobalSettings({ configDirectory: f.directory, packagePath: f.packagePath })
@@ -100,8 +111,12 @@ test("concurrent editors in different instances cannot overwrite the first globa
     f.settings.save(before.revision, { limits: { workers: 1 } }, []),
     other.save(before.revision, { limits: { workers: 2 } }, []),
   ])
-  expect(results.map(result => result.status)).toEqual(["fulfilled", "rejected"])
-  expect((await f.settings.read()).effective.limits.workers).toBe(1)
+  expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1)
+  expect(results.filter(result => result.status === "rejected")).toHaveLength(1)
+  const winner = results.findIndex(result => result.status === "fulfilled")
+  const rejected = results.find(result => result.status === "rejected") as PromiseRejectedResult
+  expect(String(rejected.reason)).toContain("Global defaults changed")
+  expect((await f.settings.read()).effective.limits.workers).toBe(winner === 0 ? 1 : 2)
 })
 
 test("invalid global limits are rejected without changing the native profile", async () => {
@@ -124,7 +139,7 @@ test("cancelled global writes preserve the original profile", async () => {
 test("ambiguous global registrations are refused before any profile write", async () => {
   const f = await fixture(), source = JSON.stringify({ plugins: [f.packagePath, { package: f.packagePath, options: { limits: { workers: 2 } } }] })
   await writeFile(f.path, source)
-  await expect(f.settings.read()).rejects.toThrow("Multiple UltraOpenCode registrations")
+  await expect(f.settings.read()).rejects.toThrow("Multiple GigaCode registrations")
   expect(await readFile(f.path, "utf8")).toBe(source)
 })
 

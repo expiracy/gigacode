@@ -2,7 +2,7 @@ import { parseConfig, strictRecord } from "./config.ts"
 import { recipeName, type RecipeName } from "./recipes.ts"
 import type { Limits } from "./types.ts"
 
-export type UltraCommand =
+export type GigaCodeCommand =
   | { type: "start" | "plan"; task: string; recipe?: RecipeName }
   | { type: "run"; id: string; revision: number }
   | { type: "status"; id?: string }
@@ -13,17 +13,17 @@ export type UltraCommand =
   | { type: "budget"; id: string; limits: Partial<Limits> }
   | { type: "config" | "on" | "off" }
 
-export const commandUsage = "Usage: /ultraopencode start|plan <task>; plan --recipe <deep-review|bug-investigation|cross-checked-research> <task>; run <id>@<revision>; status [id]; inspect <id> [task]; pause|resume|cancel|export <id>; retry <id> <task>; input <id> <answer>; budget <id> <limits-json>; config|on|off"
+export const commandUsage = "Usage: /gigacode start|plan <task>; plan --recipe <deep-review|bug-investigation|cross-checked-research> <task>; run <id>@<revision>; status [id]; inspect <id> [task]; pause|resume|cancel|export <id>; retry <id> <task>; input <id> <answer>; budget <id> <limits-json>; config|on|off"
 
 function id(value: string | undefined): string {
   if (!value || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)) throw new Error(`Invalid run/task ID. ${commandUsage}`)
   return value
 }
 
-export function parseCommand(text: string): UltraCommand {
+export function parseCommand(text: string): GigaCodeCommand {
   if (typeof text !== "string") throw new Error(commandUsage)
   let input = text.trim()
-  if (/^\/ultraopencode(?:\s|$)/.test(input)) input = input.replace(/^\/ultraopencode\s*/, "")
+  if (/^\/gigacode(?:\s|$)/.test(input)) input = input.replace(/^\/gigacode\s*/, "")
   const match = /^(\S+)(?:\s+([\s\S]*))?$/.exec(input)
   if (!match) throw new Error(commandUsage)
   const verb = match[1]!
@@ -72,6 +72,6 @@ export function parseCommand(text: string): UltraCommand {
     case "config": case "on": case "off":
       if (arguments_.length) throw new Error(commandUsage)
       return { type: verb }
-    default: throw new Error(`Unknown ultraopencode command: ${verb}. ${commandUsage}`)
+    default: throw new Error(`Unknown gigacode command: ${verb}. ${commandUsage}`)
   }
 }

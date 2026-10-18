@@ -1,16 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import { parseCommand } from "../src/commands.ts"
 
-describe("deterministic ultraopencode command parsing", () => {
+describe("deterministic gigacode command parsing", () => {
   test("explicit read-only recipes preserve multiline task scope and reject ambiguous selection", () => {
-    expect(parseCommand('/ultraopencode plan --recipe deep-review Inspect "quoted" callers\nand errors')).toEqual({ type: "plan", recipe: "deep-review", task: 'Inspect "quoted" callers\nand errors' })
+    expect(parseCommand('/gigacode plan --recipe deep-review Inspect "quoted" callers\nand errors')).toEqual({ type: "plan", recipe: "deep-review", task: 'Inspect "quoted" callers\nand errors' })
     for (const text of ["plan --recipe", "plan --recipe deep-review", "plan --recipe unknown Review", "start --recipe deep-review Review", "-- --recipe deep-review Review"]) expect(() => parseCommand(text)).toThrow()
   })
   test("preserves task text and accepts the explicit start alias", () => {
     expect(parseCommand('plan Fix "quoted  text"\nwith a second line')).toEqual({ type: "plan", task: 'Fix "quoted  text"\nwith a second line' })
     expect(parseCommand("start inspect the status parser")).toEqual({ type: "start", task: "inspect the status parser" })
     expect(parseCommand("-- fix race conditions")).toEqual({ type: "start", task: "fix race conditions" })
-    expect(parseCommand("/ultraopencode plan design an API")).toEqual({ type: "plan", task: "design an API" })
+    expect(parseCommand("/gigacode plan design an API")).toEqual({ type: "plan", task: "design an API" })
   })
 
   test("parses control commands without guessed arguments", () => {

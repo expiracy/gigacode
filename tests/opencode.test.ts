@@ -40,7 +40,7 @@ function bridgeFixture() {
   adapter.workspace = async () => "workspace"
   const context = (sessionID: string, messageID = "message", id = "call") => {
     seed(sessionID)
-    return { sessionID, messageID, id, agent: "ultraopencode", signal: new AbortController().signal, async progress() {} } as any
+    return { sessionID, messageID, id, agent: "gigacode", signal: new AbortController().signal, async progress() {} } as any
   }
   const run = (sessionId: string): Run => ({ id: `run_${sessionId}`, projectId: "project", directory, parentSessionId: sessionId, supervisorSessionId: sessionId, intentId: "intent", policy: [{ action: "*", resource: "*", effect: "allow" }], status: "running", ownerEpoch: 1, tasks: [] } as unknown as Run)
   const worker = (sessionId: string): Binding => {
@@ -82,15 +82,15 @@ describe("native adapter boundaries", () => {
     const run = f.run("parent")
     await f.adapter.publish(run, "notification_saved", "Verified candidate")
     await f.adapter.publish(run, "notification_saved", "Verified candidate")
-    expect(notices.map(item => item.id)).toEqual(["msg_ultraopencode_notification_saved", "msg_ultraopencode_notification_saved"])
-    expect(notices[0]).toMatchObject({ sessionID: "parent", delivery: "queue", resume: false, metadata: { ultraRunId: run.id } })
+    expect(notices.map(item => item.id)).toEqual(["msg_gigacode_notification_saved", "msg_gigacode_notification_saved"])
+    expect(notices[0]).toMatchObject({ sessionID: "parent", delivery: "queue", resume: false, metadata: { gigacodeRunId: run.id } })
   })
   test("only an active fixed preparation command removes Git overrides before the native shell spawn", () => {
-    const f = bridgeFixture(), event = { command: "fixed-preparation", cwd: f.directory, env: { ...process.env, GIT_DIR: "foreign-git", GIT_CONFIG_COUNT: "1", ULTRA_FIXTURE_KEEP: "kept" } }
+    const f = bridgeFixture(), event = { command: "fixed-preparation", cwd: f.directory, env: { ...process.env, GIT_DIR: "foreign-git", GIT_CONFIG_COUNT: "1", GIGACODE_FIXTURE_KEEP: "kept" } }
     f.adapter.preparations.set("proof", { sessionId: "prepare", messageId: "message", command: event.command, directory: f.directory })
     f.adapter.preparationShell(event)
     expect(event.env.GIT_DIR).toBeUndefined(); expect(event.env.GIT_CONFIG_COUNT).toBeUndefined()
-    const output = execFileSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify({git:process.env.GIT_DIR??null,config:process.env.GIT_CONFIG_COUNT??null,keep:process.env.ULTRA_FIXTURE_KEEP}))"], { env: { ...process.env, ...event.env }, encoding: "utf8" })
+    const output = execFileSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify({git:process.env.GIT_DIR??null,config:process.env.GIT_CONFIG_COUNT??null,keep:process.env.GIGACODE_FIXTURE_KEEP}))"], { env: { ...process.env, ...event.env }, encoding: "utf8" })
     expect(JSON.parse(output)).toEqual({ git: null, config: null, keep: "kept" })
     const unrelated = { command: "ordinary-user-command", cwd: f.directory, env: { GIT_DIR: "user-choice" } }
     f.adapter.preparationShell(unrelated); expect(unrelated.env.GIT_DIR).toBe("user-choice")
@@ -116,7 +116,7 @@ describe("native adapter boundaries", () => {
     } finally { clearTimeout(timer); release(); await first }
   })
   test("moved workers bind only at their recorded destination while the source can reconcile them", async () => {
-    const f = bridgeFixture(), saved = f.run("supervisor"), worker = f.worker("worker"), destination = f.directory + "/.ultraopencode/test-worktree"
+    const f = bridgeFixture(), saved = f.run("supervisor"), worker = f.worker("worker"), destination = f.directory + "/.gigacode/test-worktree"
     saved.tasks = worker.run.tasks
     saved.tasks[0]!.attempts[0]!.worktree = { directory: destination, state: "ready" }
     f.context("worker"); f.sessions.get("worker").location.directory = destination
@@ -130,7 +130,7 @@ describe("native adapter boundaries", () => {
     await expect(source.scoped("worker", destination as any)).resolves.toMatchObject({ id: "worker" })
   })
   test("destination hooks must be ready and retiring an old adapter cannot erase a replacement", () => {
-    const f = bridgeFixture(), saved = f.run("supervisor"), worker = f.worker("worker"), destination = f.directory + "/.ultraopencode/ready-worktree"
+    const f = bridgeFixture(), saved = f.run("supervisor"), worker = f.worker("worker"), destination = f.directory + "/.gigacode/ready-worktree"
     saved.tasks = worker.run.tasks; saved.tasks[0]!.attempts[0]!.worktree = { directory: destination, state: "ready" }
     const store = { list() { return [saved] }, event() { return true } } as unknown as Store
     const ctx = { ...f.ctx, location: { directory: destination, project: { id: "project" } } }
@@ -144,7 +144,7 @@ describe("native adapter boundaries", () => {
     expect(source.destinationReady(destination, "worker")).toBe(false)
   })
   test("native delegated worktree children move and establish destination hooks before prompt release", async () => {
-    const f = bridgeFixture(), context = f.context("supervisor"), saved = f.run("supervisor"), destination = f.directory + "/.ultraopencode/prelaunch-worktree", order: string[] = []
+    const f = bridgeFixture(), context = f.context("supervisor"), saved = f.run("supervisor"), destination = f.directory + "/.gigacode/prelaunch-worktree", order: string[] = []
     const task = { id: "writer", title: "Write", role: "implementer", stage: "implementation", instructions: "Write", dependencies: [], writes: true, ownedPaths: ["a.txt"] } as any
     const attempt = { id: "attempt-writer", taskId: task.id, model: f.model, prompt: "Write", status: "reserved", ownerEpoch: 1, worktree: { directory: destination, state: "ready" } } as any
     saved.tasks = [{ spec: task, status: "running", attempts: [attempt] }]
@@ -153,7 +153,7 @@ describe("native adapter boundaries", () => {
     const update = f.ctx.session.update
     f.ctx.session.update = async input => { order.push("permissions"); await update(input) }
     Object.assign(f.ctx.session, { async move({ sessionID, directory }: any) { order.push("move"); f.sessions.get(sessionID).location.directory = directory }, async wait() { order.push("wait") }, async prompt(input: any) {
-      order.push("activation"); expect(input.resume).toBe(false); expect(input.metadata.ultraWorktreeActivation).toBe(true); expect(input.metadata.ultraAttemptId).toBe(attempt.id)
+      order.push("activation"); expect(input.resume).toBe(false); expect(input.metadata.gigacodeWorktreeActivation).toBe(true); expect(input.metadata.gigacodeAttemptId).toBe(attempt.id)
       target.markReady(); return { id: "activation-message" }
     } })
     context.progress = async () => { order.push("release") }
@@ -168,7 +168,7 @@ describe("native adapter boundaries", () => {
     } finally { target.retire(); await f.settle([operation]) }
   })
   test("placement observes source cancellation even when native idle wait ignores request options", async () => {
-    const f = bridgeFixture(), controller = new AbortController(), context = f.context("supervisor"), saved = f.run("supervisor"), destination = f.directory + "/.ultraopencode/aborted-placement"
+    const f = bridgeFixture(), controller = new AbortController(), context = f.context("supervisor"), saved = f.run("supervisor"), destination = f.directory + "/.gigacode/aborted-placement"
     context.signal = controller.signal
     const task = { id: "writer", title: "Write", role: "implementer", stage: "implementation", instructions: "Write", dependencies: [], writes: true, ownedPaths: ["a.txt"] } as any
     const attempt = { id: "attempt-writer", taskId: task.id, model: f.model, prompt: "Write", status: "reserved", ownerEpoch: 1, worktree: { directory: destination, state: "ready" } } as any
@@ -199,12 +199,12 @@ describe("native adapter boundaries", () => {
     await expect(checkedInput({ name: "probe", input: {} } as any, {})).rejects.toThrow("Unsupported")
   })
   test("workers cannot expose raw shell, delegation or codemode escape hatches", () => {
-    const tools = Object.fromEntries(["read", "write", "edit", "shell", "execute", "subagent", "ultraopencode_submit", "ultraopencode_check", "ultraopencode_execute", "ultraopencode_start", "third_party"].map(name => [name, {}]))
-    expect(Object.keys(visibleTools(tools, "reviewer"))).toEqual(["read", "ultraopencode_submit"])
-    expect(Object.keys(visibleTools(tools, "implementer"))).toEqual(["read", "write", "edit", "ultraopencode_submit"])
-    expect(Object.keys(visibleTools(tools, "verifier"))).toEqual(["read", "ultraopencode_submit", "ultraopencode_check"])
-    expect(Object.keys(visibleTools(tools, "supervisor"))).toEqual(["ultraopencode_execute"])
-    expect(visibleTools({ "third_party.read": {}, "third_party.write": {}, "third_party.ultraopencode_execute": {} }, "implementer")).toEqual({})
+    const tools = Object.fromEntries(["read", "write", "edit", "shell", "execute", "subagent", "gigacode_submit", "gigacode_check", "gigacode_execute", "gigacode_start", "third_party"].map(name => [name, {}]))
+    expect(Object.keys(visibleTools(tools, "reviewer"))).toEqual(["read", "gigacode_submit"])
+    expect(Object.keys(visibleTools(tools, "implementer"))).toEqual(["read", "write", "edit", "gigacode_submit"])
+    expect(Object.keys(visibleTools(tools, "verifier"))).toEqual(["read", "gigacode_submit", "gigacode_check"])
+    expect(Object.keys(visibleTools(tools, "supervisor"))).toEqual(["gigacode_execute"])
+    expect(visibleTools({ "third_party.read": {}, "third_party.write": {}, "third_party.gigacode_execute": {} }, "implementer")).toEqual({})
   })
   test("a model assertion or missing native exit is never a passed check", () => {
     expect(checkOutcome({ exit: 0 })).toBe("passed")
@@ -220,7 +220,7 @@ describe("native adapter boundaries", () => {
       await f.entered(2)
       expect(f.adapter.delegations.size).toBe(2)
       f.calls[0]!.release(); await operations[0]
-      expect([...f.adapter.delegations.values()]).toEqual([expect.objectContaining({ sessionId: b.sessionID, messageId: b.messageID, agent: "ultraopencode-supervisor" })])
+      expect([...f.adapter.delegations.values()]).toEqual([expect.objectContaining({ sessionId: b.sessionID, messageId: b.messageID, agent: "gigacode-supervisor" })])
       f.calls[1]!.release(); await operations[1]
       expect(f.adapter.delegations.size).toBe(0)
     } finally { await f.settle(operations) }
@@ -232,7 +232,7 @@ describe("native adapter boundaries", () => {
     const attempt = { model: f.model, prompt: "Inspect" } as any
     const operations = [f.adapter.launch(saved, attempt, task, invocation(context), async () => {}), f.adapter.launch(saved, attempt, task, invocation(context), async () => {})]
     const binding: Binding = { run: saved, role: "supervisor" }
-    const event = { sessionID: context.sessionID, action: "subagent", resources: ["ultraopencode-worker"], source: { messageID: context.messageID, id: context.id }, effect: "ask" as const }
+    const event = { sessionID: context.sessionID, action: "subagent", resources: ["gigacode-worker"], source: { messageID: context.messageID, id: context.id }, effect: "ask" as const }
     try {
       await f.entered(2)
       expect(f.adapter.delegations.size).toBe(1)
@@ -261,7 +261,7 @@ describe("native adapter boundaries", () => {
       await new Promise(done => setTimeout(done, 10))
       expect(outcome).toBeInstanceOf(Error)
       expect(f.calls).toHaveLength(1)
-      expect([...f.adapter.delegations.values()][0]?.agent).toBe("ultraopencode-supervisor")
+      expect([...f.adapter.delegations.values()][0]?.agent).toBe("gigacode-supervisor")
       f.calls.forEach(call => call.release()); await Promise.allSettled([first, second])
     } finally { await f.settle([first]) }
   })

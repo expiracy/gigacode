@@ -10,7 +10,7 @@ export interface WorkflowTask {
   checks: (Pick<CheckEvidence, "id" | "checkId" | "outcome" | "exit" | "command" | "finishedAt" | "output"> & { current: boolean })[]
 }
 export interface WorkflowRun {
-  id: string; parentSessionId: string; directory: string; generation: number; revision: number
+  id: string; parentSessionId: string; directory: string; generation: number; revision: number; proposalRevision?: number
   status: Run["status"]; phase: Run["phase"]; objective: string; supervisorSessionId?: string
   tasks: WorkflowTask[]; errors: string[]; omittedErrors: number
   usage: { workers: number; attempts: number; tokens: number | null; cost: number | null; tokenObservations: number; costObservations: number; activeMs: number; elapsedMs: number; limits: Run["config"]["limits"] }
@@ -33,6 +33,7 @@ export function workflowView(run: Run, now = Date.now()): WorkflowRun {
   const costs = attempts.flatMap(attempt => typeof attempt.cost === "number" && Number.isFinite(attempt.cost) && attempt.cost >= 0 ? [attempt.cost] : [])
   const view: WorkflowRun = {
     id: run.id, parentSessionId: run.parentSessionId, directory: run.directory, generation: run.generation, revision: run.revision,
+    ...(run.proposal ? { proposalRevision: run.proposal.revision } : {}),
     status: run.status, phase: run.phase, objective: preview(run.objective, 1500), supervisorSessionId: run.supervisorSessionId,
     errors: run.errors.slice(-6).map(error => preview(error, 1000)), omittedErrors: Math.max(0, run.errors.length - 6),
     tasks: run.tasks.map(task => {

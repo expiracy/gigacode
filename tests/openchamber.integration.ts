@@ -12,7 +12,7 @@ import { manifest } from "../src/workspace.ts"
 import { createWorkflowFixture } from "./workflow-fixture.ts"
 
 const object = { type: "object", additionalProperties: true } as const
-const SettingsRpc = Rpc.define({ id: "open-ultra-code", methods: { config: { input: object, output: object } }, events: {} })
+const SettingsRpc = Rpc.define({ id: "gigacode", methods: { config: { input: object, output: object } }, events: {} })
 interface PluginEntry { id: string; spec: string; scope: "user" | "project"; sourcePath: string; options?: Record<string, unknown> }
 interface OpenChamberPlugins {
   listPluginEntries(directory: string): PluginEntry[]
@@ -214,7 +214,7 @@ export async function runOpenChamberIntegration() {
       assert.equal(saved.plugins.filter((value: any) => value.package === pluginDirectory).length, 1)
       assert.deepEqual(plugins.getPluginEntry(entry.id, host!.project)?.options, updated)
       assert.equal(await readFile(`${globalFile}.openchamber.backup`, "utf8"), before, "OpenChamber keeps the immediate pre-write source in its fixed backup path")
-      const effective = await applied("changed global UltraOpenCode options", host!.project, value => value.config.prompts?.planner === "GLOBAL_PLANNER")
+      const effective = await applied("changed global GigaCode options", host!.project, value => value.config.prompts?.planner === "GLOBAL_PLANNER")
       assert.deepEqual(effective.config.models.roles, updated.models.roles)
       assert.deepEqual(effective.config.models.stages, updated.models.stages)
       assert.equal(effective.config.limits.workers, 3)
@@ -241,7 +241,7 @@ export async function runOpenChamberIntegration() {
       assert.deepEqual(saved.permissions, projectInitial.permissions)
       assert.deepEqual(saved.plugins[0].options, projectOptions)
       assert.equal(await readFile(`${projectFile}.openchamber.backup`, "utf8"), projectBefore)
-      const effective = await applied("native project UltraOpenCode options", host!.project, value => value.config.prompts?.reviewer === "NATIVE_PROJECT_REVIEWER")
+      const effective = await applied("native project GigaCode options", host!.project, value => value.config.prompts?.reviewer === "NATIVE_PROJECT_REVIEWER")
       assert.equal(effective.config.models.default, "inherit")
       assert.deepEqual(effective.config.models.roles, projectOptions.models.roles)
       assert.deepEqual(effective.config.models.stages, {})
@@ -255,15 +255,15 @@ export async function runOpenChamberIntegration() {
       return { entry: plugins.getPluginEntry(entry.id, host!.project), effective, otherProject: other.config }
     })
 
-    await check("ultraopencode.json remains the higher priority field-wise project override", async () => {
-      const overrideFile = join(host!.project, "ultraopencode.json")
+    await check("gigacode.json remains the higher priority field-wise project override", async () => {
+      const overrideFile = join(host!.project, "gigacode.json")
       const override = { models: { roles: { reviewer: "fixture/alternate" } }, limits: { steps: 5 }, checks: [{ id: "file-check", command: "echo file-settings-probe", criterionIds: ["verification"] }], prompts: { planner: "FILE_PLANNER" } }
       await writeFile(overrideFile, JSON.stringify(override, null, 2) + "\n")
-      // UltraOpenCode captures this non-native file during setup. Do not infer that
+      // GigaCode captures this non-native file during setup. Do not infer that
       // OpenCode watches it merely because it watches native config files.
       await host!.restart()
       await activate(host!.project)
-      application.push({ change: "exact-directory ultraopencode.json", method: "explicit fixture restart" })
+      application.push({ change: "exact-directory gigacode.json", method: "explicit fixture restart" })
       const effective = await configuration()
       assert.deepEqual(effective.config.models.roles, { planner: "fixture/test", reviewer: "fixture/alternate" })
       assert.equal(effective.config.limits.workers, 2)
@@ -271,7 +271,7 @@ export async function runOpenChamberIntegration() {
       assert.deepEqual(effective.config.checks, override.checks)
       assert.deepEqual(effective.config.prompts, { reviewer: "NATIVE_PROJECT_REVIEWER", planner: "FILE_PLANNER" })
       const entry = plugins.listPluginEntries(host!.project).find(value => value.scope === "project" && value.spec === pluginDirectory)!
-      assert.deepEqual(entry.options, projectOptions, "The native options editor shows its source layer, not the standalone UltraOpenCode override")
+      assert.deepEqual(entry.options, projectOptions, "The native options editor shows its source layer, not the standalone GigaCode override")
       return { overrideFile, effective, editorOptions: entry.options }
     })
     assert.equal((await manifest(pluginDirectory)).hash, pluginSnapshot.hash, "Production source snapshot must remain unchanged")

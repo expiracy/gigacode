@@ -85,7 +85,7 @@ export function fixtureExecutionWorkflow(machineChecks = true): Workflow {
     tasks: [
       { id: "native.implement", title: "Implement fixture", role: "implementer", stage: "implementation", instructions: "Write implemented.txt containing native implementation verified followed by a newline.", dependencies: [], writes: true, ownedPaths: ["implemented.txt"] },
       { id: "native.review", title: "Review fixture", role: "reviewer", stage: "review", instructions: "Read the fixture candidate and independently assess the required criteria.", dependencies: ["native.implement"], writes: false },
-      { id: "native.verify", title: "Verify fixture", role: "verifier", stage: "verification", instructions: machineChecks ? "Execute fixture-check through ultraopencode_check and report the actual result." : "Report that machine checks are disabled and assess available read-only evidence.", dependencies: ["native.implement"], writes: false, checkIds: machineChecks ? ["fixture-check"] : [] },
+      { id: "native.verify", title: "Verify fixture", role: "verifier", stage: "verification", instructions: machineChecks ? "Execute fixture-check through gigacode_check and report the actual result." : "Report that machine checks are disabled and assess available read-only evidence.", dependencies: ["native.implement"], writes: false, checkIds: machineChecks ? ["fixture-check"] : [] },
     ],
   }
 }
@@ -133,9 +133,9 @@ export function createWorkflowFixture(options: { writePaths?: Record<string, str
           if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) return []
           return message.tool_calls.map(call => (call as { function?: { name?: string } }).function?.name).filter((name): name is string => typeof name === "string")
         })
-        const start = /^ULTRA_START_INTENT\s+([^\r\n]+)/m.exec(prompt)
-        const supervisor = /^ULTRA_SUPERVISOR\s+([^\r\n]+)/m.exec(prompt)
-        const worker = /^ULTRA_TASK_META\s+([^\r\n]+)/m.exec(prompt)
+        const start = /^GIGACODE_START_INTENT\s+([^\r\n]+)/m.exec(prompt)
+        const supervisor = /^GIGACODE_SUPERVISOR\s+([^\r\n]+)/m.exec(prompt)
+        const worker = /^GIGACODE_TASK_META\s+([^\r\n]+)/m.exec(prompt)
         record = { id: requests.length + 1, model: body.model, marker: start ? "start" : supervisor ? "supervisor" : worker ? "task" : "ordinary", calls: [], tools: (body.tools ?? []).flatMap(tool => typeof tool.function?.name === "string" ? [tool.function.name] : []), state: "pending" }
         requests.push(record)
         let calls: ToolCall[] = []
@@ -143,7 +143,7 @@ export function createWorkflowFixture(options: { writePaths?: Record<string, str
         if (start || supervisor) {
           const meta = JSON.parse((start ?? supervisor)![1]!) as { runId: string; intentId: string }
           record.runId = meta.runId
-          const name = start ? "ultraopencode_start" : "ultraopencode_execute"
+          const name = start ? "gigacode_start" : "gigacode_execute"
           if (!completedCalls.includes(name)) calls = [{ name, arguments: { runId: meta.runId, intentId: meta.intentId } }]
         } else if (worker) {
           const meta = JSON.parse(worker[1]!) as { runId: string; taskId: string; attemptId: string; role: string; stage: string }
@@ -151,27 +151,27 @@ export function createWorkflowFixture(options: { writePaths?: Record<string, str
           const required = criteria(prompt)
           const directory = /^Directory: (.+)$/m.exec(prompt)?.[1]
           if (!directory) throw new Error("Native worker prompt omitted its directory")
-          const internal = record.tools.includes("ultraopencode_prepare") ? "ultraopencode_prepare" : record.tools.includes("ultraopencode_integrate") ? "ultraopencode_integrate" : undefined
+          const internal = record.tools.includes("gigacode_prepare") ? "gigacode_prepare" : record.tools.includes("gigacode_integrate") ? "gigacode_integrate" : undefined
           const writePath = options.writePaths?.[meta.taskId] ?? "implemented.txt"
           if (internal) {
             if (!completedCalls.includes(internal)) calls = [{ name: internal, arguments: {} }]
-            else if (!completedCalls.includes("ultraopencode_submit")) calls = [{ name: "ultraopencode_submit", arguments: { result: { summary: `Native ${internal} completed.` } } }]
+            else if (!completedCalls.includes("gigacode_submit")) calls = [{ name: "gigacode_submit", arguments: { result: { summary: `Native ${internal} completed.` } } }]
           } else if (meta.role === "implementer" && prompt.includes("Automatic mode should coordinate") && !completedCalls.includes("read")) {
             calls = [{ name: "read", arguments: { path: directory.replaceAll("\\", "/") + "/implemented.txt" } }]
           } else if (meta.role === "implementer" && !completedCalls.includes("write")) {
             calls = [{ name: "write", arguments: { path: directory.replaceAll("\\", "/") + "/" + writePath, content: "native implementation verified\n" } }]
           } else if (meta.role === "reviewer" && meta.stage === "review" && !completedCalls.includes("read")) {
             calls = [{ name: "read", arguments: { path: directory.replaceAll("\\", "/") + "/" + (Object.values(options.writePaths ?? {})[0] ?? "implemented.txt") } }]
-          } else if (meta.role === "verifier" && !completedCalls.includes("ultraopencode_check")) {
-            calls = [{ name: "ultraopencode_check", arguments: { checkId: "fixture-check" } }]
-          } else if (!completedCalls.includes("ultraopencode_submit")) {
+          } else if (meta.role === "verifier" && !completedCalls.includes("gigacode_check")) {
+            calls = [{ name: "gigacode_check", arguments: { checkId: "fixture-check" } }]
+          } else if (!completedCalls.includes("gigacode_submit")) {
             const result: TaskResult = { summary: `Scripted ${meta.role} ${meta.stage} result with native host execution.` }
             if (meta.stage === "design" || meta.role === "reviewer") {
               result.assessments = required.filter(value => value.kind === "assessment").map(value => ({ criterionId: value.id, passed: true, explanation: "The fixture design and candidate satisfy the requested scoped behavior." }))
             }
             if (meta.stage === "design" && ["planner", "synthesizer"].includes(meta.role)) result.proposal = proposal(required, !prompt.includes("GLOBAL_INSTALL_PROJECT_NO_CHECKS"))
             if (meta.role === "reviewer") result.findings = []
-            calls = [{ name: "ultraopencode_submit", arguments: { result } }]
+            calls = [{ name: "gigacode_submit", arguments: { result } }]
           }
         } else {
           // Auxiliary title generation carries the same prompt but no tools.

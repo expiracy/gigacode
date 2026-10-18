@@ -23,7 +23,7 @@ export const limitFields: { title: string; value: keyof Limits; description: str
   { title: "Active run deadline", value: "runMs", seconds: true, description: "Total active workflow time" },
   { title: "Elapsed deadline", value: "elapsedMs", seconds: true, description: "Wall time including pauses" },
   { title: "Steps", value: "steps", description: "Maximum model steps per worker" },
-  { title: "Context characters", value: "contextChars", description: "UltraOpenCode prompt content budget; host history and tools also use model context" },
+  { title: "Context characters", value: "contextChars", description: "GigaCode prompt content budget; host history and tools also use model context" },
 ]
 export function limitText(value: number | undefined, seconds?: boolean): string {
   return value === undefined ? "inherited" : seconds ? `${value / 1000} seconds` : String(value)

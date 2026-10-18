@@ -1,0 +1,76 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      native_host_checks:
+        description: Run the scripted integration suite against every supported native host
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run typecheck
+      - run: bun run test --timeout 15000
+
+  package:
+    name: Package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run test:package
+
+  native:
+    name: Native OpenCode ${{ matrix.host }}
+    if: github.event_name == 'workflow_dispatch' && inputs.native_host_checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [2.0.25, 2.0.26, 2.0.28]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Install the selected official native host
+        run: npm install --prefix "$RUNNER_TEMP/opencode-host" --no-audit --no-fund "@opencode/cli@${{ matrix.host }}"
+      - run: bun run test:integration
+        env:
+          OPENCODE_TEST_VERSION: ${{ matrix.host }}
+          OPENCODE_SPIKE_BIN: ${{ runner.temp }}/opencode-host/node_modules/@opencode/cli/bin/opencode.exe
