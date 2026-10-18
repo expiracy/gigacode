@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
-import { existsSync, lstatSync, realpathSync } from "node:fs"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { existsSync, lstatSync } from "node:fs"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { delimiter, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -48,6 +48,7 @@ export async function packArtifact(source: string, destination: string): Promise
 
 /** Installs only the production tarball and its registry dependencies. Caller owns cleanup. */
 export async function preparePackedInstallation(root: string, source = resolve(dirname(fileURLToPath(import.meta.url)), "..")) {
+  root = await realpath(root)
   const artifact = await packArtifact(source, join(root, "tarballs"))
   const profile = join(root, "home")
   const prefix = join(root, "prefix")
@@ -87,7 +88,8 @@ export async function reinstallPackedArtifact(installation: PackedInstallation):
 
 /** Installs and runs the distributable outside this checkout, with no dev packages. */
 export async function checkPackage(source = resolve(dirname(fileURLToPath(import.meta.url)), "..")) {
-  const root = realpathSync(await mkdtemp(join(realpathSync(tmpdir()), "gigacode package-")))
+  // Match the installer's async realpath, which expands Windows 8.3 aliases.
+  const root = await realpath(await mkdtemp(join(await realpath(tmpdir()), "gigacode package-")))
   try {
     const installation = await preparePackedInstallation(root, source)
     const { artifact, env, project, configurationDirectory, packageDirectory, binary, prefix } = installation
@@ -123,11 +125,11 @@ export async function checkPackage(source = resolve(dirname(fileURLToPath(import
     const options = { limits: { workers: 2 } }
     await writeFile(optionsPath, JSON.stringify(options))
     const setup = JSON.parse(await cli("setup", "--global", "--config", optionsPath))
-    assert.equal(realpathSync(setup.packagePath), realpathSync(packageDirectory))
+    assert.equal(await realpath(setup.packagePath), await realpath(packageDirectory))
     const configuration = JSON.parse(await readFile(configPath, "utf8"))
     for (const key of ["model", "default_agent", "permissions"] as const) assert.deepEqual(configuration[key], original[key])
     assert.deepEqual(configuration.plugins[0], original.plugins[0])
-    assert.equal(configuration.plugins[1].package, realpathSync(packageDirectory))
+    assert.equal(await realpath(configuration.plugins[1].package), await realpath(packageDirectory))
     assert.deepEqual(configuration.plugins[1].options, options)
     assert.deepEqual(configuration.agents.build, original.agents.build)
     assert.equal(configuration.experimental.unrelatedFeature, true)
@@ -142,11 +144,11 @@ export async function checkPackage(source = resolve(dirname(fileURLToPath(import
     assert.equal(diagnosis.ok, true)
     assert.equal(diagnosis.package.name, installed.name)
     assert.equal(diagnosis.package.version, installed.version)
-    assert.equal(realpathSync(diagnosis.package.directory), realpathSync(packageDirectory))
+    assert.equal(await realpath(diagnosis.package.directory), await realpath(packageDirectory))
     assert.equal(diagnosis.host.version, "2.0.25")
     assert.equal(diagnosis.host.compatible, true)
-    assert.equal(diagnosis.profile.directory, configurationDirectory)
-    assert.equal(diagnosis.project.directory, project)
+    assert.equal(await realpath(diagnosis.profile.directory), await realpath(configurationDirectory))
+    assert.equal(await realpath(diagnosis.project.directory), await realpath(project))
     const missingProfile = join(root, "missing-profile")
     const missingDiagnosis = JSON.parse(await command([...binary, "doctor", "--json", "--global-config", missingProfile], project, env, 1))
     assert.equal(missingDiagnosis.ok, false)
@@ -174,7 +176,7 @@ export async function checkPackage(source = resolve(dirname(fileURLToPath(import
     assert.equal((await cli("--version")).trim(), `${installed.name} ${installed.version}`)
     const reinstalledSetup = JSON.parse(await cli("setup", "--global"))
     assert.deepEqual(reinstalledSetup.changes, [])
-    assert.equal(realpathSync(reinstalledSetup.packagePath), realpathSync(packageDirectory))
+    assert.equal(await realpath(reinstalledSetup.packagePath), await realpath(packageDirectory))
     assert.equal(await readFile(configPath, "utf8"), before)
     for (const [path, contents] of retained) assert.equal(await readFile(path, "utf8"), contents)
 
