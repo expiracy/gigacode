@@ -4,7 +4,7 @@
 
 ## Working from source
 
-Requires Bun 1.3.10 or newer. Install dependencies without running lifecycle scripts:
+The source repository remains private. These contributor checks require an authorised source checkout; tests and internal research history are not shipped in the npm package. Requires Bun 1.3.10 or newer. Install dependencies without running lifecycle scripts:
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
@@ -12,26 +12,36 @@ bun install --frozen-lockfile --ignore-scripts
 
 To register this checkout for development, use `bun run install:global`, or `bun run install:project --project /absolute/path/to/project`. The configuration points at this checkout; keep it at that path while registered. Packaged installations use the durable global package and `gigacode setup --global` instead.
 
+To rehearse the distributable locally, create an output directory outside the checkout and use its absolute path:
+
+```sh
+npm pack --ignore-scripts --pack-destination /absolute/path/to/release-artifacts
+npm install --global /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-alpha.1.tgz
+gigacode setup --global
+```
+
+This installs the local artifact without publishing it. Use an isolated profile when rehearsing setup, upgrades, and removal.
+
 ## Release checklist
 
-The candidate is `opencode-gigacode@0.1.0-alpha.1`, intended for npm's `next` tag. It remains unpublished and `private: true`. Preparation and execution evidence are separate:
+This is the pre-upload evidence snapshot for `opencode-gigacode@0.1.0-alpha.1`, with intended npm tag `next`. Registry and CDN verification occur outside this snapshot; consult the [npm listing](https://www.npmjs.com/package/opencode-gigacode) for current package status. The source repository stays private.
 
 | Item | State and evidence |
 | --- | --- |
-| Release boundary | Alpha version and `next` publishing configuration prepared; `private: true` still blocks publication. |
+| Release boundary | Alpha version and `next` publishing configuration prepared. The source repository remains private. |
 | Installation lifecycle | Local alpha.1 package smoke passed on macOS on 18 October 2026: external installation, doctor, explicit/repeated setup, same-version replacement in the same prefix, scoped deregistration, and npm removal preserved unrelated configuration and project state. This is a replacement rehearsal, not a version-to-version upgrade claim. Native matrix runs below also replaced the packed installation and restarted the host while preserving saved runs/events. |
 | Local release gate | `TMPDIR=/private/tmp bun run check:release` passed on macOS with Bun 1.3.14 on 18 October 2026: typechecking, 642 tests, and the full package lifecycle smoke. The tarball contained 59 allowed files, including doctor, MIT licence, and alpha notes. |
 | Native host matrix | `bun run test:integration` passed on macOS on 18 October 2026 for OpenCode 2.0.25, 2.0.26, and 2.0.28: 28 checks passed on each exact host, including packed same-prefix reinstall and native restart. Local report paths are listed below. |
 | Parallel writers | `bun run test:parallel` passed on macOS/OpenCode 2.0.28 on 18 October 2026: two isolated writers, permission-checked preparation/integration, and fresh native verification succeeded. |
-| Platform CI | [Hosted checks](https://github.com/expiracy/gigacode/actions/runs/39154548724) passed on 18 October 2026 for code commit `da7b936`: Ubuntu type/unit checks and the full package lifecycle on Ubuntu, macOS, and Windows. The separate opt-in native CI matrix was skipped; the native results above are local macOS runs. |
-| Documentation | README, user guides, and [alpha notes](../CHANGELOG.md) prepared locally. The source repository is private: choose a public source/docs destination and update the links before npm release, then verify hosted links and GitHub/npm rendering. Repository visibility has not changed. |
+| Platform CI | Internal hosted CI run `39154548724` passed on 18 October 2026 for code commit `da7b936`: Ubuntu type/unit checks and the full package lifecycle on Ubuntu, macOS, and Windows. The separate opt-in native CI matrix was skipped; the native results above are local macOS runs. |
+| Documentation | Public documentation is selected from the guides, README, licence, and changelog included in the npm package, with version-pinned jsDelivr URLs. CDN retrieval and npm rendering verification follow registry upload and are outside this snapshot. The source repository and internal history stay private. |
 | Licence | [MIT licence](../LICENSE) and `license: "MIT"` metadata are present and verified in the installed alpha.1 tarball. |
-| Registry identity | Public registry lookup returned 404 for `opencode-gigacode` on 18 October 2026. No public entry was found; this does not reserve the name. Confirm availability and naming suitability again before release. |
-| Review | Prepared on the private `codex/release-prep-alpha` branch in [draft PR #1](https://github.com/expiracy/gigacode/pull/1); review and merge remain pending. |
-| Publishing access | `npm whoami` authenticated as `expiracy` on 18 October 2026. Publishing permission and any required 2FA are not exercised until publication is explicitly authorised. |
-| Publication | Withheld. Remove `private` only after the remaining checks and explicit publication authorisation. |
+| Registry identity | Public registry lookup returned 404 for `opencode-gigacode` on 18 October 2026 before upload. This historical lookup does not reserve the name or establish current registry status. |
+| Review | Reviewed on internal PR #1 from the private `codex/release-prep-alpha` branch. |
+| Publishing access | `npm whoami` authenticated as `expiracy` on 18 October 2026. Authentication alone does not establish publication success. |
+| Publication | Exact-version retrieval, the `next` tag, published file list, public docs, and installation of the registry artifact are verified after upload, outside this pre-upload snapshot. |
 
-Record the exact candidate version, command, host/platform, and actual result when completing each pending check. The native suites use isolated profiles and a scripted model provider; optional real-model evaluations require explicit connection and budget arguments.
+Record the exact candidate version, command, host/platform, and actual result when reproducing these checks. The native suites use isolated profiles and a scripted model provider; optional real-model evaluations require explicit connection and budget arguments.
 
 The 18 October native matrix reports are local, ignored evidence rather than hosted release artifacts:
 
@@ -93,7 +103,7 @@ bun run test:evaluation --url http://127.0.0.1:4096 --model provider/model#varia
 
 Replace the endpoint/model with your connected host and set your own runtime bounds and observed-cost allowance. All four arguments are required before any connection or model prompt. `--scenario bugfix|feature|research|planning|interrupted` selects one fixture. Model settings and variants are checked before dispatch. `--max-cost` stops work at observed spend; in-flight and auxiliary requests can exceed that observation, so it is not a hard billing ceiling. Default unit tests and native scripted integration make no paid calls. This change supplies the harness; no new paid-model quality result is claimed.
 
-The native integration suite installs the npm tarball outside the checkout, then uses the global installer with isolated configuration, homes, Git roots, databases, and a local scripted model provider, with no paid model calls. Its checks cover global availability, overrides and state isolation across two projects, command feedback, configuration RPC, scoped guided saves, advanced editing/reset compatibility and global reload/override behavior, production registration, plan and execution, role restrictions, native check provenance, export, restart, intents, cancellation, supervisor interruption and recovery, automatic mode, and unavailable models. The recovery check preserves accepted investigation, resumes a held dependent worker without duplicates, and confirms completion-notice delivery. GigaCode-mode checks cover ordinary configuration/status results, duplicate admission, saved-plan execution, ownership, forged child/Build calls, and selection changes before admission. The [latest validation record](https://github.com/expiracy/gigacode/blob/main/docs/design.md#change-installed-gpt-validation--opencode-2028-and-live-workflows) records installation, terminal checks, real GPT outcomes and limits. Evidence and logs remain under `.spike/integration-<timestamp>-<id>/`.
+The native integration suite installs the npm tarball outside the checkout, then uses the global installer with isolated configuration, homes, Git roots, databases, and a local scripted model provider, with no paid model calls. Its checks cover global availability, overrides and state isolation across two projects, command feedback, configuration RPC, scoped guided saves, advanced editing/reset compatibility and global reload/override behavior, production registration, plan and execution, role restrictions, native check provenance, export, restart, intents, cancellation, supervisor interruption and recovery, automatic mode, and unavailable models. The recovery check preserves accepted investigation, resumes a held dependent worker without duplicates, and confirms completion-notice delivery. GigaCode-mode checks cover ordinary configuration/status results, duplicate admission, saved-plan execution, ownership, forged child/Build calls, and selection changes before admission. The release evidence above distinguishes scripted native checks from model-quality evaluation. Local development evidence and logs remain under `.spike/integration-<timestamp>-<id>/`.
 
 `bun run spike` reproduces the earlier 22-probe host compatibility matrix and requires Git. Set `OPENCODE_SPIKE_BIN` if the matching executable is outside the normal Windows npm location or `PATH`.
 
@@ -101,7 +111,7 @@ Set `OPENCODE_TEST_VERSION=2.0.26` or `2.0.28` together with its matching `OPENC
 
 ## Further reading
 
-- [Design and implementation record](https://github.com/expiracy/gigacode/blob/main/docs/design.md): decisions, architecture, lifecycle, and remaining scope.
-- [Research notes](https://github.com/expiracy/gigacode/blob/main/docs/research.md): upstream behaviour and primary sources.
-- [Compatibility results](https://github.com/expiracy/gigacode/blob/main/docs/compatibility-spike.md): reproducible host probes and version-sensitive contracts.
+- [Architecture](architecture.md): runtime boundaries, data ownership, and extension points.
+- [Workflow design](agent-workflows.md): graph examples, verification, and recovery.
+- Internal design, research, and compatibility histories remain in the private source repository and are not part of the published package.
 - [Offline CLI](commands.md#offline-cli): validation, prompt rendering, saved state and exports.

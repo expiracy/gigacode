@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0-alpha.1 — unreleased
+## 0.1.0-alpha.1 — 2026-10-18
 
-This is the first release candidate for `opencode-gigacode`, with the intended npm tag `next` and an [MIT licence](LICENSE). It has not been published; `private: true` remains enabled. Local and hosted release checks are recorded in the checklist; a public source/docs destination and publication remain pending; the current repository is private. See the [release checklist](docs/development.md#release-checklist) for current evidence and remaining decisions.
+The first `opencode-gigacode` alpha uses npm tag `next` and an [MIT licence](LICENSE). Public guides are included in the npm package; the source repository remains private.
 
 ### Included
 
@@ -10,7 +10,7 @@ This is the first release candidate for `opencode-gigacode`, with the intended n
 - Native multi-agent workflows with inspectable prompts, model choices, worker sessions, attempts, command evidence, recovery, and bounded repair.
 - A terminal workflow control panel at `/gigacode status`: select a workflow, open its Actions menu, inspect saved pages, run a ready proposal, export reports, pause, resume, cancel, or open a native worker session. Settings remain separate at `/gigacode config`.
 - Guided project/global configuration, inherited model settings, project-specific checks, and evidence-based completion. A model's test claim cannot replace native command evidence.
-- Durable global installation from a local npm tarball, explicit `gigacode setup`, and local `gigacode doctor` diagnostics with human-readable or JSON output.
+- Durable global installation through npm, explicit `gigacode setup`, and local `gigacode doctor` diagnostics with human-readable or JSON output.
 - Release checks for the production tarball's install, same-prefix replacement, setup, and removal lifecycle; separate native integration and platform CI matrices. These are check capabilities, not a claim that the current candidate has passed every matrix.
 
 ### Requirements and limits
@@ -22,4 +22,4 @@ This is the first release candidate for `opencode-gigacode`, with the intended n
 - Writers are serial by default. Optional isolated parallel writing requires a clean committed Git root and is limited to disjoint plain UTF-8 additions/modifications; see the [full restrictions](docs/commands.md#persistence-and-limits).
 - Run state and exports live under the canonical project's `.gigacode/`. Inspection is bounded; exported redacted audits retain history, but neither provides private model reasoning or a complete provider/native-event replay.
 
-See [installation](docs/installation.md) for the unpublished tarball flow and [the README](README.md) for a first workflow. No registry installation command is available until publication is authorised and completed.
+See [installation](docs/installation.md) for the alpha setup flow and [the README](README.md) for a first workflow.

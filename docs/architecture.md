@@ -4,7 +4,7 @@ GigaCode turns an authorized coding request into a saved graph of native OpenCod
 
 The central distinction is between a model's claim and an observed result. A submitted result belongs to one worker attempt; accepting it also requires native session settlement. Execution success additionally requires independent review, supported requirement assessments and fresh configured checks. These rules make the process inspectable; correctness still depends on the model's reasoning and the coverage of the checks.
 
-For worked examples, see [Agent coding workflows](agent-workflows.md). The [design record](design.md) contains historical decisions, compatibility results and known incidents; this guide describes the current implementation.
+For worked examples, see [Agent coding workflows](agent-workflows.md). This guide describes the current implementation; internal historical design records remain in the private source repository.
 
 ## Runtime components
 
@@ -124,7 +124,7 @@ The adapter's native execution bridge relies on tested OpenCode API behavior and
 
 Storage is a runtime availability dependency. The recorded SQLite I/O incident caused prompt hooks to return HTTP 500 while reading saved bindings. The module refactor did not establish its root cause or fix it. Do not treat the live SQLite database or its WAL/SHM files as scratch files, or recreate missing state to turn an uncertain worker into an unbound session. `.spike/` contains ignored development experiments; `.gigacode/` contains operational state needed for recovery.
 
-The [validation record](design.md) distinguishes native runtime tests from real-model evaluations. In particular, successful worker submissions did not make the tested local 4B candidate semantically correct. Keep model-quality claims separate from the evidence and permission contracts above.
+Native runtime tests and real-model evaluations establish different evidence. In local validation, successful worker submissions did not make the tested 4B candidate semantically correct. Keep model-quality claims separate from the evidence and permission contracts above.
 
 ## Where changes belong
 
@@ -139,4 +139,4 @@ The [validation record](design.md) distinguishes native runtime tests from real-
 | Guided models, limits or checks | `settings-menu.ts` for navigation/help, `settings-ui.ts` for scoped drafts, `settings-*-ui.ts` for forms, `settings-presentation.ts` for labels/previews; terminal tests. |
 | Configuration values or storage | `config.ts` and `settings-values.ts` for validation; `settings.ts` and `global-settings.ts` for layers/targets; `settings-file.ts` for atomic writes; `native-config.ts` shares installer targeting/parsing. Settings, installer, lifecycle and native integration tests cover these boundaries. |
 
-Use the [README verification commands](../README.md#verification-and-source-map). Unit tests cover deterministic policy; native integration exercises actual tool and session behavior; opt-in model evaluations check a selected model separately. On macOS, canonical temporary paths such as `TMPDIR=/private/tmp` avoid the runtime metadata guard rejecting `/var` aliases in fixtures.
+Use the [development verification commands](development.md#verification-and-source-map). Unit tests cover deterministic policy; native integration exercises actual tool and session behavior; opt-in model evaluations check a selected model separately. On macOS, canonical temporary paths such as `TMPDIR=/private/tmp` avoid the runtime metadata guard rejecting `/var` aliases in fixtures.

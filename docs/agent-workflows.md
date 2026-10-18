@@ -179,6 +179,6 @@ Inspect the exact run before retrying or increasing a budget. Use `/gigacode ins
 
 ## Developing a workflow change
 
-Keep graph admission, capability enforcement and evidence acceptance consistent when adding a role or task shape. Use the [architecture change map](architecture.md#where-changes-belong) to find the relevant modules, then run the deterministic and native checks in the [README](../README.md#verification-and-source-map).
+Keep graph admission, capability enforcement and evidence acceptance consistent when adding a role or task shape. Use the [architecture change map](architecture.md#where-changes-belong) to find the relevant modules, then run the deterministic and native checks in the [development guide](development.md#verification-and-source-map).
 
 Use the opt-in model evaluation runner only with an explicit model and runtime/cost allowance. Its independent fixture assertions help expose results that look plausible but violate the requested contract. Native scripted integration tests verify the execution machinery; model evaluations address a different question about the selected model's output.
