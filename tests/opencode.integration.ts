@@ -382,6 +382,8 @@ export async function runOpenCodeIntegration() {
         assert.equal(otherState.list(saved.projectId).length, 1)
         assert.equal(primaryState.list(saved.projectId).length, 0)
       } finally { otherState.close(); primaryState.close() }
+      assert.ok(saved.supervisorSessionId)
+      await client.session.wait({ sessionID: saved.supervisorSessionId }, { signal: AbortSignal.timeout(10_000) })
       await client.session.wait({ sessionID: otherParent.id }, { signal: AbortSignal.timeout(10_000) })
       for (const directory of [host!.project, host!.otherProject]) for (const file of ["opencode.json", "opencode.jsonc"]) assert.equal(existsSync(join(directory, file)), false)
       return { oneGlobalPlugin: installed.plugins[0].package, primary: primaryConfig, other: otherConfig, otherRun: { id: saved.id, projectId: saved.projectId, status: saved.status, planner: planner.model, reviewer: reviewer.model }, primaryRuns: 0, projectNativeConfigurations: 0 }
@@ -423,6 +425,8 @@ export async function runOpenCodeIntegration() {
       assert.ok(fixture.requests.some(request => request.runId === runId && request.role === "planner" && request.model === "alternate"))
       return { runId, revision: ready.revision, proposal: ready.proposal, plannerModel: planner.model }
     })
+    assert.ok(ready.supervisorSessionId)
+    await client.session.wait({ sessionID: ready.supervisorSessionId }, { signal: AbortSignal.timeout(15_000) })
     await client.session.wait({ sessionID: parent.id }, { signal: AbortSignal.timeout(15_000) })
     const readySnapshot = await check("status panel snapshot carries the saved proposal identity", async () => {
       const before = fixture.requests.length
