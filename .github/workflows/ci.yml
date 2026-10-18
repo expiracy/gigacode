@@ -82,6 +82,8 @@ jobs:
           version="$(bun -p 'require("./package.json").version')"
           bun run scripts/release-artifact.ts prepare "$RUNNER_TEMP/release" "${EXPECTED_VERSION:-$version}"
           bun run scripts/release-artifact.ts verify "$RUNNER_TEMP/release" "${EXPECTED_VERSION:-$version}" "$GITHUB_SHA"
+          # The template expressions belong to JavaScript, not the shell.
+          # shellcheck disable=SC2016
           bun -e 'const r = await Bun.file(process.env.RUNNER_TEMP + "/release/release.json").json(); await Bun.write(process.env.GITHUB_OUTPUT, `filename=${r.filename}\nversion=${r.version}\n`); await Bun.write(process.env.GITHUB_STEP_SUMMARY, `### Package candidate\n\nVersion: ${r.version}\n\nCommit: ${r.commit}\n\nIntegrity: ${r.integrity}\n`);'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -163,20 +165,21 @@ jobs:
         env:
           HOST_VERSION: ${{ matrix.host }}
         run: |
-          npm install --prefix "$RUNNER_TEMP/opencode-host" --no-audit --no-fund "@opencode/cli@$HOST_VERSION"
-          test -x "$RUNNER_TEMP/opencode-host/node_modules/@opencode/cli/bin/opencode.exe"
-          test "$("$RUNNER_TEMP/opencode-host/node_modules/@opencode/cli/bin/opencode.exe" --version)" = "$HOST_VERSION"
+          npm install --prefix "$RUNNER_TEMP/opencode-host" --ignore-scripts --no-audit --no-fund "@opencode/cli-linux-x64@$HOST_VERSION"
+          test -x "$RUNNER_TEMP/opencode-host/node_modules/@opencode/cli-linux-x64/bin/opencode"
+          test "$("$RUNNER_TEMP/opencode-host/node_modules/@opencode/cli-linux-x64/bin/opencode" --version)" = "$HOST_VERSION"
       - name: Run scripted native integration
         shell: bash
         run: bun run test:integration 2>&1 | tee "$RUNNER_TEMP/native-check.log"
         env:
           OPENCODE_TEST_VERSION: ${{ matrix.host }}
-          OPENCODE_SPIKE_BIN: ${{ runner.temp }}/opencode-host/node_modules/@opencode/cli/bin/opencode.exe
+          OPENCODE_SPIKE_BIN: ${{ runner.temp }}/opencode-host/node_modules/@opencode/cli-linux-x64/bin/opencode
           GIGACODE_TEST_ARTIFACT: ${{ runner.temp }}/release/${{ needs.artifact.outputs.filename }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: native-${{ matrix.host }}-${{ github.run_attempt }}
+          include-hidden-files: true
           path: |
             ${{ runner.temp }}/native-check.log
             .spike/integration-*/integration.json
@@ -209,18 +212,19 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ needs.artifact.outputs.version }}
         run: bun run scripts/release-artifact.ts verify "$RUNNER_TEMP/release" "$EXPECTED_VERSION" "$GITHUB_SHA"
-      - run: npm install --prefix "$RUNNER_TEMP/opencode-host" --no-audit --no-fund @opencode/cli@2.0.28
+      - run: npm install --prefix "$RUNNER_TEMP/opencode-host" --ignore-scripts --no-audit --no-fund @opencode/cli-linux-x64@2.0.28
       - name: Run isolated parallel integration
         shell: bash
         run: bun run test:parallel 2>&1 | tee "$RUNNER_TEMP/parallel-check.log"
         env:
           OPENCODE_TEST_VERSION: 2.0.28
-          OPENCODE_SPIKE_BIN: ${{ runner.temp }}/opencode-host/node_modules/@opencode/cli/bin/opencode.exe
+          OPENCODE_SPIKE_BIN: ${{ runner.temp }}/opencode-host/node_modules/@opencode/cli-linux-x64/bin/opencode
           GIGACODE_TEST_ARTIFACT: ${{ runner.temp }}/release/${{ needs.artifact.outputs.filename }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: parallel-2.0.28-${{ github.run_attempt }}
+          include-hidden-files: true
           path: |
             ${{ runner.temp }}/parallel-check.log
             .spike/parallel-*/audit.json
