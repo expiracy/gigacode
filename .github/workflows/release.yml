@@ -96,8 +96,9 @@ jobs:
         run: |
           bun -e 'const data = await Bun.file(process.env.RUNNER_TEMP + "/staging-receipt.json").json(); const p = data["opencode-gigacode"]; if (!p?.stageId) throw new Error("npm returned no staging receipt"); await Bun.write(process.env.GITHUB_STEP_SUMMARY, `### Awaiting npm approval\n\n${p.id} staged under next. Stage ID: ${p.stageId}\n\nA maintainer must approve it with 2FA on npm. CI does not approve or publish it.\n`);'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
         with:
           name: npm-staging-receipt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/staging-receipt.json
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 30
