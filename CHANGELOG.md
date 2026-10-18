@@ -9,9 +9,9 @@ The current candidate is a beta with planned npm tag `next`. It has not been pub
 - Added automatic type/unit/workflow checks, package lifecycle checks on three platforms, native host checks, and a manual exact-artifact release rehearsal. Optional future OIDC staging still requires separate authorisation and human npm approval; pushes and tags cannot publish.
 - Retained the workflow controls, explicit setup, doctor diagnostics, requirements, and limitations described in the alpha baseline below.
 
-## 0.1.0-alpha.1 — prepared baseline, 2026-10-18
+## 0.1.0-alpha.1 — 2026-10-18
 
-The first `opencode-gigacode` alpha was prepared with npm tag `next` and an [MIT licence](LICENSE). It was staged but never approved for publication. Its validation results are historical evidence, not beta verification. Guides are included in the package artifact; the source repository remains private.
+The first `opencode-gigacode` alpha was published under npm tag `next` on 18 October 2026 with an [MIT licence](LICENSE). Its validation results are historical evidence, not beta verification. Guides are included in the package artifact; the source repository remains private.
 
 ### Included
 

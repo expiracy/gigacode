@@ -24,7 +24,7 @@ This installs the local artifact without publishing it. Use an isolated profile 
 
 ## Release checklist
 
-The current candidate is `opencode-gigacode@0.1.0-beta.1`, planned for npm's `next` tag. It is unreleased; publication is not authorised. Rehearse its tarball locally and record beta-specific gate/CI results before considering a release. Registry and CDN installation links for this beta become usable only after a separately authorised publication. The existing staged alpha has been left unchanged; no beta staging action has been performed. The source repository stays private.
+The current candidate is `opencode-gigacode@0.1.0-beta.1`, planned for npm's `next` tag. It is unreleased; publication is not authorised. Rehearse its tarball locally and record beta-specific gate/CI results before considering a release. Registry and CDN installation links for this beta become usable only after a separately authorised publication. The existing published alpha remains on `next`; no beta staging action has been performed. The source repository stays private.
 
 ### Prior alpha validation
 
@@ -43,7 +43,7 @@ The evidence below belongs to `0.1.0-alpha.1` from 18 October 2026. It is histor
 | Registry identity | Public registry lookup returned 404 for `opencode-gigacode` on 18 October 2026 before upload. This historical lookup does not reserve the name or establish current registry status. |
 | Review | Reviewed on internal PR #1 from the private `codex/release-prep-alpha` branch. |
 | Publishing access | `npm whoami` authenticated as `expiracy` on 18 October 2026. Authentication alone does not establish publication success. |
-| Publication | The alpha artifact was staged but never approved for publication. This record does not claim a public alpha or beta release. |
+| Publication | The registry records alpha.1 publication at 19:50 UTC on 18 October 2026. The beta remains unpublished; beta preparation has not changed the existing `next` tag. |
 
 Record the exact candidate version, command, host/platform, and actual result when reproducing these checks. The native suites use isolated profiles and a scripted model provider; optional real-model evaluations require explicit connection and budget arguments.
 
