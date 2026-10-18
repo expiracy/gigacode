@@ -1,7 +1,43 @@
 import { expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
-import { expectedHostVersion, isolatedEnvironment, prepareHostConfiguration } from "./host.ts"
+import { expectedHostVersion, isolatedEnvironment, prepareHostConfiguration, stopHostProcess } from "./host.ts"
+
+async function fixtureProcess(ignoreTerm: boolean) {
+  const child = Bun.spawn([process.execPath, "--eval", `process.on("SIGTERM", () => { ${ignoreTerm ? "" : "process.exit(0)"} }); console.log("ready"); setInterval(() => {}, 1000);`], {
+    env: {}, stdin: "ignore", stdout: "pipe", stderr: "ignore", windowsHide: true,
+  })
+  const reader = child.stdout.getReader()
+  const timer = setTimeout(() => child.kill("SIGKILL"), 5_000)
+  try {
+    const ready = await reader.read()
+    expect(new TextDecoder().decode(ready.value)).toContain("ready")
+    return child
+  } catch (error) { child.kill("SIGKILL"); await child.exited; throw error }
+  finally { clearTimeout(timer); await reader.cancel() }
+}
+
+test.skipIf(process.platform === "win32")("a graceful isolated host exits normally without forced termination", async () => {
+  const child = await fixtureProcess(false)
+  try {
+    await stopHostProcess(child, 1_000)
+    expect(child.exitCode).toBe(0)
+    expect(child.signalCode).toBeNull()
+  } finally { if (child.exitCode === null) child.kill("SIGKILL"); await child.exited }
+})
+
+test.skipIf(process.platform === "win32")("an isolated host ignoring SIGTERM is killed within a deadline and still fails cleanup", async () => {
+  const child = await fixtureProcess(true)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const started = Date.now()
+  try {
+    const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Host shutdown remained pending")), 2_000) })
+    await expect(Promise.race([stopHostProcess(child, 100), deadline])).rejects.toThrow("shutdown timed out")
+    expect(child.signalCode).toBe("SIGKILL")
+    expect(() => process.kill(child.pid, 0)).toThrow()
+    expect(Date.now() - started).toBeLessThan(2_000)
+  } finally { clearTimeout(timer); if (child.exitCode === null) child.kill("SIGKILL"); await child.exited }
+})
 
 test("native compatibility candidates are explicit and default to the original tested version", () => {
   expect(expectedHostVersion(undefined)).toBe("2.0.25")

@@ -11,6 +11,22 @@ export function expectedHostVersion(value: string | undefined): "2.0.25" | "2.0.
 }
 export const EXPECTED_VERSION = expectedHostVersion(process.env.OPENCODE_TEST_VERSION)
 
+/** Stop only the isolated fixture process; forced shutdown remains a test failure. */
+export async function stopHostProcess(child: Bun.Subprocess, graceMs = 5_000): Promise<void> {
+  if (child.exitCode !== null) return
+  const exitedWithin = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([child.exited.then(() => true), new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), graceMs) })])
+    } finally { clearTimeout(timer) }
+  }
+  child.kill("SIGTERM")
+  if (await exitedWithin()) return
+  if (child.exitCode === null) child.kill("SIGKILL")
+  const exited = await exitedWithin()
+  throw new Error(`Isolated OpenCode shutdown timed out after ${graceMs}ms (pid ${child.pid}); ${exited ? "SIGKILL was required" : "exit remains unconfirmed after SIGKILL"}`)
+}
+
 export interface IsolatedHost {
   root: string
   project: string
@@ -244,16 +260,15 @@ export async function startHost(options: IsolatedHostOptions): Promise<IsolatedH
         throw new Error("Server paths do not identify the isolated fixture")
       }
     } catch (error) {
-      child.kill()
-      await child.exited
+      let cleanupError: unknown
+      try { await stopHostProcess(child) } catch (cause) { cleanupError = cause }
       await writeFile(join(root, "host.log"), log)
-      throw new Error(`${error instanceof Error ? error.message : error}\n${log.slice(-8_000)}`)
+      throw new Error(`${error instanceof Error ? error.message : error}${cleanupError ? `\nCleanup failed: ${String(cleanupError)}` : ""}\n${log.slice(-8_000)}`, { cause: error })
     }
   }
   const stop = async () => {
-    if (child.exitCode === null) child.kill()
-    await child.exited
-    await writeFile(join(root, "host.log"), log)
+    try { await stopHostProcess(child) }
+    finally { await writeFile(join(root, "host.log"), log) }
   }
   await launch()
   return {

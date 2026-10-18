@@ -554,7 +554,26 @@ export async function runOpenCodeIntegration() {
         assert(before?.supervisorSessionId)
         runId = before.id
         const accepted = before.tasks[0]!.acceptedAttemptId!, originalSupervisor = before.supervisorSessionId
-        await waitFor("scheduler continues observing a held native worker", async () => runs(await rpc.status({ runId }, options()))[0], run => !!run && run.generation > before.generation, 3_000)
+        // A healthy observation of an unchanged held worker is a no-op and need
+        // not advance its durable generation. Inject a stale observation so the
+        // proof requires the live scheduler to reconcile a real state change.
+        const observationStore = new SQLiteStore(join(host!.project, ".gigacode", "state.sqlite"))
+        let injectedGeneration: number
+        try {
+          injectedGeneration = observationStore.mutate(runId, run => {
+            const planner = run.tasks.find(task => task.spec.id === "design-successor")!
+            const attempt = planner.attempts.at(-1)!
+            assert.equal(attempt.status, "running")
+            assert.ok(attempt.sessionId)
+            planner.status = "waiting_permission"
+            attempt.status = "waiting_permission"
+            return run.generation + 1
+          })
+        } finally { observationStore.close() }
+        const observing = await waitFor("scheduler continues observing a held native worker", async () => runs(await rpc.status({ runId }, options()))[0], run => {
+          const planner = run?.tasks.find(task => task.spec.id === "design-successor")
+          return !!run && run.generation > injectedGeneration && planner?.status === "running" && planner.attempts.at(-1)?.status === "running"
+        }, 3_000)
         await client.session.interrupt({ sessionID: originalSupervisor, resume: false })
         await client.session.wait({ sessionID: originalSupervisor }, { signal: AbortSignal.timeout(5_000) })
         assert.equal((await client.session.get({ sessionID: originalSupervisor })).outcome, "interrupted")
@@ -573,7 +592,7 @@ export async function runOpenCodeIntegration() {
         assert.equal(fixture.requests.filter(request => request.runId === runId && request.taskId === "inspect-prefix" && request.calls.includes("gigacode_submit")).length, 1)
         await client.session.wait({ sessionID: ready.supervisorSessionId! }, { signal: AbortSignal.timeout(10_000) })
         const delivered = await waitFor("native completion notice is delivered", async () => runs(await rpc.status({ runId }, options()))[0], run => !!run && run.notifications.length > 0 && run.notifications.every(notice => notice.delivered), 5_000)
-        return { runId, status: ready.status, originalSupervisor, replacementSupervisor: ready.supervisorSessionId, acceptedPredecessor: accepted, notificationsDelivered: delivered!.notifications.length, duplicateSuccessfulAttempts: 0 }
+        return { runId, status: ready.status, originalSupervisor, replacementSupervisor: ready.supervisorSessionId, acceptedPredecessor: accepted, observationReconciled: { injectedGeneration, observedGeneration: observing!.generation }, notificationsDelivered: delivered!.notifications.length, duplicateSuccessfulAttempts: 0 }
       } finally {
         fixture.release(hold)
         if (runId) await rpc.control({ text: `cancel ${runId}`, sessionId: initiating.id }, options()).catch(() => {})
@@ -973,9 +992,11 @@ export async function runOpenCodeIntegration() {
     console.error(`FAIL integration at ${stage}: ${errorMessage(error)}\nEvidence: ${join(root, "integration.json")}`)
     throw error
   } finally {
-    await host?.stop()
-    await fixture.stop()
-    if (installationRoot) await rm(installationRoot, { recursive: true, force: true })
+    try { await host?.stop() }
+    finally {
+      try { await fixture.stop() }
+      finally { if (installationRoot) await rm(installationRoot, { recursive: true, force: true }) }
+    }
   }
 }
 
