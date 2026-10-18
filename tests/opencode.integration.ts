@@ -602,7 +602,8 @@ export async function runOpenCodeIntegration() {
           if (inspected) finalRun = inspected.run
           const sessionIds = new Set([initiating.id, ...(inspected?.run.supervisorHistory ?? []), inspected?.run.supervisorSessionId, ...inspected?.run.tasks.flatMap(task => task.attempts.map(attempt => attempt.sessionId)) ?? []].filter((id): id is string => !!id))
           diagnostics.sessions = await Promise.all([...sessionIds].map(async id => {
-            const [session, context] = await Promise.allSettled([client.session.get({ sessionID: id as typeof initiating.id }), client.session.context({ sessionID: id as typeof initiating.id })])
+            const readOptions = { signal: AbortSignal.timeout(5_000) }
+            const [session, context] = await Promise.allSettled([client.session.get({ sessionID: id as typeof initiating.id }, readOptions), client.session.context({ sessionID: id as typeof initiating.id }, readOptions)])
             return { sessionId: id,
               session: session.status === "fulfilled" ? session.value : { error: errorMessage(session.reason) },
               context: context.status === "fulfilled" ? context.value : { error: errorMessage(context.reason) },

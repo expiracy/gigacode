@@ -768,6 +768,101 @@ test("supervisor interruption during reconciliation preserves accepted work with
   expect(host.launches).toHaveLength(1)
 })
 
+test("a bound worker keeps its model hooks and submission during scheduler lease handoff", async () => {
+  const run = await start(); install(run, [task("one")])
+  await engine.tick(run.id, invocation())
+  const worker = host.launches[0]!, previousEpoch = engine.get(run.id)!.ownerEpoch
+  const inspect = host.inspect.bind(host)
+  let observed = false, hookError: unknown
+  host.inspect = async id => {
+    if (id === worker.sessionId) {
+      observed = true
+      expect(engine.get(run.id)!.ownerEpoch).toBeGreaterThan(previousEpoch)
+      try {
+        engine.step(id)
+        engine.submit(id, { summary: "Completed original work", assessments: [{ criterionId: "request", passed: true, explanation: "Inspected the original requirement" }] })
+      } catch (error) { hookError = error }
+    }
+    return inspect(id)
+  }
+  await engine.tick(run.id, invocation())
+  expect(observed).toBe(true)
+  expect(hookError).toBeUndefined()
+  const pending = engine.get(run.id)!
+  expect(pending.status).toBe("planning")
+  expect(pending.tasks[0]!.attempts[0]!.ownerEpoch).toBe(pending.ownerEpoch)
+  expect(pending.tasks[0]!.attempts[0]!.steps).toBe(1)
+  expect(pending.tasks[0]!.acceptedAttemptId).toBeUndefined()
+  expect(pending.tasks[0]!.attempts).toHaveLength(1)
+  expect(host.launches).toHaveLength(1)
+  host.inspect = inspect
+  host.settle(worker.sessionId)
+  await engine.tick(run.id, invocation())
+  expect(engine.get(run.id)!.status).toBe("ready")
+  expect(engine.get(run.id)!.tasks[0]!.acceptedAttemptId).toBe(worker.attempt.id)
+})
+
+test("recovery adopts a bound worker before inspecting its continuing model hooks", async () => {
+  const run = await start(); install(run, [task("one")])
+  await engine.tick(run.id, invocation())
+  const worker = host.launches[0]!, previousEpoch = engine.get(run.id)!.ownerEpoch
+  host.sessions.set("supervisor", { sessionId: "supervisor", state: "running" })
+  const inspect = host.inspect.bind(host)
+  let observed = false, hookError: unknown
+  host.inspect = async id => {
+    if (id === worker.sessionId) {
+      observed = true
+      expect(engine.get(run.id)!.ownerEpoch).toBeGreaterThan(previousEpoch)
+      try {
+        engine.step(id)
+        engine.submit(id, { summary: "Original worker continued", assessments: [{ criterionId: "request", passed: true, explanation: "Inspected the original requirement" }] })
+      } catch (error) { hookError = error }
+    }
+    return inspect(id)
+  }
+  await engine.recover(run.id)
+  expect(observed).toBe(true)
+  expect(hookError).toBeUndefined()
+  const pending = engine.get(run.id)!
+  expect(pending.status).toBe("planning")
+  expect(pending.tasks[0]!.attempts[0]!.ownerEpoch).toBe(pending.ownerEpoch)
+  expect(pending.tasks[0]!.attempts[0]!.steps).toBe(1)
+  expect(pending.tasks[0]!.acceptedAttemptId).toBeUndefined()
+  expect(pending.tasks[0]!.attempts).toHaveLength(1)
+  expect(host.launches).toHaveLength(1)
+  host.inspect = inspect
+  host.settle(worker.sessionId)
+  await engine.tick(run.id, invocation())
+  expect(engine.get(run.id)!.status).toBe("ready")
+  expect(engine.get(run.id)!.tasks[0]!.acceptedAttemptId).toBe(worker.attempt.id)
+})
+
+test("an unknown worker stays fenced across handoffs until native observation confirms it", async () => {
+  const run = await start(); install(run, [task("one")])
+  await engine.tick(run.id, invocation())
+  const worker = host.launches[0]!
+  host.sessions.set("supervisor", { sessionId: "supervisor", state: "running" })
+  host.settle(worker.sessionId, "unknown")
+  await engine.recover(run.id)
+  expect(engine.get(run.id)!.status).toBe("waiting_input")
+  expect(engine.get(run.id)!.tasks[0]!.attempts[0]!.status).toBe("running")
+  expect(() => engine.step(worker.sessionId)).toThrow(/stale|settled/)
+  expect(() => engine.submit(worker.sessionId, { summary: "Unconfirmed result" })).toThrow(/stale|settled/)
+  await engine.recover(run.id)
+  expect(() => engine.step(worker.sessionId)).toThrow(/stale|settled/)
+  expect(() => engine.submit(worker.sessionId, { summary: "Still unconfirmed" })).toThrow(/stale|settled/)
+  expect(engine.get(run.id)!.tasks[0]!.attempts[0]!.result).toBeUndefined()
+  expect(host.launches).toHaveLength(1)
+  host.sessions.set(worker.sessionId, { sessionId: worker.sessionId, state: "running" })
+  await engine.recover(run.id)
+  expect(() => engine.step(worker.sessionId)).not.toThrow()
+  expect(() => engine.submit(worker.sessionId, { summary: "Confirmed continuing worker" })).not.toThrow()
+  expect(engine.get(run.id)!.tasks[0]!.attempts[0]!.result?.summary).toBe("Confirmed continuing worker")
+  expect(engine.get(run.id)!.tasks[0]!.acceptedAttemptId).toBeUndefined()
+  expect(engine.get(run.id)!.tasks[0]!.attempts).toHaveLength(1)
+  expect(host.launches).toHaveLength(1)
+})
+
 test("the bound supervisor can reenter after interruption and finish its existing worker without duplicate dispatch", async () => {
   const run = await start(); install(run, [task("one")])
   const first = new AbortController()
