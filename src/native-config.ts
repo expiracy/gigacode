@@ -50,9 +50,12 @@ function samePath(left: string, right: string): boolean {
   return process.platform === "win32" ? resolve(left).toLowerCase() === resolve(right).toLowerCase() : resolve(left) === resolve(right)
 }
 
+export function isRegistryPackage(entry: string): boolean {
+  return entry === "opencode-gigacode" || /^opencode-gigacode@\S+$/.test(entry)
+}
+
 export function packageMatches(entry: string, packagePath: string, directory: string): boolean {
-  // Recognize the former package only so existing registrations can be upgraded.
-  if (entry === "open-ultra-code" || entry === "ultra-open-code") return true
+  if (isRegistryPackage(entry)) return true
   const path = entry.startsWith("file://") ? fileURLToPath(entry) : /^(?:\.\.?)[\\/]/.test(entry) ? resolve(directory, entry) : entry
   return samePath(path, packagePath) || samePath(path, join(packagePath, "index.ts")) || samePath(path, join(packagePath, "index.js"))
 }

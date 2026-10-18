@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "open-ultra-code",
+      "name": "opencode-gigacode",
       "dependencies": {
         "jsonc-parser": "3.3.1",
       },

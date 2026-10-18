@@ -21,10 +21,10 @@ test("project configuration discovery is disabled unless the isolated probe opts
 })
 
 test("child environment excludes inherited provider credentials and redirects state", () => {
-  process.env.ULTRA_SPIKE_PRIVATE_TEST = "do-not-forward"
+  process.env.GIGACODE_SPIKE_PRIVATE_TEST = "do-not-forward"
   try {
     const environment = isolatedEnvironment("C:\\fixture", "local-password")
-    expect(environment.ULTRA_SPIKE_PRIVATE_TEST).toBeUndefined()
+    expect(environment.GIGACODE_SPIKE_PRIVATE_TEST).toBeUndefined()
     expect(environment.OPENAI_API_KEY).toBeUndefined()
     expect(environment.ANTHROPIC_API_KEY).toBeUndefined()
     expect(environment.OPENCODE_CONFIG_DIR).toContain("fixture")
@@ -32,7 +32,7 @@ test("child environment excludes inherited provider credentials and redirects st
     expect(environment.OPENCODE_DB).toContain("fixture")
     expect(environment.OPENCODE_DISABLE_MODELS_FETCH).toBe("1")
   } finally {
-    delete process.env.ULTRA_SPIKE_PRIVATE_TEST
+    delete process.env.GIGACODE_SPIKE_PRIVATE_TEST
   }
 })
 
@@ -42,10 +42,10 @@ test("global fixture bootstrap uses production installer and leaves projects wit
   for (const project of ["project", "other-project"]) await mkdir(join(root, project), { recursive: true })
   await prepareHostConfiguration({ root, fixtureURL: "http://127.0.0.1:1/v1", pluginDirectory: resolve("."), installGlobal: true, pluginOptions: { models: { roles: { planner: "fixture/alternate" } } } })
   const configuration = JSON.parse(await readFile(join(root, "config", "opencode.json"), "utf8"))
-  expect(configuration.agents["ultraopencode-supervisor"].description).toBe("UltraOpenCode workflow supervisor")
-  expect(configuration.agents["ultraopencode-supervisor"].system).toContain("exact runId and intentId")
-  expect(configuration.agents["ultraopencode-supervisor"].permissions).toEqual(["edit", "write", "patch", "shell"].map(action => ({ action, resource: "*", effect: "deny" })))
-  expect(configuration.agents["ultraopencode-worker"].system).toContain("ultraopencode_submit")
+  expect(configuration.agents["gigacode-supervisor"].description).toBe("GigaCode workflow supervisor")
+  expect(configuration.agents["gigacode-supervisor"].system).toContain("exact runId and intentId")
+  expect(configuration.agents["gigacode-supervisor"].permissions).toEqual(["edit", "write", "patch", "shell"].map(action => ({ action, resource: "*", effect: "deny" })))
+  expect(configuration.agents["gigacode-worker"].system).toContain("gigacode_submit")
   expect(configuration.plugins).toHaveLength(1)
   expect(configuration.plugins[0].options.models.roles.planner).toBe("fixture/alternate")
   expect(configuration.experimental.subagent_depth).toBe(2)
@@ -59,7 +59,7 @@ test("compatibility fixture bootstrap keeps its manual spike agents", async () =
   const root = await mkdtemp(resolve(".spike", "manual-host-"))
   await prepareHostConfiguration({ root, fixtureURL: "http://127.0.0.1:1/v1", pluginDirectory: resolve("spike/plugin") })
   const configuration = JSON.parse(await readFile(join(root, "config", "opencode.json"), "utf8"))
-  expect(configuration.agents["ultraopencode-supervisor"].description).toBe("Compatibility supervisor")
+  expect(configuration.agents["gigacode-supervisor"].description).toBe("Compatibility supervisor")
   expect(configuration.plugins[0].package).toBe(resolve("spike/plugin"))
   expect(configuration.plugins[0].options).toBeUndefined()
 })

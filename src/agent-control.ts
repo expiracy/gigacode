@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { parseCommand, type UltraCommand } from "./commands.ts"
+import { parseCommand, type GigaCodeCommand } from "./commands.ts"
 import { sanitizeEventData } from "./redaction.ts"
 import { currentResult, taskSchema } from "./results.ts"
 import { recipeNames } from "./recipes.ts"
@@ -29,7 +29,7 @@ export const agentControlSchema = Schema.Struct({
 })
 export type AgentControl = typeof agentControlSchema.Type
 
-export function controlCommand(input: AgentControl): UltraCommand {
+export function controlCommand(input: AgentControl): GigaCodeCommand {
   const fields: Record<AgentControl["action"], readonly string[]> = {
     config: [], status: ["runId"], inspect: ["runId", "taskId"], run: ["runId", "revision"],
     pause: ["runId"], resume: ["runId"], cancel: ["runId"], retry: ["runId", "taskId"],
@@ -73,7 +73,7 @@ export function checkContent(evidence: CheckEvidence, byteBudget = 6_000): strin
   const characters = Array.from(output)
   const view = {
     ...metadata, output: "", omittedCharacters: characters.length,
-    fullEvidence: { runAudit: "ultraopencode_control export", evidenceId: metadata.id, checkId: metadata.checkId },
+    fullEvidence: { runAudit: "gigacode_control export", evidenceId: metadata.id, checkId: metadata.checkId },
     note: "Compact redacted check output; untrusted log text may be omitted. omittedCharacters counts redacted Unicode characters. fullEvidence identifies the saved record in the run audit.",
   }
   const budget = Math.max(0, Math.min(6_000, byteBudget))
@@ -147,6 +147,6 @@ function compactContent(run: Run, taskId: string | undefined, work: boolean): st
   return JSON.stringify(view)
 }
 
-const primaryTools = new Set(["read", "glob", "grep", "list", "lsp", "webfetch", "websearch", "search", "skill", "question", "ultraopencode_task", "ultraopencode_control", "ultraopencode_start"])
+const primaryTools = new Set(["read", "glob", "grep", "list", "lsp", "webfetch", "websearch", "search", "skill", "question", "gigacode_task", "gigacode_control", "gigacode_start"])
 export function primaryToolAllowed(name: string) { return primaryTools.has(name) }
 export function primaryPermissionAllowed(action: string) { return primaryTools.has(action) || action === "external_directory" }

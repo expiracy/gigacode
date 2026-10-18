@@ -1,4 +1,6 @@
-# UltraOpenCode workflow improvements
+# GigaCode workflow improvements
+
+**Historical specification, 13 October 2026. Current contract, 15 October 2026:** GigaCode requires fresh configuration and state using current GigaCode identifiers, `gigacode.json` and `.gigacode/`. Earlier products' settings, permission identifiers, prompts and histories are not imported, and their files remain untouched. Native OpenCode permissions remain enforced. This specification records the original work and environment; follow the [current installation guide](../../../README.md) for setup.
 
 The user approved the five priorities discussed in chat on 13 October 2026. OpenCode remains the primary compatibility target, pinned to 2.0.25 and 2.0.26. Work happens in this checkout: it has no Git metadata, and a source baseline is saved at `/private/tmp/ultra-improvements-baseline`.
 
@@ -14,7 +16,7 @@ Three reusable read-only recipes are deep review, bug investigation and cross-ch
 
 ## Live visibility
 
-The existing `/ultraopencode status` opens a live native searchable dialog, using the host's components. Show phase, task state, model/session, dependency and permission waits, accepted summaries, blockers, native checks and observed worker usage. Controls use the existing initiating-session ownership checks. Initial, reconnect and post-control reads reload durable snapshots; a non-overlapping two-second refresh runs only while the dialog is open. Navigation, replacement and disposal stop refreshes and ignore late responses. Configuration viewing remains at `/ultraopencode config`; no additional menus or slash commands are added.
+The existing `/gigacode status` opens a live native searchable dialog, using the host's components. Show phase, task state, model/session, dependency and permission waits, accepted summaries, blockers, native checks and observed worker usage. Controls use the existing initiating-session ownership checks. Initial, reconnect and post-control reads reload durable snapshots; a non-overlapping two-second refresh runs only while the dialog is open. Navigation, replacement and disposal stop refreshes and ignore late responses. Configuration viewing remains at `/gigacode config`; no additional menus or slash commands are added.
 
 ## Context and usage
 

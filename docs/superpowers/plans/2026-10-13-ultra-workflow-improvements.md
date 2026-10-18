@@ -1,8 +1,10 @@
-# UltraOpenCode Workflow Improvements Implementation Plan
+# GigaCode Workflow Improvements Implementation Plan
+
+**Historical plan, 13 October 2026. Current contract, 15 October 2026:** GigaCode requires fresh configuration and state using current GigaCode identifiers, `gigacode.json` and `.gigacode/`. Earlier products' settings, permission identifiers, prompts and histories are not imported, and their files remain untouched. Native OpenCode permissions remain enforced. This plan records the original work and environment; follow the [current installation guide](../../../README.md) for setup.
 
 > **For agentic workers:** Use superpowers:subagent-driven-development. Check off delivered behaviors after their focused tests and review.
 
-**Goal:** Add measurable model evaluations, live progress, bounded context, reusable recipes and safely isolated parallel writing to the existing UltraOpenCode engine.
+**Goal:** Add measurable model evaluations, live progress, bounded context, reusable recipes and safely isolated parallel writing to the existing GigaCode engine.
 
 **Architecture:** Reuse graph admission, native sessions, permission-preserving tools and durable state. Keep client rendering separate from scheduling. Independent implementers own distinct files; the parent integrates shared schema/plugin changes.
 

@@ -13,7 +13,7 @@ async function fixture() {
   const directory = await mkdtemp(join(await realpath(tmpdir()), "ultra-worktrees-"))
   const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=", "-c", "commit.gpgsign=false", ...args], { cwd: directory, encoding: "utf8" }).trim()
   git("init", "--initial-branch=main")
-  git("config", "user.name", "UltraOpenCode fixture")
+  git("config", "user.name", "GigaCode fixture")
   git("config", "user.email", "fixture@example.invalid")
   await writeFile(join(directory, "base.txt"), "baseline\n")
   git("add", "--", "base.txt")
@@ -29,7 +29,7 @@ function integrator(directory: string, baseline: ParallelBaseline, changes: Work
     { spec: integration, status: "running", attempts: [attempt] },
   ] } as unknown as Run
   const expected = integrationChanges(run).hash; run.parallel!.expectedHash = expected
-  const calls: any[] = [], context = { sessionID: attempt.sessionId, messageID: "native-message", id: "native-call", agent: "ultraopencode-worker", signal: new AbortController().signal, async progress() {} } as any
+  const calls: any[] = [], context = { sessionID: attempt.sessionId, messageID: "native-message", id: "native-call", agent: "gigacode-worker", signal: new AbortController().signal, async progress() {} } as any
   const write = { name: "write", input: Schema.Struct({ path: Schema.String, content: Schema.String }), async execute(input: any, native: any) { calls.push({ input, native }); await writeFile(input.path, input.content); return { output: {} } } }
   const read = { name: "read", input: Schema.Struct({ path: Schema.String }), async execute(input: any) { return { output: await readFile(input.path, "utf8") } } }
   const ctx = { location: { directory, project: { id: "project", commands: {} } }, session: { async get() { return { id: attempt.sessionId, projectID: "project", location: { directory } } } }, tool: { async list() { return [write, read] } } }
@@ -92,7 +92,7 @@ test("settled writers retain exact scoped text additions and modifications witho
   const f = await fixture()
   try {
     const baseline = await parallelBaseline(f.directory)
-    const directory = join(f.directory, ".ultraopencode", "worktree")
+    const directory = join(f.directory, ".gigacode", "worktree")
     f.git("worktree", "add", "--detach", directory, baseline.commit)
     await writeFile(join(directory, "base.txt"), "worker modification\n")
     await writeFile(join(directory, "new.txt"), "worker addition\n")
@@ -122,7 +122,7 @@ test("integration applies only the exact accepted text union through native writ
 test("capturing a hardlinked writer output refuses linked source data and leaves both checkouts intact", async () => {
   const f = await fixture()
   try {
-    const baseline = await parallelBaseline(f.directory), directory = join(f.directory, ".ultraopencode", "worktree")
+    const baseline = await parallelBaseline(f.directory), directory = join(f.directory, ".gigacode", "worktree")
     f.git("worktree", "add", "--detach", directory, baseline.commit)
     await link(join(f.directory, "base.txt"), join(directory, "linked.txt"))
     await expect(captureWriter({ directory: f.directory, parallel: { baseline } } as Run, { worktree: { directory, state: "ready" } } as Attempt, { ownedPaths: ["linked.txt"] } as TaskSpec)).rejects.toThrow("hardlink")
@@ -134,7 +134,7 @@ test("capturing a hardlinked writer output refuses linked source data and leaves
 test("capture refuses mode-only edits even when repository filemode tracking is disabled", async () => {
   const f = await fixture()
   try {
-    const baseline = await parallelBaseline(f.directory), directory = join(f.directory, ".ultraopencode", "worktree")
+    const baseline = await parallelBaseline(f.directory), directory = join(f.directory, ".gigacode", "worktree")
     f.git("config", "core.filemode", "false"); f.git("worktree", "add", "--detach", directory, baseline.commit)
     await chmod(join(directory, "base.txt"), 0o755)
     await expect(captureWriter({ directory: f.directory, parallel: { baseline } } as Run, { worktree: { directory, state: "ready" } } as Attempt, { ownedPaths: ["base.txt"] } as TaskSpec)).rejects.toThrow("mode changes")
@@ -146,7 +146,7 @@ test("capture refuses requested changes to tracked files excluded by the shared 
   try {
     await mkdir(join(f.directory, "build")); await writeFile(join(f.directory, "build", "script.txt"), "before\n")
     f.git("add", "--", "build/script.txt"); f.git("commit", "-m", "Tracked build source")
-    const baseline = await parallelBaseline(f.directory), directory = join(f.directory, ".ultraopencode", "worktree")
+    const baseline = await parallelBaseline(f.directory), directory = join(f.directory, ".gigacode", "worktree")
     f.git("worktree", "add", "--detach", directory, baseline.commit)
     await writeFile(join(directory, "build", "script.txt"), "requested change\n")
     await expect(captureWriter({ directory: f.directory, parallel: { baseline } } as Run, { worktree: { directory, state: "ready" } } as Attempt, { ownedPaths: ["build/script.txt"] } as TaskSpec)).rejects.toThrow("excluded from the source manifest")
@@ -159,7 +159,7 @@ test("capture refuses ignored untracked writer output instead of silently losing
   const f = await fixture()
   try {
     await writeFile(join(f.directory, ".gitignore"), "dist/\n"); f.git("add", "--", ".gitignore"); f.git("commit", "-m", "Ignored output fixture")
-    const baseline = await parallelBaseline(f.directory), directory = join(f.directory, ".ultraopencode", "worktree")
+    const baseline = await parallelBaseline(f.directory), directory = join(f.directory, ".gigacode", "worktree")
     f.git("worktree", "add", "--detach", directory, baseline.commit)
     await mkdir(join(directory, "dist")); await writeFile(join(directory, "dist", "output.txt"), "requested output\n")
     await expect(captureWriter({ directory: f.directory, parallel: { baseline } } as Run, { worktree: { directory, state: "ready" } } as Attempt, { ownedPaths: ["dist/output.txt"] } as TaskSpec)).rejects.toThrow("excluded from the source manifest")
@@ -172,8 +172,8 @@ test("integration refuses existing root hardlinks before any native write can mo
   try {
     const baseline = await parallelBaseline(f.directory), content = "updated text\n"
     const native = integrator(f.directory, baseline, [{ path: "base.txt", beforeHash: baseline.files["base.txt"], afterHash: digest(content), content }])
-    await mkdir(join(f.directory, ".ultraopencode"))
-    const linked = join(f.directory, ".ultraopencode", "linked-base.txt")
+    await mkdir(join(f.directory, ".gigacode"))
+    const linked = join(f.directory, ".gigacode", "linked-base.txt")
     await link(join(f.directory, "base.txt"), linked)
     await expect(native.adapter.integrate(native.binding, native.context)).rejects.toThrow("hardlink")
     expect(native.calls).toEqual([])
@@ -189,7 +189,7 @@ test("integration rechecks target links after native read permission waits", asy
     const native = integrator(f.directory, baseline, [{ path: "base.txt", beforeHash: baseline.files["base.txt"], afterHash: digest(content), content }])
     const read = (await native.ctx.tool.list()).find(tool => tool.name === "read")!
     const execute = read.execute
-    await mkdir(join(f.directory, ".ultraopencode")); const alias = join(f.directory, ".ultraopencode", "late-link")
+    await mkdir(join(f.directory, ".gigacode")); const alias = join(f.directory, ".gigacode", "late-link")
     read.execute = async (input: any, context: any) => { await link(join(f.directory, "base.txt"), alias); return execute(input, context) }
     await expect(native.adapter.integrate(native.binding, native.context)).rejects.toThrow("hardlink")
     expect(native.calls).toEqual([])
@@ -223,7 +223,7 @@ test("preparation creates the saved checkout only through the bound fixed native
     const run = { id: runId, projectId: "project", directory: f.directory, status: "running", ownerEpoch: 1, policy: [{ action: "*", resource: "*", effect: "allow" }], tasks: [{ spec: task, status: "running", attempts: [attempt] }], parallel: { baseline, preparationTaskId: task.id, integrationTaskId: "integration.1", checkouts: [] } } as unknown as Run
     const directory = worktreeDirectory(run, { taskId: "writer", number: 1 })
     run.parallel!.checkouts.push({ taskId: "writer", directory, state: "planned" })
-    const context = { sessionID: attempt.sessionId, messageID: "prepare-message", id: "prepare-call", agent: "ultraopencode-worker", signal: new AbortController().signal, async progress() {} } as any
+    const context = { sessionID: attempt.sessionId, messageID: "prepare-message", id: "prepare-call", agent: "gigacode-worker", signal: new AbortController().signal, async progress() {} } as any
     const calls: any[] = [], order: string[] = []
     const shell = { name: "shell", input: Schema.Struct({ command: Schema.String, background: Schema.Boolean, timeout: Schema.Number }), async execute(input: any, native: any) { calls.push({ input, native }); order.push("native-shell"); f.git(...input.command.split(" ").slice(1)); return { output: { exit: 0, status: "completed" } } } }
     const ctx = { location: { directory: f.directory, project: { id: "project" } }, session: { async get() { return { projectID: "project", location: { directory: f.directory } } } }, tool: { async list() { return [shell] } }, worktree: { async create() { throw new Error("Unsafe native worktree create must never run") }, async refresh() { order.push("refresh") }, async list() { return [{ directory }] } } }
@@ -232,7 +232,7 @@ test("preparation creates the saved checkout only through the bound fixed native
     await adapter.prepare({ run, task, attempt, role: "implementer" }, context)
     expect(calls).toHaveLength(1)
     expect(calls[0]!.native).toBe(context)
-    expect(calls[0]!.input.command).toMatch(/^git -c core\.hooksPath=\.ultraopencode\/empty-hooks\/[a-f0-9]+ -c core\.fsmonitor=false worktree add --detach \.ultraopencode\/worktrees\/run_[a-f0-9]+\/[a-f0-9]+-1 [a-f0-9]{40}$/)
+    expect(calls[0]!.input.command).toMatch(/^git -c core\.hooksPath=\.gigacode\/empty-hooks\/[a-f0-9]+ -c core\.fsmonitor=false worktree add --detach \.gigacode\/worktrees\/run_[a-f0-9]+\/[a-f0-9]+-1 [a-f0-9]{40}$/)
     expect(order).toEqual(["native-shell", "refresh"])
     expect((await manifest(directory)).hash).toBe(baseline.hash)
     expect((await manifest(directory)).files["hook-ran.txt"]).toBeUndefined()

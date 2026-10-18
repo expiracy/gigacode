@@ -262,7 +262,7 @@ test("observed cost over the allowance stops before requesting model work and wr
     const path = new URL(request.url).pathname
     if (path === "/api/info") return Response.json({ version: "2.0.25" })
     if (path === "/api/model") return Response.json({ data: [{ ...options.model, capabilities: { tools: true }, variants: [{ id: "high" }] }] })
-    if (path.endsWith("/config")) return Response.json({ output: { config: { models: { default: options.modelReference }, limits: options.limits }, promptVersion: "ultraopencode/test" } })
+    if (path.endsWith("/config")) return Response.json({ output: { config: { models: { default: options.modelReference }, limits: options.limits }, promptVersion: "gigacode/test" } })
     if (path === "/api/session" && request.method === "POST") return Response.json({ data: { id: "parent", model: options.model, cost: 0.5, tokens } })
     if (path === "/api/session/parent") return Response.json({ data: { id: "parent", model: options.model, cost: 0.5, tokens } })
     if (path.endsWith("/prompt")) { prompts++; return Response.json({ data: {} }) }
@@ -285,12 +285,12 @@ test.each(["failed", "interrupted", "succeeded"])("a native %s primary without w
   const options = parseEvaluationOptions(explicit), tokens = { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }
   let prompted = false, statusCalls = 0, prompts = 0
   const interrupted: string[] = [], settled: string[] = []
-  const parent = () => ({ id: "parent", ...(prompted ? { outcome } : {}), projectID: "fixture", agent: "ultraopencode", model: options.model, cost: 0.01, tokens, time: { created: 1, updated: 2, ...(prompted ? { idle: 2 } : {}) }, location: { directory } })
+  const parent = () => ({ id: "parent", ...(prompted ? { outcome } : {}), projectID: "fixture", agent: "gigacode", model: options.model, cost: 0.01, tokens, time: { created: 1, updated: 2, ...(prompted ? { idle: 2 } : {}) }, location: { directory } })
   const transport = scriptedFetch(async request => {
     const path = new URL(request.url).pathname
     if (path === "/api/info") return Response.json({ version: "2.0.25" })
     if (path === "/api/model") return Response.json({ data: [{ ...options.model, capabilities: { tools: true }, variants: [{ id: "high" }] }] })
-    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "ultraopencode.json"), "utf8")), promptVersion: "ultraopencode/test" } })
+    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "gigacode.json"), "utf8")), promptVersion: "gigacode/test" } })
     if (path === "/api/session" && request.method === "POST") return Response.json({ data: parent() })
     if (path.endsWith("/prompt")) { prompts++; prompted = true; return Response.json({ data: { id: "receipt" } }) }
     if (path.endsWith("/status")) {
@@ -326,20 +326,20 @@ test("scripted native responses allow a final response beyond ten seconds within
   args[5] = JSON.stringify({ ...JSON.parse(budget), runMs: 30_000 })
   const options = parseEvaluationOptions(args), tokens = { input: 2, output: 3, reasoning: 0, cache: { read: 0, write: 0 } }
   let run: Run | undefined, supervisorSettled = false, parentSettled = false
-  const parent = { id: "parent", projectID: "fixture", agent: "ultraopencode", model: options.model, cost: 0.01, tokens, time: { created: 1, updated: 2, idle: 2 }, location: { directory } }
+  const parent = { id: "parent", projectID: "fixture", agent: "gigacode", model: options.model, cost: 0.01, tokens, time: { created: 1, updated: 2, idle: 2 }, location: { directory } }
   const family = () => run ? [{ ...parent, outcome: "succeeded" }, ...evidence().sessions.slice(1).map(session => ({ ...session, projectID: "fixture", cost: 0.01, tokens, time: { created: 1, updated: 2, idle: 2 }, location: { directory } }))] : [parent]
   const transport = scriptedFetch(async request => {
     const path = new URL(request.url).pathname
     if (path === "/api/info") return Response.json({ version: "2.0.25" })
     if (path === "/api/model") return Response.json({ data: [{ ...options.model, capabilities: { tools: true }, variants: [{ id: "high" }] }] })
-    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "ultraopencode.json"), "utf8")), promptVersion: "ultraopencode/test" } })
+    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "gigacode.json"), "utf8")), promptVersion: "gigacode/test" } })
     if (path === "/api/session" && request.method === "POST") return Response.json({ data: parent })
     if (path.endsWith("/prompt")) {
       const before = await manifest(directory)
       await writeFile(join(directory, "src", "parse.ts"), 'export function parseDuration(value: string): number { const match = /^(\\d+)(ms|s)$/.exec(value); if (!match) throw new Error("Invalid"); const result = BigInt(match[1]!) * (match[2] === "s" ? 1000n : 1n); if (result > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Unsafe"); return Number(result) }\n')
       const after = await manifest(directory), input = evidence()
       addNativeCheck(input); run = input.run; run.directory = directory; run.workspaceHash = before.hash; run.candidateHash = after.hash
-      run.config = JSON.parse(await readFile(join(directory, "ultraopencode.json"), "utf8"))
+      run.config = JSON.parse(await readFile(join(directory, "gigacode.json"), "utf8"))
       for (const task of run.tasks) {
         task.attempts[0]!.workspaceHash = task.spec.writes ? before.hash : after.hash
         task.attempts[0]!.candidateHash = after.hash
@@ -390,7 +390,7 @@ test("the interruption runner waits for accepted predecessor work and authoritat
     const path = new URL(request.url).pathname
     if (path === "/api/info") return Response.json({ version: "2.0.25" })
     if (path === "/api/model") return Response.json({ data: [{ ...options.model, capabilities: { tools: true }, variants: [{ id: "high" }] }] })
-    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "ultraopencode.json"), "utf8")), promptVersion: "ultraopencode/test" } })
+    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "gigacode.json"), "utf8")), promptVersion: "gigacode/test" } })
     if (path === "/api/session" && request.method === "POST") return Response.json({ data: session("parent") })
     if (path.endsWith("/prompt")) {
       const input = evidence(), workspaceHash = (await manifest(directory)).hash
@@ -451,7 +451,7 @@ test("a completed one-worker plan reports that the requested interruption bounda
     const path = new URL(request.url).pathname
     if (path === "/api/info") return Response.json({ version: "2.0.25" })
     if (path === "/api/model") return Response.json({ data: [{ ...options.model, capabilities: { tools: true }, variants: [{ id: "high" }] }] })
-    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "ultraopencode.json"), "utf8")), promptVersion: "ultraopencode/test" } })
+    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "gigacode.json"), "utf8")), promptVersion: "gigacode/test" } })
     if (path === "/api/session" && request.method === "POST") return Response.json({ data: native[0] })
     if (path === "/api/session") return Response.json({ data: native, cursor: {} })
     if (path.endsWith("/prompt")) return Response.json({ data: { id: "receipt" } })
@@ -480,7 +480,7 @@ test("a status failure stops discovered orphan descendants and refreshes their f
     const path = new URL(request.url).pathname
     if (path === "/api/info") return Response.json({ version: "2.0.25" })
     if (path === "/api/model") return Response.json({ data: [{ ...options.model, capabilities: { tools: true }, variants: [{ id: "high" }] }] })
-    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "ultraopencode.json"), "utf8")), promptVersion: "ultraopencode/test" } })
+    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "gigacode.json"), "utf8")), promptVersion: "gigacode/test" } })
     if (path === "/api/session" && request.method === "POST") return Response.json({ data: native("parent") })
     if (path.endsWith("/prompt")) return Response.json({ data: { id: "receipt" } })
     if (path.endsWith("/status")) return ++observations === 1 ? Response.json({ output: { runs: [] } }) : Response.json({ type: "RpcInternalError", message: "Injected status failure" }, { status: 500 })
@@ -510,7 +510,7 @@ test("unconfirmed native settlement and unavailable final usage remain explicit 
     const path = new URL(request.url).pathname
     if (path === "/api/info") return Response.json({ version: "2.0.25" })
     if (path === "/api/model") return Response.json({ data: [{ ...options.model, capabilities: { tools: true }, variants: [{ id: "high" }] }] })
-    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "ultraopencode.json"), "utf8")), promptVersion: "ultraopencode/test" } })
+    if (path.endsWith("/config")) return Response.json({ output: { config: JSON.parse(await readFile(join(directory, "gigacode.json"), "utf8")), promptVersion: "gigacode/test" } })
     if (path === "/api/session" && request.method === "POST") return Response.json({ data: parent })
     if (path === "/api/session") return Response.json({ data: [parent], cursor: {} })
     if (path.endsWith("/interrupt")) return Response.json({ status: "interrupted" })

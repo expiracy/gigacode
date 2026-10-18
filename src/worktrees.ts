@@ -4,7 +4,7 @@ import { lstat, readFile, realpath } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { changedPaths, digest, inside, manifest } from "./workspace.ts"
 import { restrictPermission } from "./policy.ts"
-import { runtimeDirectory, runtimeNames } from "./paths.ts"
+import { runtimeDirectory, runtimeName } from "./paths.ts"
 import type { ParallelBaseline, Run, Attempt, TaskSpec, WorktreeChange } from "./types.ts"
 
 const execute = promisify(execFile)
@@ -35,7 +35,7 @@ export async function parallelBaseline(directory: string): Promise<ParallelBasel
   await assertNoFilters(root)
   await assertNoSubmodules(root, commit)
   const dirty = (await readGit(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).split("\0").filter(Boolean)
-  if (dirty.some(entry => !runtimeNames.some(name => entry.slice(3).replaceAll("\\", "/").startsWith(`${name}/`)))) throw new Error("Parallel writers require a clean committed Git baseline; existing changes were preserved")
+  if (dirty.some(entry => !entry.slice(3).replaceAll("\\", "/").startsWith(`${runtimeName}/`))) throw new Error("Parallel writers require a clean committed Git baseline; existing changes were preserved")
   return { commit, ...await manifest(root) }
 }
 
@@ -56,7 +56,7 @@ export async function captureWriter(run: Run, attempt: Attempt, task: TaskSpec):
     readGit(directory, ["ls-files", "--others", "--exclude-standard", "-z"]),
     readGit(directory, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"]),
   ])).flatMap(value => value.split("\0").filter(Boolean))
-  for (const path of observed) if (!runtimeNames.some(name => path.split("/").includes(name)) && !baseline.files[path] && !after.files[path]) throw new Error(`Parallel writer changed a file excluded from the source manifest: ${path}; worktree retained`)
+  for (const path of observed) if (!path.split("/").includes(runtimeName) && !baseline.files[path] && !after.files[path]) throw new Error(`Parallel writer changed a file excluded from the source manifest: ${path}; worktree retained`)
   const modes = new Map((await readGit(directory, ["ls-tree", "-rz", baseline.commit])).split("\0").filter(Boolean).map(entry => {
     const split = entry.indexOf("\t")
     return [entry.slice(split + 1), entry.slice(0, 6)]

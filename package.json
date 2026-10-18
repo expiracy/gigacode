@@ -1,17 +1,36 @@
 {
-  "name": "open-ultra-code",
-  "version": "0.1.0",
+  "name": "opencode-gigacode",
+  "version": "0.1.0-alpha.1",
   "description": "Transparent, durable multi-agent workflows for OpenCode 2",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/expiracy/gigacode.git"
+  },
+  "homepage": "https://github.com/expiracy/gigacode#readme",
+  "bugs": {
+    "url": "https://github.com/expiracy/gigacode/issues"
+  },
+  "keywords": ["opencode", "opencode-plugin", "agents", "workflows"],
   "private": true,
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public",
+    "tag": "next"
+  },
   "type": "module",
   "bin": {
-    "ultraopencode": "scripts/cli.ts"
+    "gigacode": "scripts/cli.ts"
   },
   "exports": {
     ".": "./index.ts",
     "./tui": "./tui.ts"
   },
-  "files": ["index.ts", "tui.ts", "src", "scripts", "docs", "examples", "README.md"],
+  "files": [
+    "index.ts", "tui.ts", "src", "scripts/cli.ts", "scripts/install.ts", "scripts/doctor.ts",
+    "docs/installation.md", "docs/configuration.md", "docs/commands.md", "docs/development.md",
+    "docs/architecture.md", "docs/agent-workflows.md", "examples", "README.md", "CHANGELOG.md"
+  ],
   "engines": {
     "bun": ">=1.3.10"
   },
@@ -25,13 +44,15 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test tests/*.test.ts spike/*.test.ts",
+    "test:package": "bun run scripts/check-package.ts",
+    "check:release": "bun run typecheck && bun run test --timeout 15000 && bun run test:package",
     "test:integration": "bun run tests/opencode.integration.ts",
     "test:openchamber": "bun run tests/openchamber.integration.ts",
     "test:evaluation": "bun run tests/model-evaluation.ts",
     "test:parallel": "bun run tests/parallel.integration.ts",
     "install:global": "bun run scripts/install.ts --global",
     "install:project": "bun run scripts/install.ts --local",
-    "ultraopencode": "bun run scripts/cli.ts",
+    "gigacode": "bun run scripts/cli.ts",
     "spike": "bun run spike/run.ts"
   },
   "devDependencies": {

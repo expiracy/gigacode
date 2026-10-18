@@ -13,28 +13,35 @@ import { recipeName, recipeWorkflow, type RecipeName } from "../src/recipes.ts"
 import { validatePlan } from "../src/graph.ts"
 import { supportedVersions } from "../src/compatibility.ts"
 import { runtimeDirectory } from "../src/paths.ts"
-import { globalConfigDirectory, parseNativeConfiguration, productionPluginDirectory } from "./install.ts"
+import { isRegistryPackage } from "../src/native-config.ts"
+import { doctor, doctorHelp, formatDoctorReport } from "./doctor.ts"
+import { globalConfigDirectory, installGlobal, installHelp, installProject, parseInstallArguments, parseNativeConfiguration, productionPluginDirectory } from "./install.ts"
 import type { Config, Run } from "../src/types.ts"
 
-export const localHelp = `UltraOpenCode local CLI
+export const localHelp = `GigaCode local CLI
 
-bun run ultraopencode help
-bun run ultraopencode validate [--config <ultraopencode-options.json>] [--global-config <directory>]
-bun run ultraopencode render [--execute | --recipe <name>] [--global-config <directory>] <objective>
-bun run ultraopencode list
-bun run ultraopencode status [run-id]
-bun run ultraopencode inspect <run-id> [task-id]
-bun run ultraopencode export <run-id>
+gigacode help | --help
+gigacode --version
+gigacode setup [--global | --local | --project <directory>] [--config-dir <directory>] [--config <gigacode-options.json>]
+gigacode doctor [--json] [--project <directory>] [--global-config <directory>]
+gigacode validate [--config <gigacode-options.json>] [--global-config <directory>]
+gigacode render [--execute | --recipe <name>] [--global-config <directory>] <objective>
+gigacode list
+gigacode status [run-id]
+gigacode inspect <run-id> [task-id]
+gigacode export <run-id>
 
-Every command accepts --project <directory>. Status reads saved snapshots; it does
-not reconnect, dispatch workers, or modify run state. Use /ultraopencode inside OpenCode
+setup defaults to global registration of this installed package. Run gigacode setup
+--help for installation options. Offline commands accept --project <directory>.
+Status reads saved snapshots; it does
+not reconnect, dispatch workers, or modify run state. Use /gigacode inside OpenCode
 to start, pause, resume, cancel, retry, or execute a workflow. validate checks option
 syntax; model availability and native permissions are checked in the live host.
 Read-only recipes: deep-review, bug-investigation, cross-checked-research.
 
-validate and render read global OpenCode plugin options and optional ultraopencode.json;
+validate and render read global OpenCode plugin options and optional gigacode.json;
 --config is applied last. A native project registration replaces the same global
-registration's entire options object. Use ultraopencode.json for partial overrides.
+registration's entire options object. Use gigacode.json for partial overrides.
 These offline previews read selected config directories directly, without native
 ancestor or include discovery. --global-config selects an isolated config directory.
 
@@ -42,14 +49,14 @@ list, status, inspect, and export also accept --state <state.sqlite> to select a
 shared project database for a worktree. --project still filters the run directory.
 Exports are written to artifacts beside the selected database.`
 
-export interface LocalResult { exitCode: number; output: string }
+export interface LocalResult { exitCode: number; output: string; stdout?: boolean }
 const json = (value: unknown) => JSON.stringify(sanitizeEventData(value), null, 2)
 const samePath = (left: string, right: string) => process.platform === "win32" ? resolve(left).toLowerCase() === resolve(right).toLowerCase() : resolve(left) === resolve(right)
 
 interface NativeRegistration { target: string; options: unknown }
 
 function ambiguousRegistrations(): Error {
-  return new Error("Ambiguous UltraOpenCode plugin registrations use different package aliases; move project options to ultraopencode.json and retain one UltraOpenCode registration before offline preview")
+  return new Error("Ambiguous GigaCode plugin registrations use different package aliases; move project options to gigacode.json and retain one GigaCode registration before offline preview")
 }
 
 async function nativeOptions(directory: string): Promise<NativeRegistration | undefined> {
@@ -68,9 +75,9 @@ async function nativeOptions(directory: string): Promise<NativeRegistration | un
     if (typeof plugin !== "string" && (!plugin || typeof plugin !== "object" || Array.isArray(plugin) || typeof plugin.package !== "string")) throw new Error(`Existing plugin entries must use a native package string or {package, options?} shape: ${path}`)
     const packageName = typeof plugin === "string" ? plugin : plugin.package
     const packagePath = packageName.startsWith("file://") ? fileURLToPath(packageName) : resolve(directory, packageName)
-    // The former package is read only to support profiles awaiting installer migration.
-    if (packageName === "open-ultra-code" || packageName === "ultra-open-code" || [productionPluginDirectory, join(productionPluginDirectory, "index.ts"), join(productionPluginDirectory, "index.js")].some(known => samePath(packagePath, known))) {
-      const target = packageName === "open-ultra-code" || packageName === "ultra-open-code" ? `package:${packageName}` : `local:${packagePath}`
+    const namedPackage = isRegistryPackage(packageName)
+    if (namedPackage || [productionPluginDirectory, join(productionPluginDirectory, "index.ts"), join(productionPluginDirectory, "index.js")].some(known => samePath(packagePath, known))) {
+      const target = namedPackage ? `package:${packageName}` : `local:${packagePath}`
       if (selected && selected.target !== target) throw ambiguousRegistrations()
       selected = { target, options: typeof plugin === "string" ? undefined : plugin.options }
     }
@@ -92,16 +99,31 @@ function summary(run: Run) {
   return { id: run.id, status: run.status, mode: run.mode, phase: run.phase, revision: run.revision, objective: run.objective, updatedAt: run.updatedAt, tasks: run.tasks.map(task => ({ id: task.spec.id, status: task.status, attempts: task.attempts.length })) }
 }
 
-/** Offline inspection only: genuine native invocation contexts are never fabricated. */
+/** Setup configures the native host; workflow commands inspect offline snapshots only. */
 export async function executeLocalCommand(args: string[], options: { directory?: string; configDirectory?: string } = {}): Promise<LocalResult> {
   let store: SQLiteStore | undefined
   try {
+    if (args.length === 1 && args[0] === "--version") {
+      const manifest = JSON.parse(await readFile(join(productionPluginDirectory, "package.json"), "utf8"))
+      return { exitCode: 0, output: `${manifest.name} ${manifest.version}` }
+    }
+    if (args.length === 1 && args[0] === "--help") return { exitCode: 0, output: localHelp }
+    if (args.length === 2 && args[0] === "doctor" && args[1] === "--help") return { exitCode: 0, output: doctorHelp }
+    if (args[0] === "setup") {
+      if (args.length === 2 && args[1] === "--help") return { exitCode: 0, output: installHelp }
+      const parsed = await parseInstallArguments(args.slice(1))
+      const installed = parsed.scope === "global"
+        ? await installGlobal({ ...parsed, configDirectory: parsed.configDirectory ?? options.configDirectory })
+        : await installProject({ ...parsed, directory: parsed.directory ?? options.directory })
+      return { exitCode: 0, output: json(installed) }
+    }
     const input: string[] = []
     let directory = options.directory ?? process.cwd()
     let configPath: string | undefined
     let globalPath: string | undefined
     let statePath: string | undefined
     let execute = false
+    let structured = false
     let recipe: RecipeName | undefined
     for (let index = 0; index < args.length; index++) {
       const value = args[index]!
@@ -115,13 +137,20 @@ export async function executeLocalCommand(args: string[], options: { directory?:
       } else if (value === "--recipe") {
         recipe = recipeName(args[++index])
       } else if (value === "--execute") execute = true
+      else if (value === "--json") structured = true
       else if (value.startsWith("--")) throw new Error(`Unknown local option: ${value}`)
       else input.push(value)
     }
     const [verb = "help", ...arguments_] = input
+    if (structured && verb !== "doctor") throw new Error("--json is supported only by doctor")
     if (recipe && (verb !== "render" || execute)) throw new Error("--recipe is supported only by read-only render")
     if (statePath && !["list", "status", "inspect", "export"].includes(verb)) throw new Error("--state is supported only by list, status, inspect, and export")
     if (verb === "help") return { exitCode: 0, output: localHelp }
+    if (verb === "doctor") {
+      if (arguments_.length || execute || configPath || recipe || statePath) throw new Error("doctor accepts --json, --project, and --global-config only")
+      const report = await doctor({ directory, configDirectory: globalPath ?? options.configDirectory })
+      return { exitCode: report.ok ? 0 : 1, output: structured ? json(report) : formatDoctorReport(report), stdout: true }
+    }
     directory = await realpath(resolve(directory))
     if (verb === "validate") {
       if (arguments_.length || execute) throw new Error("validate accepts --config, --global-config, and --project only")
@@ -135,14 +164,14 @@ export async function executeLocalCommand(args: string[], options: { directory?:
       const rendered = recipe ? validatePlan({ ...recipeWorkflow(recipe, objective), revision: 1, criteria: planning.criteria }, "plan", config) : execute ? defaultExecutionPlan(objective, planning.criteria, config.checks) : planning
       return { exitCode: 0, output: json(rendered) }
     }
-    if (!["list", "status", "inspect", "export"].includes(verb)) throw new Error(`Unknown local command: ${verb}. Start and control workflows through /ultraopencode inside OpenCode.`)
+    if (!["list", "status", "inspect", "export"].includes(verb)) throw new Error(`Unknown local command: ${verb}. Start and control workflows through /gigacode inside OpenCode.`)
     if (configPath || globalPath || execute) throw new Error("Snapshot commands accept --project and --state only")
     if ((verb === "list" && arguments_.length) || (verb === "status" && arguments_.length > 1) || (verb === "inspect" && (arguments_.length < 1 || arguments_.length > 2)) || (verb === "export" && arguments_.length !== 1)) throw new Error(localHelp)
     const databasePath = resolve(statePath ?? join(runtimeDirectory(directory), "state.sqlite"))
     const stateDirectory = dirname(databasePath)
     if (!existsSync(databasePath)) {
       if ((verb === "status" && !arguments_.length) || verb === "list") return { exitCode: 0, output: json({ snapshot: true, runs: [] }) }
-      throw new Error("No local UltraOpenCode state database exists for this project")
+      throw new Error("No local GigaCode state database exists for this project")
     }
     store = new SQLiteStore(databasePath)
     if (verb === "list" || verb === "status" && !arguments_.length) {
@@ -170,7 +199,7 @@ export async function executeLocalCommand(args: string[], options: { directory?:
 
 if (import.meta.main) {
   const result = await executeLocalCommand(Bun.argv.slice(2))
-  if (result.exitCode) console.error(result.output)
+  if (result.exitCode && !result.stdout) console.error(result.output)
   else console.log(result.output)
   process.exitCode = result.exitCode
 }

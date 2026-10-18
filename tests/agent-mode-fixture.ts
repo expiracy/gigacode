@@ -4,12 +4,12 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, isAbsolute, join, relative } from "node:path"
 import plugin from "../src/plugin.ts"
-import { ULTRA_AGENT_ID, ULTRA_PRIMARY_SYSTEM } from "../src/agents.ts"
+import { GIGACODE_AGENT_ID, GIGACODE_PRIMARY_SYSTEM } from "../src/agents.ts"
 import type { Config, Run } from "../src/types.ts"
 
 /** A public-plugin fixture: actual engine/store, native prelaunch progress, no provider calls. */
 export async function agentModeFixture(options: { system?: string; checks?: Config["checks"] } = {}) {
-  const directory = realpathSync(mkdtempSync(join(tmpdir(), "ultra-agent-mode-")))
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "gigacode-agent-mode-")))
   const policy = [
     { action: "read", resource: "*", effect: "allow" },
     { action: "shell", resource: "*", effect: "ask" },
@@ -17,14 +17,14 @@ export async function agentModeFixture(options: { system?: string; checks?: Conf
   ]
   const agents = new Map<string, any>([
     ["build", { id: "build", name: "Build", mode: "primary", hidden: false, permissions: structuredClone(policy) }],
-    [ULTRA_AGENT_ID, { id: ULTRA_AGENT_ID, name: ULTRA_AGENT_ID, mode: "primary", hidden: false, system: options.system ?? ULTRA_PRIMARY_SYSTEM, model: { providerID: "fixture", id: "test" }, permissions: structuredClone(policy) }],
-    ["ultraopencode-supervisor", { id: "ultraopencode-supervisor", mode: "subagent", hidden: true, permissions: [] }],
-    ["ultraopencode-worker", { id: "ultraopencode-worker", mode: "subagent", hidden: true, permissions: [] }],
+    [GIGACODE_AGENT_ID, { id: GIGACODE_AGENT_ID, name: GIGACODE_AGENT_ID, mode: "primary", hidden: false, system: options.system ?? GIGACODE_PRIMARY_SYSTEM, model: { providerID: "fixture", id: "test" }, permissions: structuredClone(policy) }],
+    ["gigacode-supervisor", { id: "gigacode-supervisor", mode: "subagent", hidden: true, permissions: [] }],
+    ["gigacode-worker", { id: "gigacode-worker", mode: "subagent", hidden: true, permissions: [] }],
   ])
   const sessions = new Map<string, any>()
   const seed = (id: string, update: Record<string, unknown> = {}) => {
     const session = {
-      id, projectID: "project", location: { directory }, agent: ULTRA_AGENT_ID,
+      id, projectID: "project", location: { directory }, agent: GIGACODE_AGENT_ID,
       model: { providerID: "fixture", id: "test" }, permissions: [], time: {},
       tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, cost: 0,
       ...update,
@@ -106,21 +106,21 @@ export async function agentModeFixture(options: { system?: string; checks?: Conf
   }
   const cleanup = await plugin.setup(context as any)
   // Native configuration transforms run after user plugins and retain configured system text.
-  if (options.system !== undefined) agents.get(ULTRA_AGENT_ID).system = options.system
+  if (options.system !== undefined) agents.get(GIGACODE_AGENT_ID).system = options.system
   const read = <T>(query: string): T[] => {
-    const db = new Database(join(directory, ".ultraopencode", "state.sqlite"), { readonly: true })
+    const db = new Database(join(directory, ".gigacode", "state.sqlite"), { readonly: true })
     try { return db.query<{ body: string }, []>(query).all().map(row => JSON.parse(row.body) as T) }
     finally { db.close() }
   }
   const toolContext = (update: Record<string, unknown> = {}) => ({
-    sessionID: "parent", agent: ULTRA_AGENT_ID, messageID: "message_1", id: "call_1", signal: new AbortController().signal,
+    sessionID: "parent", agent: GIGACODE_AGENT_ID, messageID: "message_1", id: "call_1", signal: new AbortController().signal,
     async progress(value: any) { progress.push(value) }, ...update,
   })
   return {
     directory, policy, context, agents, sessions, tools, hooks, synthetics, feedback, progress, dispatches, interrupts, seed, toolContext,
     runs: () => read<Run>("SELECT body FROM runs ORDER BY rowid"),
     audit() {
-      const db = new Database(join(directory, ".ultraopencode", "state.sqlite"), { readonly: true })
+      const db = new Database(join(directory, ".gigacode", "state.sqlite"), { readonly: true })
       try { return db.query<{ id: string; kind: string; body: string }, []>("SELECT id, kind, body FROM events ORDER BY seq").all().map(({ id, kind, body }) => ({ id, kind, data: JSON.parse(body) })) }
       finally { db.close() }
     },
@@ -130,7 +130,7 @@ export async function agentModeFixture(options: { system?: string; checks?: Conf
       try { await cleanup!() }
       finally {
         const root = realpathSync(tmpdir()), target = realpathSync(directory), child = relative(root, target)
-        if (!child || isAbsolute(child) || child === ".." || child.startsWith("..\\") || child.startsWith("../") || !basename(target).startsWith("ultra-agent-mode-")) throw new Error("Unsafe agent mode test cleanup target")
+        if (!child || isAbsolute(child) || child === ".." || child.startsWith("..\\") || child.startsWith("../") || !basename(target).startsWith("gigacode-agent-mode-")) throw new Error("Unsafe agent mode test cleanup target")
         rmSync(target, { recursive: true, force: true })
       }
     },

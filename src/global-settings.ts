@@ -36,12 +36,12 @@ export class GlobalSettings {
     try { native = parseNativeConfiguration(source) }
     catch { throw new Error("Correct the invalid global OpenCode configuration before editing defaults.") }
     assertUniqueKeys(source)
-    if (!Array.isArray(native.plugins)) throw new Error("UltraOpenCode is not registered in this global profile. Install it globally before editing defaults.")
+    if (!Array.isArray(native.plugins)) throw new Error("GigaCode is not registered in this global profile. Install it globally before editing defaults.")
     const matches = native.plugins.map((entry, index) => {
       const name = typeof entry === "string" ? entry : entry?.package
       return typeof name === "string" && packageMatches(name, this.target.packagePath, dirname(path)) ? index : -1
     }).filter(index => index !== -1)
-    if (matches.length !== 1) throw new Error(matches.length ? "Multiple UltraOpenCode registrations exist in this global profile. Retain one before editing defaults." : "UltraOpenCode is not registered in this global profile. Install it globally before editing defaults.")
+    if (matches.length !== 1) throw new Error(matches.length ? "Multiple GigaCode registrations exist in this global profile. Retain one before editing defaults." : "GigaCode is not registered in this global profile. Install it globally before editing defaults.")
     const index = matches[0]!, entry = native.plugins[index]
     const options = parseConfigOptions(typeof entry === "string" ? {} : entry.options)
     return { path, source, native, index, options, revision: digest({ path, source }) }
@@ -75,8 +75,8 @@ export class GlobalSettings {
       }
       const backup = await replaceSettingsFile({
         path: before.path, previous: before.source, source,
-        backupDirectory: join(dirname(before.path), ".ultraopencode", "settings-backups"),
-        temporaryDirectory: join(dirname(before.path), ".ultraopencode", "settings-temp"),
+        backupDirectory: join(dirname(before.path), ".gigacode", "settings-backups"),
+        temporaryDirectory: join(dirname(before.path), ".gigacode", "settings-temp"),
         signal, beforeWrite: this.beforeWrite,
         assertCurrent: async () => { if ((await this.document()).revision !== revision) throw new Error("Global defaults changed. Reopen the editor before saving.") },
       })

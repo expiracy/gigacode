@@ -88,7 +88,7 @@ test("check previews bound multilingual logs by UTF-8 bytes while retaining prov
     expect(view.output).not.toContain("�")
     expect(view.omittedCharacters).toBeGreaterThan(0)
     expect(view.output).toContain(`[${view.omittedCharacters} characters omitted]`)
-    expect(view.fullEvidence).toEqual({ runAudit: "ultraopencode_control export", evidenceId: evidence.id, checkId: evidence.checkId })
+    expect(view.fullEvidence).toEqual({ runAudit: "gigacode_control export", evidenceId: evidence.id, checkId: evidence.checkId })
     expect(view.note).toContain("log text may be omitted")
     for (const secret of ["1234567890123456", "credential-value"]) expect(content).not.toContain(secret)
   }
