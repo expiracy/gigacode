@@ -2,7 +2,7 @@
 
 ## 0.1.0-alpha.1 — unreleased
 
-This is the first release candidate for `opencode-gigacode`, with the intended npm tag `next` and an [MIT licence](LICENSE). It has not been published; `private: true` remains enabled. Local release checks are recorded in the checklist; hosted CI and a public source/docs destination remain pending; the current repository is private. See the [release checklist](docs/development.md#release-checklist) for current evidence and remaining decisions.
+This is the first release candidate for `opencode-gigacode`, with the intended npm tag `next` and an [MIT licence](LICENSE). It has not been published; `private: true` remains enabled. Local and hosted release checks are recorded in the checklist; a public source/docs destination and publication remain pending; the current repository is private. See the [release checklist](docs/development.md#release-checklist) for current evidence and remaining decisions.
 
 ### Included
 
