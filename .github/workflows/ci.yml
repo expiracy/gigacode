@@ -167,7 +167,9 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/opencode-host" --ignore-scripts --no-audit --no-fund "@opencode/cli-linux-x64@$HOST_VERSION"
           test -x "$RUNNER_TEMP/opencode-host/node_modules/@opencode/cli-linux-x64/bin/opencode"
-          test "$("$RUNNER_TEMP/opencode-host/node_modules/@opencode/cli-linux-x64/bin/opencode" --version)" = "$HOST_VERSION"
+          version="$("$RUNNER_TEMP/opencode-host/node_modules/@opencode/cli-linux-x64/bin/opencode" --version)"
+          printf 'Selected host: %s\n' "$version"
+          test "${version#opencode v}" = "$HOST_VERSION"
       - name: Run scripted native integration
         shell: bash
         run: bun run test:integration 2>&1 | tee "$RUNNER_TEMP/native-check.log"
