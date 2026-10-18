@@ -51,6 +51,11 @@ export async function runParallelIntegration() {
     await client.session.prompt({ sessionID: parent.id, text: prompt })
     console.log("Parallel fixture: workflow submitted")
     await client.session.wait({ sessionID: parent.id }, { signal: AbortSignal.timeout(30_000) })
+    const initiatingContext = await client.session.context({ sessionID: parent.id })
+    const admission = initiatingContext.flatMap(message => message.type === "assistant" ? message.content.flatMap(content => content.type === "tool" && content.name === "gigacode_task" ? [content] : []) : []).at(-1)
+    await writeFile(join(root, "admission.json"), JSON.stringify(sanitizeEventData(admission?.state ?? { error: "No gigacode_task call was recorded" }), null, 2))
+    assert(admission, "The initiating native primary must call gigacode_task")
+    assert.equal(admission.state.status, "completed", `Native parallel task admission failed: ${JSON.stringify(sanitizeEventData(admission.state))}`)
     const settled = await waitFor("parallel native completion", async () => {
       const snapshot = await rpc.status({}, request()) as { runs: Run[] }
       return snapshot.runs.find(run => run.parentSessionId === parent.id)

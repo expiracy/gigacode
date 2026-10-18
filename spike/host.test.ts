@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
-import { expectedHostVersion, isolatedEnvironment, prepareHostConfiguration, stopHostProcess } from "./host.ts"
+import { pathToFileURL } from "node:url"
+import { expectedHostVersion, isolatedEnvironment, prepareHostConfiguration, prepareIsolatedGit, stopHostProcess } from "./host.ts"
 
 async function fixtureProcess(ignoreTerm: boolean) {
   const child = Bun.spawn([process.execPath, "--eval", `process.on("SIGTERM", () => { ${ignoreTerm ? "" : "process.exit(0)"} }); console.log("ready"); setInterval(() => {}, 1000);`], {
@@ -70,6 +71,40 @@ test("child environment excludes inherited provider credentials and redirects st
   } finally {
     delete process.env.GIGACODE_SPIKE_PRIVATE_TEST
   }
+})
+
+test("the isolated native host selects a disposable home and Git configuration", () => {
+  const root = resolve(".spike", "isolated-host-profile")
+  const environment = isolatedEnvironment(root, "fixture-password")
+  expect(environment.HOME).toBe(join(root, "home"))
+  expect(environment.GIT_CONFIG_GLOBAL).toBe(join(root, "empty.gitconfig"))
+  expect(environment.GIT_CONFIG_NOSYSTEM).toBe("1")
+})
+
+test.skipIf(process.platform === "win32")("fixture Git isolation survives stripped environment flags and preserves local filter refusal", async () => {
+  const root = await mkdtemp(resolve(".spike", "git-profile-"))
+  const project = join(root, "project")
+  try {
+    await mkdir(join(root, "home"))
+    await mkdir(project)
+    await writeFile(join(root, "home", ".gitconfig"), '[filter "fixture-global"]\n  clean = cat\n')
+    await prepareIsolatedGit(root)
+    expect(await readFile(join(root, "empty.gitconfig"), "utf8")).toBe("\n")
+    // Production readGit deliberately removes GIT_* before spawning Git.
+    const environment = Object.fromEntries(Object.entries(isolatedEnvironment(root, "fixture-password")).filter(([name]) => !name.startsWith("GIT_")))
+    const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd: project, env: environment, stdout: "pipe", stderr: "pipe" })
+    expect(git("config", "--get-regexp", "^filter\\.").exitCode).toBe(1)
+    expect(git("init", "--quiet", "--initial-branch=main").exitCode).toBe(0)
+    await writeFile(join(project, "base.txt"), "baseline\n")
+    expect(git("add", "base.txt").exitCode).toBe(0)
+    expect(git("-c", "user.name=GigaCode fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "--no-gpg-sign", "-m", "Fixture baseline").exitCode).toBe(0)
+    expect(git("config", "filter.fixture-local.clean", "cat").exitCode).toBe(0)
+    expect(new TextDecoder().decode(git("config", "--get-regexp", "^filter\\.").stdout)).toContain("filter.fixture-local.clean")
+    const source = pathToFileURL(resolve("src/worktrees.ts")).href
+    const probe = Bun.spawnSync([process.execPath, "--eval", `import { parallelBaseline } from ${JSON.stringify(source)}; try { await parallelBaseline(process.cwd()); process.exitCode = 1 } catch (error) { console.log(error.message) }`], { cwd: project, env: environment, stdout: "pipe", stderr: "pipe" })
+    expect(probe.exitCode).toBe(0)
+    expect(new TextDecoder().decode(probe.stdout)).toContain("Parallel writers do not support configured Git filters")
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test("global fixture bootstrap uses production installer and leaves projects without native configuration", async () => {

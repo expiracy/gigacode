@@ -12,6 +12,7 @@ import { promptVersion } from "../src/workflow.ts"
 import { GIGACODE_PRIMARY_SYSTEM } from "../src/agents.ts"
 import { manifest } from "../src/workspace.ts"
 import { SQLiteStore } from "../src/store.ts"
+import { sanitizeEventData } from "../src/redaction.ts"
 import type { SettingsView } from "../src/settings.ts"
 import type { WorkflowSnapshot } from "../src/workflow-view.ts"
 import { createWorkflowFixture, fixtureExecutionWorkflow, fixturePlanningWorkflow } from "./workflow-fixture.ts"
@@ -593,6 +594,24 @@ export async function runOpenCodeIntegration() {
         await client.session.wait({ sessionID: ready.supervisorSessionId! }, { signal: AbortSignal.timeout(10_000) })
         const delivered = await waitFor("native completion notice is delivered", async () => runs(await rpc.status({ runId }, options()))[0], run => !!run && run.notifications.length > 0 && run.notifications.every(notice => notice.delivered), 5_000)
         return { runId, status: ready.status, originalSupervisor, replacementSupervisor: ready.supervisorSessionId, acceptedPredecessor: accepted, observationReconciled: { injectedGeneration, observedGeneration: observing!.generation }, notificationsDelivered: delivered!.notifications.length, duplicateSuccessfulAttempts: 0 }
+      } catch (error) {
+        const diagnostics: Record_ = { stage, runId, error: errorMessage(error), requests: fixture.requests }
+        try {
+          const inspected = runId ? await rpc.inspect({ runId }, options()) as { run: Run; events: unknown[] } : undefined
+          diagnostics.inspection = inspected
+          if (inspected) finalRun = inspected.run
+          const sessionIds = new Set([initiating.id, ...(inspected?.run.supervisorHistory ?? []), inspected?.run.supervisorSessionId, ...inspected?.run.tasks.flatMap(task => task.attempts.map(attempt => attempt.sessionId)) ?? []].filter((id): id is string => !!id))
+          diagnostics.sessions = await Promise.all([...sessionIds].map(async id => {
+            const [session, context] = await Promise.allSettled([client.session.get({ sessionID: id as typeof initiating.id }), client.session.context({ sessionID: id as typeof initiating.id })])
+            return { sessionId: id,
+              session: session.status === "fulfilled" ? session.value : { error: errorMessage(session.reason) },
+              context: context.status === "fulfilled" ? context.value : { error: errorMessage(context.reason) },
+            }
+          }))
+        } catch (inspectionError) { diagnostics.inspectionError = errorMessage(inspectionError) }
+        try { await writeFile(join(root, "recovery-failure.json"), JSON.stringify(sanitizeEventData(diagnostics), null, 2) + "\n") }
+        catch (captureError) { console.error(`Recovery diagnostic capture failed: ${errorMessage(captureError)}`) }
+        throw error
       } finally {
         fixture.release(hold)
         if (runId) await rpc.control({ text: `cancel ${runId}`, sessionId: initiating.id }, options()).catch(() => {})

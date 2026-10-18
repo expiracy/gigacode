@@ -1,7 +1,7 @@
 import { OpenCode, type OpenCodeClient } from "@opencode/client"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
-import { dirname, join, resolve } from "node:path"
+import { delimiter, dirname, join, resolve } from "node:path"
 import { createServer } from "node:net"
 
 export function expectedHostVersion(value: string | undefined): "2.0.25" | "2.0.26" | "2.0.28" {
@@ -97,7 +97,11 @@ export function isolatedEnvironment(root: string, password: string, options: { p
   }
   return {
     ...environment,
+    ...(process.platform === "win32" ? {} : { PATH: [join(root, "git-bin"), environment.PATH ?? environment.Path].filter(Boolean).join(delimiter) }),
+    HOME: join(root, "home"),
     USERPROFILE: join(root, "home"),
+    GIT_CONFIG_GLOBAL: join(root, "empty.gitconfig"),
+    GIT_CONFIG_NOSYSTEM: "1",
     APPDATA: join(root, "appdata"),
     LOCALAPPDATA: join(root, "localappdata"),
     XDG_CONFIG_HOME: join(root, "xdg-config"),
@@ -122,6 +126,21 @@ export function isolatedEnvironment(root: string, password: string, options: { p
     NO_COLOR: "1",
     CI: "1",
   }
+}
+
+/** Test profile isolation; production Git preflight still sees repository-local policy. */
+export async function prepareIsolatedGit(root: string): Promise<void> {
+  const configuration = join(root, "empty.gitconfig")
+  await writeFile(configuration, "\n")
+  if (process.platform === "win32") return
+  const git = Bun.which("git")
+  if (!git) return
+  const bin = join(root, "git-bin")
+  await mkdir(bin, { recursive: true })
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+  // Production probes discard inherited GIT_* variables. Apply fixture-only
+  // system/global isolation after that boundary; local repository config remains visible.
+  await writeFile(join(bin, "git"), `#!/bin/sh\nGIT_CONFIG_GLOBAL=${quote(configuration)} GIT_CONFIG_NOSYSTEM=1 exec ${quote(git)} "$@"\n`, { mode: 0o755 })
 }
 
 export interface IsolatedHostOptions {
@@ -193,6 +212,7 @@ export async function startHost(options: IsolatedHostOptions): Promise<IsolatedH
   }
   await writeFile(join(root, "models.json"), "{}\n")
   await writeFile(join(root, "empty.npmrc"), "\n")
+  await prepareIsolatedGit(root)
   await writeFile(join(project, "protected.txt"), "original\n")
   await writeFile(join(project, "README.md"), "Isolated compatibility fixture. No external model calls.\n")
   if (options.installGlobal) {
@@ -201,13 +221,11 @@ export async function startHost(options: IsolatedHostOptions): Promise<IsolatedH
     const git = Bun.which("git")
     if (!git) throw new Error("Git is required to isolate native global-installation projects")
     const noHooks = join(root, "no-git-hooks")
-    const emptyGitConfig = join(root, "empty.gitconfig")
     await mkdir(noHooks, { recursive: true })
-    await writeFile(emptyGitConfig, "\n")
     await writeFile(join(otherProject, "README.md"), "Other isolated global installation project.\n")
     const gitEnvironment = {
       ...environment,
-      GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: emptyGitConfig, GIT_TERMINAL_PROMPT: "0",
+      GIT_TERMINAL_PROMPT: "0",
       GIT_AUTHOR_NAME: "GigaCode integration fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
       GIT_COMMITTER_NAME: "GigaCode integration fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid",
     }

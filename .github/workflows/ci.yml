@@ -185,6 +185,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native-check.log
             .spike/integration-*/integration.json
+            .spike/integration-*/recovery-failure.json
             .spike/integration-*/host.log
           if-no-files-found: ignore
           retention-days: 7
@@ -230,6 +231,7 @@ jobs:
           include-hidden-files: true
           path: |
             ${{ runner.temp }}/parallel-check.log
+            .spike/parallel-*/admission.json
             .spike/parallel-*/audit.json
             .spike/parallel-*/denied-audit.json
             .spike/parallel-*/result.json
