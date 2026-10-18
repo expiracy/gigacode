@@ -102,7 +102,7 @@ test("an explicit shared profile resolves relative plugin paths beside that file
   expect((await settings.read()).effective.limits.workers).toBe(2)
 })
 
-test("concurrent editors in different instances cannot overwrite the first global save", async () => {
+test("concurrent editors in different instances cannot overwrite the winning global save", async () => {
   const f = await fixture()
   await writeFile(f.path, JSON.stringify({ plugins: [{ package: f.packagePath }] }))
   const other = new GlobalSettings({ configDirectory: f.directory, packagePath: f.packagePath })
@@ -111,8 +111,12 @@ test("concurrent editors in different instances cannot overwrite the first globa
     f.settings.save(before.revision, { limits: { workers: 1 } }, []),
     other.save(before.revision, { limits: { workers: 2 } }, []),
   ])
-  expect(results.map(result => result.status)).toEqual(["fulfilled", "rejected"])
-  expect((await f.settings.read()).effective.limits.workers).toBe(1)
+  expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1)
+  expect(results.filter(result => result.status === "rejected")).toHaveLength(1)
+  const winner = results.findIndex(result => result.status === "fulfilled")
+  const rejected = results.find(result => result.status === "rejected") as PromiseRejectedResult
+  expect(String(rejected.reason)).toContain("Global defaults changed")
+  expect((await f.settings.read()).effective.limits.workers).toBe(winner === 0 ? 1 : 2)
 })
 
 test("invalid global limits are rejected without changing the native profile", async () => {

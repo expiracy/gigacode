@@ -14,6 +14,11 @@ export function assertPackageContents(files: string[]): void {
   }
 }
 
+/** Accept the licence title independently of checkout line-ending conversion. */
+export function assertMITLicense(source: string): void {
+  assert.match(source, /^MIT License\r?\n/, "Packaged LICENSE must begin with the MIT License title")
+}
+
 interface PackedArtifact { path: string; files: string[]; size: number }
 type PackedInstallation = Awaited<ReturnType<typeof preparePackedInstallation>>
 
@@ -89,7 +94,7 @@ export async function checkPackage(source = resolve(dirname(fileURLToPath(import
     const installed = JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8"))
     assert.equal(installed.name, "opencode-gigacode")
     assert.equal(installed.license, "MIT")
-    assert.ok((await readFile(join(packageDirectory, "LICENSE"), "utf8")).startsWith("MIT License\n"))
+    assertMITLicense(await readFile(join(packageDirectory, "LICENSE"), "utf8"))
     assert.deepEqual(installed.exports, { ".": "./index.ts", "./tui": "./tui.ts" })
     assert.equal(installed.bin.gigacode, "scripts/cli.ts")
     for (const name of ["typescript", "@types/bun", "@opencode/plugin", "@opencode/client"]) {
@@ -146,7 +151,7 @@ export async function checkPackage(source = resolve(dirname(fileURLToPath(import
     const missingDiagnosis = JSON.parse(await command([...binary, "doctor", "--json", "--global-config", missingProfile], project, env, 1))
     assert.equal(missingDiagnosis.ok, false)
     assert.equal(missingDiagnosis.profile.directory, missingProfile)
-    assert.ok(missingDiagnosis.checks.some((check: { status: string }) => check.status === "fail"))
+    assert.ok(missingDiagnosis.checks.some((check: { status: string }) => check.status === "fail"), "A missing-profile diagnosis must identify a failed check")
     assert.equal(existsSync(missingProfile), false, "Diagnostics must not create a missing profile")
 
     const stateDirectory = join(project, ".gigacode")
@@ -195,5 +200,5 @@ export async function checkPackage(source = resolve(dirname(fileURLToPath(import
 
 if (import.meta.main) {
   try { console.log(JSON.stringify(await checkPackage(), null, 2)) }
-  catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1 }
+  catch (error) { console.error(error instanceof Error ? error.stack ?? `${error.name}: ${error.message}` : String(error)); process.exitCode = 1 }
 }

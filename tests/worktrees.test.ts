@@ -1,17 +1,54 @@
-import { expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
 import { mkdtemp, rm, writeFile, realpath, link, mkdir, readFile, chmod } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, join } from "node:path"
 import { parallelBaseline, captureWriter, integrationChanges, worktreeDirectory } from "../src/worktrees.ts"
 import { OpenCodeAdapter } from "../src/opencode.ts"
 import { Schema } from "effect"
 import { manifest, digest } from "../src/workspace.ts"
 import type { Run, Attempt, TaskSpec, Store, ParallelBaseline, WorktreeChange } from "../src/types.ts"
 
+let gitProfile: string | undefined
+let previousPath: string | undefined
+const restorePath = () => { if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath }
+beforeAll(async () => {
+  // The unit suite uses POSIX executable modes. On Windows retain native Git;
+  // use WSL for these fixtures if the host has global Git filters configured.
+  if (process.platform === "win32") return
+  previousPath = process.env.PATH
+  const git = Bun.which("git")
+  if (!git) throw new Error("Git is required for worktree fixtures")
+  gitProfile = await mkdtemp(join(await realpath(tmpdir()), "gigacode-isolated-git-"))
+  try {
+    const configuration = join(gitProfile, "empty.gitconfig")
+    const bin = join(gitProfile, "bin")
+    await mkdir(bin)
+    await writeFile(configuration, "\n")
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+    const wrapper = join(bin, "git")
+    // Production probes discard inherited GIT_* variables. Set only the fixture
+    // config isolation after that boundary, preserving repository-local filters.
+    await writeFile(wrapper, `#!/bin/sh\nGIT_CONFIG_GLOBAL=${quote(configuration)} GIT_CONFIG_NOSYSTEM=1 exec ${quote(git)} "$@"\n`)
+    await chmod(wrapper, 0o755)
+    process.env.PATH = [bin, previousPath].filter(Boolean).join(delimiter)
+  } catch (error) {
+    restorePath()
+    await rm(gitProfile, { recursive: true, force: true })
+    gitProfile = undefined
+    throw error
+  }
+})
+afterAll(async () => {
+  if (!gitProfile) return
+  restorePath()
+  await rm(gitProfile, { recursive: true, force: true })
+})
+
 async function fixture() {
   const directory = await mkdtemp(join(await realpath(tmpdir()), "ultra-worktrees-"))
-  const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=", "-c", "commit.gpgsign=false", ...args], { cwd: directory, encoding: "utf8" }).trim()
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("GIT_")))
+  const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=", "-c", "commit.gpgsign=false", ...args], { cwd: directory, env, encoding: "utf8" }).trim()
   git("init", "--initial-branch=main")
   git("config", "user.name", "GigaCode fixture")
   git("config", "user.email", "fixture@example.invalid")

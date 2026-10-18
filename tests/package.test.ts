@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { assertPackageContents, packageCommand } from "../scripts/check-package.ts"
+import { assertMITLicense, assertPackageContents, packageCommand } from "../scripts/check-package.ts"
 
 const runtimeFiles = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "index.ts", "tui.ts", "scripts/cli.ts", "scripts/install.ts", "scripts/doctor.ts", "src/plugin.ts", "src/config.ts"]
 
@@ -21,6 +21,14 @@ test("the npm artifact must contain the installed doctor's implementation", () =
 
 test("the release artifact must include its licence", () => {
   expect(() => assertPackageContents(runtimeFiles.filter(path => path !== "LICENSE"))).toThrow("Missing packaged file: LICENSE")
+})
+
+test("the packaged MIT licence accepts Windows checkout line endings", () => {
+  expect(() => assertMITLicense("MIT License\r\n\r\nCopyright (c) 2026\r\n")).not.toThrow()
+})
+
+test("an unexpected licence title reports the failed package contract", () => {
+  expect(() => assertMITLicense("Another licence\r\n")).toThrow("Packaged LICENSE must begin with the MIT License title")
 })
 
 test("Windows npm operations run through its command shim with whitespace paths kept as arguments", () => {
