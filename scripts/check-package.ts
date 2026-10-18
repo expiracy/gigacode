@@ -19,7 +19,7 @@ export function assertMITLicense(source: string): void {
   assert.match(source, /^MIT License\r?\n/, "Packaged LICENSE must begin with the MIT License title")
 }
 
-interface PackedArtifact { path: string; files: string[]; size: number }
+export interface PackedArtifact { path: string; files: string[]; size: number }
 type PackedInstallation = Awaited<ReturnType<typeof preparePackedInstallation>>
 
 /** npm is a command script on Windows and needs the command interpreter. */
@@ -32,6 +32,21 @@ async function command(args: string[], cwd: string, env: Record<string, string |
   const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
   if (exit !== expectedExit) throw new Error(`${args.slice(0, 2).join(" ")} exited ${exit}, expected ${expectedExit}:\n${stderr || stdout}`)
   return stdout
+}
+
+/** Read package files in memory; no archive paths are extracted to disk. */
+export async function inspectPackedArtifact(path: string) {
+  const bytes = await readFile(path)
+  const contents = new Map<string, File>()
+  for (const [name, file] of await new Bun.Archive(bytes).files()) {
+    if (!name.startsWith("package/") || name.includes("\\") || name.split("/").some(part => part === "." || part === ".." || !part)) throw new Error(`Unsafe package archive path: ${name}`)
+    contents.set(name.slice("package/".length), file)
+  }
+  assertPackageContents([...contents.keys()])
+  const manifest = JSON.parse(await contents.get("package.json")!.text())
+  assert.equal(manifest.name, "opencode-gigacode", "The supplied artifact must contain opencode-gigacode")
+  assertMITLicense(await contents.get("LICENSE")!.text())
+  return { artifact: { path: await realpath(path), files: [...contents.keys()].sort(), size: bytes.length }, contents, bytes }
 }
 
 /** The native integration imports this helper so it exercises the same tarball. */
@@ -47,9 +62,9 @@ export async function packArtifact(source: string, destination: string): Promise
 }
 
 /** Installs only the production tarball and its registry dependencies. Caller owns cleanup. */
-export async function preparePackedInstallation(root: string, source = resolve(dirname(fileURLToPath(import.meta.url)), "..")) {
+export async function preparePackedInstallation(root: string, source = resolve(dirname(fileURLToPath(import.meta.url)), ".."), artifactPath = process.env.GIGACODE_TEST_ARTIFACT) {
   root = await realpath(root)
-  const artifact = await packArtifact(source, join(root, "tarballs"))
+  const artifact = artifactPath ? (await inspectPackedArtifact(resolve(artifactPath))).artifact : await packArtifact(source, join(root, "tarballs"))
   const profile = join(root, "home")
   const prefix = join(root, "prefix")
   const project = join(root, "project")
@@ -87,11 +102,11 @@ export async function reinstallPackedArtifact(installation: PackedInstallation):
 }
 
 /** Installs and runs the distributable outside this checkout, with no dev packages. */
-export async function checkPackage(source = resolve(dirname(fileURLToPath(import.meta.url)), "..")) {
+export async function checkPackage(source = resolve(dirname(fileURLToPath(import.meta.url)), ".."), artifactPath = process.env.GIGACODE_TEST_ARTIFACT) {
   // Match the installer's async realpath, which expands Windows 8.3 aliases.
   const root = await realpath(await mkdtemp(join(await realpath(tmpdir()), "gigacode package-")))
   try {
-    const installation = await preparePackedInstallation(root, source)
+    const installation = await preparePackedInstallation(root, source, artifactPath)
     const { artifact, env, project, configurationDirectory, packageDirectory, binary, prefix } = installation
     const installed = JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8"))
     assert.equal(installed.name, "opencode-gigacode")
@@ -201,6 +216,10 @@ export async function checkPackage(source = resolve(dirname(fileURLToPath(import
 }
 
 if (import.meta.main) {
-  try { console.log(JSON.stringify(await checkPackage(), null, 2)) }
+  try {
+    const args = Bun.argv.slice(2)
+    if (args.length && (args.length !== 2 || args[0] !== "--artifact" || !args[1])) throw new Error("Usage: bun run scripts/check-package.ts [--artifact <tarball>]")
+    console.log(JSON.stringify(await checkPackage(undefined, args[1]), null, 2))
+  }
   catch (error) { console.error(error instanceof Error ? error.stack ?? `${error.name}: ${error.message}` : String(error)); process.exitCode = 1 }
 }

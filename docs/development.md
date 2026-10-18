@@ -16,7 +16,7 @@ To rehearse the distributable locally, create an output directory outside the ch
 
 ```sh
 npm pack --ignore-scripts --pack-destination /absolute/path/to/release-artifacts
-npm install --global /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-alpha.1.tgz
+npm install --global /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-beta.1.tgz
 gigacode setup --global
 ```
 
@@ -24,7 +24,11 @@ This installs the local artifact without publishing it. Use an isolated profile 
 
 ## Release checklist
 
-This is the pre-upload evidence snapshot for `opencode-gigacode@0.1.0-alpha.1`, with intended npm tag `next`. Registry and CDN verification occur outside this snapshot; consult the [npm listing](https://www.npmjs.com/package/opencode-gigacode) for current package status. The source repository stays private.
+The current candidate is `opencode-gigacode@0.1.0-beta.1`, planned for npm's `next` tag. It is unreleased; publication is not authorised. Rehearse its tarball locally and record beta-specific gate/CI results before considering a release. Registry and CDN installation links for this beta become usable only after a separately authorised publication. The existing staged alpha has been left unchanged; no beta staging action has been performed. The source repository stays private.
+
+### Prior alpha validation
+
+The evidence below belongs to `0.1.0-alpha.1` from 18 October 2026. It is historical validation and must not be relabelled as a passing beta gate. Consult the [npm listing](https://www.npmjs.com/package/opencode-gigacode) for current registry status.
 
 | Item | State and evidence |
 | --- | --- |
@@ -39,7 +43,7 @@ This is the pre-upload evidence snapshot for `opencode-gigacode@0.1.0-alpha.1`, 
 | Registry identity | Public registry lookup returned 404 for `opencode-gigacode` on 18 October 2026 before upload. This historical lookup does not reserve the name or establish current registry status. |
 | Review | Reviewed on internal PR #1 from the private `codex/release-prep-alpha` branch. |
 | Publishing access | `npm whoami` authenticated as `expiracy` on 18 October 2026. Authentication alone does not establish publication success. |
-| Publication | Exact-version retrieval, the `next` tag, published file list, public docs, and installation of the registry artifact are verified after upload, outside this pre-upload snapshot. |
+| Publication | The alpha artifact was staged but never approved for publication. This record does not claim a public alpha or beta release. |
 
 Record the exact candidate version, command, host/platform, and actual result when reproducing these checks. The native suites use isolated profiles and a scripted model provider; optional real-model evaluations require explicit connection and budget arguments.
 
@@ -89,9 +93,33 @@ bun run test:parallel
 
 `test:package` packs the distributable and installs it without development dependencies into a temporary global prefix outside the checkout, including a path with spaces. It exercises the installed CLI and doctor, setup, preserved settings, and idempotence. It then overwrites the same prefix with the tarball and checks replacement and setup stability, followed by scoped manual deregistration and `npm uninstall`. Unrelated native configuration, customised agents/options, project state, and backups are checked for preservation. Registry access is required to install production dependencies; `PACKAGE_CHECK_OFFLINE=1` can use an existing npm cache selected with `npm_config_cache`. This check does not publish anything. On macOS, use a canonical temporary directory, such as `TMPDIR=/private/tmp`, for tests: runtime metadata deliberately rejects symlinked paths.
 
-CI runs the local type/unit checks on Ubuntu and package checks on Ubuntu, macOS, and Windows. An explicit `workflow_dispatch` request with `native_host_checks` enabled runs the separate exact-host integration matrix. These definitions do not establish a passing hosted result until their jobs complete.
+The reusable `ci.yml` runs automatically on pull requests and pushes to `main`, and can also be dispatched manually. It checks types, unit tests, workflow lint, the package lifecycle on Ubuntu/macOS/Windows, all three exact native hosts on Ubuntu, and isolated parallel writers on Ubuntu/2.0.28. Its aggregate job is named **CI**. Actions are pinned to commit SHAs; Dependabot checks action updates weekly. A workflow definition alone does not establish a passing beta result; retain the run and commit with its actual outcomes.
 
 `test:parallel` uses a private scripted-provider host to exercise permission-checked Git preparation, actual moved native subagents, canonical shared state, exact integration and fresh root verification. It deliberately configures a native startup marker and asserts that the preparation path does not run it. Set `OPENCODE_SPIKE_BIN` to the matching installed host as for the production integration suite.
+
+## CI and controlled release rehearsals
+
+The manual workflow **Prepare npm release** (`release.yml`) reuses those checks and defaults to an artifact rehearsal. Its required `version` input must exactly match `package.json` on `main`; the optional Boolean `stage` defaults to `false`. Once the reviewed workflow is available on `main`, run:
+
+```sh
+gh workflow run release.yml --ref main -f version=0.1.0-beta.1 -F stage=false
+```
+
+This builds one tarball, runs its installed-package lifecycle checks, and retains the exact tarball with `release.json` as `npm-package-<commit>-<run-attempt>` for 30 days. The manifest binds the package version and `next` tag to the full source commit, SHA-512 integrity, SHA-1 checksum, size, file count, and runtime versions. Native/parallel diagnostic artifacts are retained for seven days. Rehearsal does not change npm registry state. Pushes and tags cannot automatically stage or publish a package.
+
+From a clean, committed authorised source checkout, use an empty output directory outside the checkout for a local rehearsal:
+
+```sh
+bun run scripts/release-artifact.ts prepare /absolute/path/to/release-artifacts 0.1.0-beta.1
+bun run scripts/release-artifact.ts verify /absolute/path/to/release-artifacts 0.1.0-beta.1 <full-commit-sha>
+bun run scripts/check-package.ts --artifact /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-beta.1.tgz
+```
+
+Replace the paths and commit placeholder with the intended output directory and exact 40-character commit. `prepare` packs once and validates package/docs metadata; `verify` checks the retained bytes and metadata without repacking or publishing. The final command exercises that artifact's installed-package lifecycle. A future staging action must use the verified artifact rather than building another tarball.
+
+One-time external maintainer setup has not been performed by these repository changes. Configure the npm trusted publisher for this GitHub repository, workflow `release.yml`, and environment `npm`. Under **Allowed actions**, permit `npm stage publish` only; leave direct `npm publish` and `npm dist-tag` disabled. Configure the GitHub `npm` environment and, where supported, its protection rules; use aggregate **CI** as the branch-rule check. No account security or publisher settings are changed by a rehearsal. The repository can remain private for OIDC, but npm provenance is unavailable for private sources.
+
+If staging is separately authorised later, run the workflow with `stage=true`. Its stage job runs directly in `release.yml`, uses Node 24/npm 11.16.0 and OIDC, re-verifies the downloaded artifact, disables provenance for this private source, and submits that exact tarball to npm staging under `next`. It records a staging receipt; it does not finish publication. Final npm stage approval requires a human with 2FA. Do not treat a GitHub environment as a guaranteed human gate; required-reviewer support for private repositories depends on the GitHub plan. The workflow has no direct npm publication path. See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) for maintainer setup.
 
 ## Opt-in model evaluations
 

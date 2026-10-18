@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { Rpc } from "@opencode/plugin"
@@ -8,6 +8,7 @@ import { createWorkflowFixture } from "./workflow-fixture.ts"
 import { manifest } from "../src/workspace.ts"
 import { sanitizeEventData } from "../src/redaction.ts"
 import type { Run, Workflow } from "../src/types.ts"
+import { preparePackedInstallation } from "../scripts/check-package.ts"
 
 const object = { type: "object", additionalProperties: true } as const
 const contract = Rpc.define({ id: "gigacode", methods: {
@@ -19,10 +20,10 @@ const contract = Rpc.define({ id: "gigacode", methods: {
 export async function runParallelIntegration() {
   const root = resolve(".spike", `parallel-${EXPECTED_VERSION}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`)
   await mkdir(root, { recursive: true })
-  const pluginDirectory = join(root, "plugin")
-  await mkdir(pluginDirectory)
-  for (const name of ["index.ts", "tui.ts", "package.json"]) await cp(resolve(name), join(pluginDirectory, name))
-  await cp(resolve("src"), join(pluginDirectory, "src"), { recursive: true })
+  const packedRoot = join(root, "packed")
+  await mkdir(packedRoot)
+  const { packageDirectory: pluginDirectory, artifact } = await preparePackedInstallation(packedRoot)
+  const packageVersion = JSON.parse(await readFile(join(pluginDirectory, "package.json"), "utf8")).version as string
   const sourceHash = (await manifest(pluginDirectory)).hash
   const fixture = createWorkflowFixture({ writePaths: { first: "first.txt", second: "second.txt" } })
   let host: IsolatedHost | undefined
@@ -107,7 +108,7 @@ export async function runParallelIntegration() {
     assert(deniedAudit.events.some(event => event.kind === "preparation.native_failed" && String(event.data.error).includes("Tool.Error")))
     assert(!deniedAudit.events.some(event => event.kind === "preparation.git_completed"))
     await writeFile(join(root, "denied-audit.json"), JSON.stringify(sanitizeEventData(deniedAudit), null, 2))
-    const report = { hostVersion: EXPECTED_VERSION, sourceHash, runId: run.id, outcome: run.status, isolatedWriters: 2,
+    const report = { hostVersion: EXPECTED_VERSION, sourceHash, artifact: { path: artifact.path, version: packageVersion, files: artifact.files.length, size: artifact.size }, runId: run.id, outcome: run.status, isolatedWriters: 2,
       preparationApplied: true, integrationApplied: true, freshNativeCheck: check.id, unsafeStartupSkipped: true, nativePreparationDenyPreserved: true, requests: fixture.requests.length, audit: join(root, "audit.json") }
     await writeFile(join(root, "result.json"), JSON.stringify(report, null, 2))
     console.log(JSON.stringify(report))

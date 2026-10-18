@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test"
-import { assertMITLicense, assertPackageContents, packageCommand } from "../scripts/check-package.ts"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { assertMITLicense, assertPackageContents, inspectPackedArtifact, packageCommand } from "../scripts/check-package.ts"
 
 const runtimeFiles = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "index.ts", "tui.ts", "scripts/cli.ts", "scripts/install.ts", "scripts/doctor.ts", "src/plugin.ts", "src/config.ts"]
 
@@ -34,4 +37,24 @@ test("an unexpected licence title reports the failed package contract", () => {
 test("Windows npm operations run through its command shim with whitespace paths kept as arguments", () => {
   const args = ["npm", "pack", "--pack-destination", "C:\\Release Files\\artifacts"]
   expect(packageCommand(args, "win32")).toEqual(["cmd.exe", "/d", "/s", "/c", "npm.cmd", ...args.slice(1)])
+})
+
+test("a supplied tarball is inspected before its saved state could reach npm installation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gigacode supplied artifact-"))
+  try {
+    const path = join(root, "candidate.tgz")
+    const contents = Object.fromEntries(runtimeFiles.map(name => [`package/${name}`, name === "package.json" ? JSON.stringify({ name: "opencode-gigacode" }) : name === "LICENSE" ? "MIT License\n" : "fixture\n"]))
+    await Bun.Archive.write(path, { ...contents, "package/.gigacode/state.sqlite": "private saved state" }, { compress: "gzip" })
+    await expect(inspectPackedArtifact(path)).rejects.toThrow("Unexpected packaged file: .gigacode/state.sqlite")
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test("a supplied tarball cannot disguise a file outside the npm package root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gigacode unsafe artifact-"))
+  try {
+    const path = join(root, "candidate.tgz")
+    const contents = Object.fromEntries(runtimeFiles.map(name => [`package/${name}`, name === "package.json" ? JSON.stringify({ name: "opencode-gigacode" }) : name === "LICENSE" ? "MIT License\n" : "fixture\n"]))
+    await Bun.Archive.write(path, { ...contents, "outside/src/extra.ts": "unexpected" }, { compress: "gzip" })
+    await expect(inspectPackedArtifact(path)).rejects.toThrow("Unsafe package archive path")
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
