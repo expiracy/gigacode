@@ -18,6 +18,14 @@ test("the npm artifact includes its diagnostic CLI and release notes", () => {
   expect(() => assertPackageContents(runtimeFiles)).not.toThrow()
 })
 
+test("the npm artifact accepts its reviewed product screenshots", () => {
+  expect(() => assertPackageContents([...runtimeFiles, "docs/assets/workflows.png", "docs/assets/settings.png"])).not.toThrow()
+})
+
+test("unreviewed screenshots remain excluded from the npm artifact", () => {
+  expect(() => assertPackageContents([...runtimeFiles, "docs/assets/provider-account.png"])).toThrow("Unexpected packaged file: docs/assets/provider-account.png")
+})
+
 test("the npm artifact must contain the installed doctor's implementation", () => {
   expect(() => assertPackageContents(runtimeFiles.filter(path => path !== "scripts/doctor.ts"))).toThrow("Missing packaged file: scripts/doctor.ts")
 })
