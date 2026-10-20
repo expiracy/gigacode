@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 
 /** Verify the file list reported by npm pack before running installed smoke checks. */
 export function assertPackageContents(files: string[]): void {
-  const allowed = /^(?:package\.json|README\.md|CHANGELOG\.md|LICENSE(?:\.md)?|index\.ts|tui\.ts|scripts\/(?:cli|install|doctor)\.ts|src\/[a-z0-9-]+\.ts|examples\/[a-z0-9-]+\.json|docs\/(?:installation|configuration|commands|development|architecture|agent-workflows)\.md|docs\/assets\/(?:README\.md|(?:workflows|settings)\.png))$/
+  const allowed = /^(?:package\.json|README\.md|CHANGELOG\.md|LICENSE(?:\.md)?|index\.ts|tui\.ts|scripts\/(?:cli|install|doctor)\.ts|src\/[a-z0-9-]+\.ts|examples\/[a-z0-9-]+\.json|docs\/(?:installation|configuration|commands|development|architecture|agent-workflows)\.md|docs\/assets\/(?:README\.md|(?:workspace|workflows|settings)\.png|logo(?:-dark|-light)?\.svg))$/
   for (const path of files) if (!allowed.test(path)) throw new Error(`Unexpected packaged file: ${path}`)
   for (const path of ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "index.ts", "tui.ts", "scripts/cli.ts", "scripts/install.ts", "scripts/doctor.ts", "src/plugin.ts", "src/config.ts"]) {
     if (!files.includes(path)) throw new Error(`Missing packaged file: ${path}`)

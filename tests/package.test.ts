@@ -26,8 +26,20 @@ test("the npm artifact accepts the product capture provenance included by npm", 
   expect(() => assertPackageContents([...runtimeFiles, "docs/assets/workflows.png", "docs/assets/settings.png", "docs/assets/README.md"])).not.toThrow()
 })
 
+test("the npm artifact accepts the README logo and its reviewed theme variants", () => {
+  expect(() => assertPackageContents([...runtimeFiles, "docs/assets/logo.svg", "docs/assets/logo-dark.svg", "docs/assets/logo-light.svg"])).not.toThrow()
+})
+
+test("the npm artifact accepts the full workspace view used by the README", () => {
+  expect(() => assertPackageContents([...runtimeFiles, "docs/assets/workspace.png"])).not.toThrow()
+})
+
 test("unreviewed screenshots remain excluded from the npm artifact", () => {
   expect(() => assertPackageContents([...runtimeFiles, "docs/assets/provider-account.png"])).toThrow("Unexpected packaged file: docs/assets/provider-account.png")
+})
+
+test("unreviewed SVGs remain excluded from the npm artifact", () => {
+  expect(() => assertPackageContents([...runtimeFiles, "docs/assets/provider-account.svg"])).toThrow("Unexpected packaged file: docs/assets/provider-account.svg")
 })
 
 test("the npm artifact must contain the installed doctor's implementation", () => {
