@@ -16,15 +16,19 @@ To rehearse the distributable locally, create an output directory outside the ch
 
 ```sh
 npm pack --ignore-scripts --pack-destination /absolute/path/to/release-artifacts
-npm install --global /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-beta.2.tgz
+npm install --global /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-beta.3.tgz
 gigacode setup --global
 ```
 
 This installs the local artifact without publishing it. Use an isolated profile when rehearsing setup, upgrades, and removal.
 
+Delivery-helper tests run separately with `node --test tests/*.test.mjs` and
+require GitHub CLI (`gh`) on `PATH`. The HTTP regression uses isolated configuration,
+a dummy token, and a loopback server; it does not require a GitHub sign-in.
+
 ## Release checklist
 
-This checkout prepares `opencode-gigacode@0.1.0-beta.2` for direct OIDC publication through GitHub Actions after required human approval. `0.1.0-beta.1` was submitted through npm OIDC staging on 20 October 2026 and remains a separate, reserved candidate. The fresh version includes those product and error-feedback changes plus the new publication path. The source repository and guides are public; consult npm and the changelog for actual publication status.
+This checkout prepares `opencode-gigacode@0.1.0-beta.3` for direct OIDC publication through GitHub Actions after required human approval. The earlier `v0.1.0-beta.2` tag identifies the failed draft-upload candidate and remains unchanged; the next version includes its HTTP upload fix. `0.1.0-beta.1` was submitted through npm OIDC staging on 20 October 2026 and remains a separate, reserved candidate. The fresh version includes those product and error-feedback changes plus the new publication path. The source repository and guides are public; consult npm and the changelog for actual publication status.
 
 ### Prior alpha validation
 
@@ -102,7 +106,7 @@ The reusable `ci.yml` runs automatically on pull requests and pushes to `main`, 
 The manual workflow **Prepare npm release** (`release.yml`) reuses those checks and defaults to an artifact rehearsal. Its required `version` input must exactly match `package.json` on `main`; the optional Boolean `stage` defaults to `false`. Once the reviewed workflow is available on `main`, run:
 
 ```sh
-gh workflow run release.yml --ref main -f version=0.1.0-beta.2 -F stage=false
+gh workflow run release.yml --ref main -f version=0.1.0-beta.3 -F stage=false
 ```
 
 This builds one tarball, runs its installed-package lifecycle checks, and retains the exact tarball with `release.json` as `npm-package-<commit>-<run-attempt>` for 30 days. The manifest binds the package version and `next` tag to the full source commit, SHA-512 integrity, SHA-1 checksum, size, file count, and runtime versions. Native/parallel diagnostic artifacts are retained for seven days. Rehearsal does not change npm registry state. Pushes and tags cannot automatically stage or publish a package.
@@ -110,9 +114,9 @@ This builds one tarball, runs its installed-package lifecycle checks, and retain
 From a clean, committed authorised source checkout, use an empty output directory outside the checkout for a local rehearsal:
 
 ```sh
-bun run scripts/release-artifact.ts prepare /absolute/path/to/release-artifacts 0.1.0-beta.2
-bun run scripts/release-artifact.ts verify /absolute/path/to/release-artifacts 0.1.0-beta.2 <full-commit-sha>
-bun run scripts/check-package.ts --artifact /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-beta.2.tgz
+bun run scripts/release-artifact.ts prepare /absolute/path/to/release-artifacts 0.1.0-beta.3
+bun run scripts/release-artifact.ts verify /absolute/path/to/release-artifacts 0.1.0-beta.3 <full-commit-sha>
+bun run scripts/check-package.ts --artifact /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-beta.3.tgz
 ```
 
 Replace the paths and commit placeholder with the intended output directory and exact 40-character commit. `prepare` packs once and validates package/docs metadata; `verify` checks the retained bytes and metadata without repacking or publishing. The final command exercises that artifact's installed-package lifecycle. A future staging action must use the verified artifact rather than building another tarball.
@@ -166,6 +170,9 @@ npm trust github opencode-gigacode \
   --environment=npm-production --allow-publish
 ```
 
+The production npm binding is not yet configured. Create it when a future
+release is ready; npm requires its first successful publish within two days.
+
 The GitHub production environment was configured with these rules on 20 October
 2026. Recheck live required reviewers, disabled bypass, and exact branch policy;
 writing an environment name in YAML alone does not configure a human gate.
@@ -183,8 +190,8 @@ Release sequence:
    behavior, and npm provenance. Review/publish the GitHub draft separately.
 
 ```sh
-gh workflow run publish.yml --ref main -f version=0.1.0-beta.2 -f delivery=rehearsal
-gh workflow run publish.yml --ref main -f version=0.1.0-beta.2 -f delivery=publish
+gh workflow run publish.yml --ref main -f version=0.1.0-beta.3 -f delivery=rehearsal
+gh workflow run publish.yml --ref main -f version=0.1.0-beta.3 -f delivery=publish
 ```
 
 The production job requires protected upstream `main`, an explicit request and
