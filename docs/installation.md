@@ -4,23 +4,33 @@
 
 GigaCode requires Bun 1.3.10 or newer at runtime and accepts only OpenCode 2.0.25, 2.0.26, or 2.0.28. Setup checks the selected host; the plugin checks the live host again when loaded. A connected model with tool support is required for workflows. Git is optional unless you enable isolated parallel writers.
 
-## Install the unreleased beta locally
+## Install the prerelease
 
-The candidate is `opencode-gigacode@0.1.0-beta.1`, with executable `gigacode` and planned npm tag `next`. It has not been published. With Bun available on your `PATH`, create an output directory outside the checkout and use its absolute path:
+With Bun available on your `PATH`, install the published prerelease channel and explicitly register it with OpenCode:
 
 ```sh
-npm pack --ignore-scripts --pack-destination /absolute/path/to/release-artifacts
-npm install --global /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-beta.1.tgz
+npm install --global opencode-gigacode@next
 gigacode setup --global
 ```
 
-After a future publication, registry installation will use `npm install --global opencode-gigacode@next`. To pin this exact beta then, use `npm install --global opencode-gigacode@0.1.0-beta.1`. Both require the same setup command. These registry commands do not install this beta before it is published. Bun is required at runtime regardless of the installer.
+Check the [npm listing](https://www.npmjs.com/package/opencode-gigacode) for the current published version. To pin one published release, replace `@next` with `@<version>`. Bun is required at runtime regardless of the installer.
 
 Restart OpenCode and select **GigaCode**. `gigacode help` confirms that the global executable is available. If your shell cannot find it, check that your package manager's global binary directory is on `PATH`.
 
-Setup is explicit. Installing the package alone does not change your OpenCode configuration. Setup registers the installed package's absolute path, so it remains available without a source checkout. Keep the global package installed while registered. Avoid transient `npx` or `bunx` setup commands: their temporary package paths are not durable registrations. For direct source setup, see [working from source](development.md#working-from-source).
+Setup is explicit. Installing the package alone does not change your OpenCode configuration. Setup registers the installed package's absolute path, so it remains available without a source checkout. Keep the global package installed while registered. Avoid transient `npx` or `bunx` setup commands: their temporary package paths are not durable registrations. For direct source setup and unpublished candidate rehearsals, see [working from source](development.md#working-from-source).
 
-Bun is also supported as the installer: use `bun add --global /absolute/path/to/opencode-gigacode-0.1.0-beta.1.tgz`, then the same `gigacode setup --global` command. Future registry forms are `bun add --global opencode-gigacode@next` or the exact version `bun add --global opencode-gigacode@0.1.0-beta.1`. If using Bun's global installation, `bun pm bin --global` prints the binary directory to add to `PATH`. Keep one package manager responsible for installation, updates, and removal.
+Bun is also supported as the installer: use `bun add --global opencode-gigacode@next`, then the same `gigacode setup --global` command. If using Bun's global installation, `bun pm bin --global` prints the binary directory to add to `PATH`. Keep one package manager responsible for installation, updates, and removal.
+
+### Install a local candidate
+
+A verified local tarball can be installed before registry publication. For example, the `0.1.0-beta.1` candidate uses:
+
+```sh
+npm install --global /absolute/path/to/opencode-gigacode-0.1.0-beta.1.tgz
+gigacode setup --global
+```
+
+Use the actual path and version of the artifact you verified. This command installs local bytes; it does not establish that the candidate is published. Use an isolated profile for release rehearsals and consult [release preparation](development.md#release-checklist) for the candidate's recorded status.
 
 ## Select a profile and host
 
@@ -67,9 +77,9 @@ GigaCode requires fresh settings. Settle active workflows from any previous prod
 
 ## Update
 
-Settle active workflows, install the next local tarball with `npm install --global /absolute/path/to/opencode-gigacode-<version>.tgz`, then rerun `gigacode setup --global` against the same profile and restart OpenCode. Repeat setup for any standalone project registrations. Review compatibility before upgrading OpenCode: versions outside the exact allowlist are rejected.
+Settle active workflows, install the intended published prerelease with `npm install --global opencode-gigacode@next` or pin a published version with `npm install --global opencode-gigacode@<version>`. Then rerun `gigacode setup --global` against the same profile and restart OpenCode. Repeat setup for any standalone project registrations. Review compatibility before upgrading OpenCode: versions outside the exact allowlist are rejected.
 
-After publication, a chosen registry version can be installed with `npm install --global opencode-gigacode@<version>`, or the prerelease tag with `npm install --global opencode-gigacode@next`. For a Bun-managed installation, use `bun add --global` with the tarball or published version instead. Old saved runs keep their captured settings; configuration changes can invalidate saved proposal fingerprints. The release checks rehearse same-version package replacement; they do not establish compatibility for every future version-to-version upgrade.
+For a local candidate, install its verified tarball instead. For a Bun-managed installation, use `bun add --global` with the published version or tarball. Old saved runs keep their captured settings; configuration changes can invalidate saved proposal fingerprints. The release checks rehearse same-version package replacement; they do not establish compatibility for every future version-to-version upgrade.
 
 ## Remove
 

@@ -25,7 +25,8 @@
   "files": [
     "index.ts", "tui.ts", "src", "scripts/cli.ts", "scripts/install.ts", "scripts/doctor.ts",
     "docs/installation.md", "docs/configuration.md", "docs/commands.md", "docs/development.md",
-    "docs/architecture.md", "docs/agent-workflows.md", "examples", "README.md", "CHANGELOG.md"
+    "docs/architecture.md", "docs/agent-workflows.md", "docs/assets/workflows.png", "docs/assets/settings.png",
+    "examples", "README.md", "CHANGELOG.md"
   ],
   "engines": {
     "bun": ">=1.3.10"

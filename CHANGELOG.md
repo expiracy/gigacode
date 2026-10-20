@@ -2,16 +2,17 @@
 
 ## 0.1.0-beta.1 — unreleased
 
-The current candidate is a beta with planned npm tag `next`. It has not been published. Rehearse the local tarball and verify this version's release checks; the alpha evidence below does not certify the beta. The source repository remains private, and online guide links are pinned to the candidate version for use after publication.
+The current candidate is a beta with planned npm tag `next`. It has not been published. Rehearse the local tarball and verify this version's release checks; the alpha evidence below does not certify the beta. The source repository is public, and the README links to public source guides and product images.
 
 - Updated candidate version and installation/documentation links to `0.1.0-beta.1`.
+- Added workflow and settings screenshots from an isolated native example, with a product overview, beta-channel quickstart, and capture provenance.
 - Fixed a recovery race that could reject a valid worker while ownership moved to a replacement supervisor.
 - Added automatic type/unit/workflow checks, package lifecycle checks on three platforms, native host checks, and a manual exact-artifact release rehearsal. Optional future OIDC staging still requires separate authorisation and human npm approval; pushes and tags cannot publish.
 - Retained the workflow controls, explicit setup, doctor diagnostics, requirements, and limitations described in the alpha baseline below.
 
 ## 0.1.0-alpha.1 — 2026-10-18
 
-The first `opencode-gigacode` alpha was published under npm tag `next` on 18 October 2026 with an [MIT licence](LICENSE). Its validation results are historical evidence, not beta verification. Guides are included in the package artifact; the source repository remains private.
+The first `opencode-gigacode` alpha was published under npm tag `next` on 18 October 2026 with an [MIT licence](LICENSE). Its validation results are historical evidence, not beta verification. Guides are included in the package artifact; the source repository is now public.
 
 ### Included
 
