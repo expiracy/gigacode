@@ -4,7 +4,7 @@
 
 ## Working from source
 
-The source repository remains private. These contributor checks require an authorised source checkout; tests and internal research history are not shipped in the npm package. Requires Bun 1.3.10 or newer. Install dependencies without running lifecycle scripts:
+The [source repository](https://github.com/expiracy/gigacode) is public. These contributor checks require a source checkout; tests and research history are not shipped in the npm package. Requires Bun 1.3.10 or newer. Install dependencies without running lifecycle scripts:
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
@@ -24,7 +24,7 @@ This installs the local artifact without publishing it. Use an isolated profile 
 
 ## Release checklist
 
-The current candidate is `opencode-gigacode@0.1.0-beta.1`, planned for npm's `next` tag. It is unreleased; publication is not authorised. Rehearse its tarball locally and record beta-specific gate/CI results before considering a release. Registry and CDN installation links for this beta become usable only after a separately authorised publication. The existing published alpha remains on `next`; no beta staging action has been performed. The source repository stays private.
+As of release preparation on 20 October 2026, the candidate is `opencode-gigacode@0.1.0-beta.1`, planned for npm's `next` tag. It is unreleased; final publication still needs separate human approval. Rehearse its tarball locally and record beta-specific gate/CI results before considering a release. The published alpha remains on `next`; no beta staging action has been performed in this preparation. The source repository and its guides are public. Consult the npm listing and changelog for subsequent release status.
 
 ### Prior alpha validation
 
@@ -32,18 +32,18 @@ The evidence below belongs to `0.1.0-alpha.1` from 18 October 2026. It is histor
 
 | Item | State and evidence |
 | --- | --- |
-| Release boundary | Alpha version and `next` publishing configuration prepared. The source repository remains private. |
+| Release boundary | Alpha version and `next` publishing configuration prepared on 18 October 2026, when the source repository was private. The repository is now public. |
 | Installation lifecycle | Local alpha.1 package smoke passed on macOS on 18 October 2026: external installation, doctor, explicit/repeated setup, same-version replacement in the same prefix, scoped deregistration, and npm removal preserved unrelated configuration and project state. This is a replacement rehearsal, not a version-to-version upgrade claim. Native matrix runs below also replaced the packed installation and restarted the host while preserving saved runs/events. |
 | Local release gate | `TMPDIR=/private/tmp bun run check:release` passed on macOS with Bun 1.3.14 on 18 October 2026: typechecking, 642 tests, and the full package lifecycle smoke. The tarball contained 59 allowed files, including doctor, MIT licence, and alpha notes. |
 | Native host matrix | `bun run test:integration` passed on macOS on 18 October 2026 for OpenCode 2.0.25, 2.0.26, and 2.0.28: 28 checks passed on each exact host, including packed same-prefix reinstall and native restart. Local report paths are listed below. |
 | Parallel writers | `bun run test:parallel` passed on macOS/OpenCode 2.0.28 on 18 October 2026: two isolated writers, permission-checked preparation/integration, and fresh native verification succeeded. |
 | Platform CI | Internal hosted CI run `39154548724` passed on 18 October 2026 for code commit `da7b936`: Ubuntu type/unit checks and the full package lifecycle on Ubuntu, macOS, and Windows. The separate opt-in native CI matrix was skipped; the native results above are local macOS runs. |
-| Documentation | Public documentation is selected from the guides, README, licence, and changelog included in the npm package, with version-pinned jsDelivr URLs. CDN retrieval and npm rendering verification follow registry upload and are outside this snapshot. The source repository and internal history stay private. |
+| Documentation | The alpha preparation on 18 October 2026 selected the guides, README, licence, and changelog for the npm package, with version-pinned jsDelivr URLs. That snapshot did not verify CDN retrieval or npm rendering after upload. The source repository was private at that time and is now public. |
 | Licence | [MIT licence](../LICENSE) and `license: "MIT"` metadata are present and verified in the installed alpha.1 tarball. |
 | Registry identity | Public registry lookup returned 404 for `opencode-gigacode` on 18 October 2026 before upload. This historical lookup does not reserve the name or establish current registry status. |
-| Review | Reviewed on internal PR #1 from the private `codex/release-prep-alpha` branch. |
+| Review | Reviewed on PR #1 from `codex/release-prep-alpha` during the private-repository alpha preparation on 18 October 2026. |
 | Publishing access | `npm whoami` authenticated as `expiracy` on 18 October 2026. Authentication alone does not establish publication success. |
-| Publication | The registry records alpha.1 publication at 19:50 UTC on 18 October 2026. The beta remains unpublished; beta preparation has not changed the existing `next` tag. |
+| Publication | The registry records alpha.1 publication at 19:50 UTC on 18 October 2026. As of the 20 October beta preparation, beta.1 remains unpublished and the existing `next` tag is unchanged. |
 
 Record the exact candidate version, command, host/platform, and actual result when reproducing these checks. The native suites use isolated profiles and a scripted model provider; optional real-model evaluations require explicit connection and budget arguments.
 
@@ -119,9 +119,9 @@ Replace the paths and commit placeholder with the intended output directory and 
 
 The `main` branch requires an up-to-date pull request with a passing aggregate **CI** result from GitHub Actions, including for administrators. Force pushes and branch deletion are disabled. No additional human review approval is required for this single-maintainer workflow.
 
-One-time npm trusted-publisher setup remains a maintainer step. Configure it for this GitHub repository, workflow `release.yml`, and environment `npm`. Under **Allowed actions**, permit `npm stage publish` only; leave direct `npm publish` and `npm dist-tag` disabled. Configure the GitHub `npm` environment and, where supported, its protection rules. This task has not changed npm account security or publisher settings. No account security or publisher settings are changed by a rehearsal. The repository can remain private for OIDC, but npm provenance is unavailable for private sources.
+One-time npm trusted-publisher setup remains a maintainer step. Configure it for this GitHub repository, workflow `release.yml`, and environment `npm`. Under **Allowed actions**, permit `npm stage publish` only; leave direct `npm publish` and `npm dist-tag` disabled. Configure the GitHub `npm` environment and, where supported, its protection rules. A rehearsal does not change npm account security or publisher settings. The source repository is public; registry staging still requires its own configured trusted publisher.
 
-If staging is separately authorised later, run the workflow with `stage=true`. Its stage job runs directly in `release.yml`, uses Node 24/npm 11.16.0 and OIDC, re-verifies the downloaded artifact, disables provenance for this private source, and submits that exact tarball to npm staging under `next`. It records a staging receipt; it does not finish publication. Final npm stage approval requires a human with 2FA. Do not treat a GitHub environment as a guaranteed human gate; required-reviewer support for private repositories depends on the GitHub plan. The workflow has no direct npm publication path. See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) for maintainer setup.
+If staging is separately authorised later, run the workflow with `stage=true`. Its stage job runs directly in `release.yml`, uses Node 24/npm 11.16.0 and OIDC, re-verifies the downloaded artifact, keeps npm provenance disabled in the current workflow configuration, and submits that exact tarball to npm staging under `next`. It records a staging receipt; it does not finish publication. Final npm stage approval requires a human with 2FA. A GitHub environment is a human gate only when its required-reviewer protections are configured. The workflow has no direct npm publication path. See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) for maintainer setup.
 
 ## Opt-in model evaluations
 
@@ -143,5 +143,5 @@ Set `OPENCODE_TEST_VERSION=2.0.26` or `2.0.28` together with its matching `OPENC
 
 - [Architecture](architecture.md): runtime boundaries, data ownership, and extension points.
 - [Workflow design](agent-workflows.md): graph examples, verification, and recovery.
-- Internal design, research, and compatibility histories remain in the private source repository and are not part of the published package.
+- Design, research, and compatibility histories are available in the public source repository and are not part of the published package.
 - [Offline CLI](commands.md#offline-cli): validation, prompt rendering, saved state and exports.
