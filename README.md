@@ -1,4 +1,4 @@
-# GigaCode
+<h1><img src="https://raw.githubusercontent.com/expiracy/gigacode/340b28d712fee4e5078cb7901f7e86c92b701bd9/docs/assets/logo.svg" alt="GigaCode" width="460"></h1>
 
 Plan a change, inspect the proposal, then run the revision you approved. GigaCode adds multi-agent workflows to OpenCode 2, with worker sessions, prompts, model choices, and command evidence you can inspect along the way.
 
@@ -9,9 +9,9 @@ Use it when a task needs investigation before implementation, independent review
 - **Keep control.** Pause, resume, cancel, or export a workflow from one terminal panel.
 - **Choose your models.** Inherit the conversation's model and variant, or configure role and stage overrides.
 
-![GigaCode workflow panel showing a saved proposal ready for inspection](https://raw.githubusercontent.com/expiracy/gigacode/9d56733dfd5f683da638e904f57f0d45b863bb0e/docs/assets/workflows.png)
+![The full OpenCode workspace with GigaCode selected as the active agent](https://raw.githubusercontent.com/expiracy/gigacode/340b28d712fee4e5078cb7901f7e86c92b701bd9/docs/assets/workspace.png)
 
-*GigaCode 0.1.0-beta.1 in OpenCode 2.0.28. The saved proposal comes from a disposable example with a local scripted provider. [Capture details](https://github.com/expiracy/gigacode/blob/9d56733dfd5f683da638e904f57f0d45b863bb0e/docs/assets/README.md).*
+*GigaCode 0.1.0-beta.1 selected in OpenCode 2.0.28. This full application view uses a disposable example project and a local scripted provider. [Capture details](https://github.com/expiracy/gigacode/blob/340b28d712fee4e5078cb7901f7e86c92b701bd9/docs/assets/README.md).*
 
 ## Install
 
@@ -49,6 +49,10 @@ In the OpenCode terminal:
 
 In **GigaCode workflows**, highlight the planned workflow and press **Enter** or **Actions** (**Ctrl+A**) to open its action menu. Choose **Inspect** to review it. When the proposal is ready, choose **Run saved proposal** and confirm the objective, run ID, and saved revision. Execution checks workspace freshness. The panel supplies the ID and revision, so you do not need to type them.
 
+![GigaCode workflow control popup over the full OpenCode application](https://raw.githubusercontent.com/expiracy/gigacode/340b28d712fee4e5078cb7901f7e86c92b701bd9/docs/assets/workflows.png)
+
+*The native workflow popup retains the surrounding application and selected GigaCode mode.*
+
 `/gigacode status` is the terminal's workflow control panel: inspect progress and evidence, export a report, pause, resume, cancel, or open a worker session for the selected workflow. Settings have their own entry point, `/gigacode config`. Switching to Build or Plan does not cancel active work; finish or cancel the workflow before editing directly in that conversation.
 
 You can also ask GigaCode naturally: “Plan resumable uploads. Stop at a proposal,” then “Implement the agreed upload changes and tests.” General questions and settings inspection do not automatically start a workflow. [Advanced commands](https://github.com/expiracy/gigacode/blob/edf63e1b349da12536541805b5a546435aa781e4/docs/commands.md#commands) remain available when you want to supply IDs explicitly.
@@ -68,9 +72,9 @@ When no checks are configured, GigaCode discovers existing `test`, `typecheck`, 
 
 Restart OpenCode after editing the file. New runs capture those settings; saved runs retain theirs. Project fields inherit global defaults, but `checks` replaces the whole inherited list. An explicit `checks: []` also disables discovery. Execution without a required machine check ends as `partial`; a model's claim that tests passed cannot establish verified success.
 
-![GigaCode project settings with model, limit, check, and advanced configuration sections](https://raw.githubusercontent.com/expiracy/gigacode/9d56733dfd5f683da638e904f57f0d45b863bb0e/docs/assets/settings.png)
+![GigaCode project settings popup over the full OpenCode application](https://raw.githubusercontent.com/expiracy/gigacode/340b28d712fee4e5078cb7901f7e86c92b701bd9/docs/assets/settings.png)
 
-*Guided project settings in the same isolated OpenCode example. Project fields can inherit global defaults; no personal provider or account configuration is shown.*
+*Guided project settings open as a popup over the same full application view. Project fields can inherit global defaults; the example uses an isolated provider and project.*
 
 Use `/gigacode config` for the terminal's guided settings editor. See [models, checks, prompts, and settings](https://github.com/expiracy/gigacode/blob/edf63e1b349da12536541805b5a546435aa781e4/docs/configuration.md) for inheritance, model routing, limits, and local-model guidance.
 

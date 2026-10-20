@@ -6,6 +6,7 @@ The current candidate is a beta with planned npm tag `next`. It has not been pub
 
 - Updated candidate version and installation/documentation links to `0.1.0-beta.1`.
 - Added workflow and settings screenshots from an isolated native example, with a product overview, beta-channel quickstart, and capture provenance.
+- Added the GigaCode logo and full application captures with GigaCode selected, including the workflow and settings popups in context.
 - Fixed a recovery race that could reject a valid worker while ownership moved to a replacement supervisor.
 - Added automatic type/unit/workflow checks, package lifecycle checks on three platforms, native host checks, and a manual exact-artifact release rehearsal. Optional future OIDC staging still requires separate authorisation and human npm approval; pushes and tags cannot publish.
 - Retained the workflow controls, explicit setup, doctor diagnostics, requirements, and limitations described in the alpha baseline below.

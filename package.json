@@ -25,7 +25,8 @@
   "files": [
     "index.ts", "tui.ts", "src", "scripts/cli.ts", "scripts/install.ts", "scripts/doctor.ts",
     "docs/installation.md", "docs/configuration.md", "docs/commands.md", "docs/development.md",
-    "docs/architecture.md", "docs/agent-workflows.md", "docs/assets/workflows.png", "docs/assets/settings.png",
+    "docs/architecture.md", "docs/agent-workflows.md", "docs/assets/workspace.png", "docs/assets/workflows.png", "docs/assets/settings.png",
+    "docs/assets/logo.svg", "docs/assets/logo-dark.svg", "docs/assets/logo-light.svg",
     "examples", "README.md", "CHANGELOG.md"
   ],
   "engines": {
