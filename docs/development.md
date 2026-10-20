@@ -28,7 +28,26 @@ a dummy token, and a loopback server; it does not require a GitHub sign-in.
 
 ## Release checklist
 
-This checkout prepares `opencode-gigacode@0.1.0-beta.3` for direct OIDC publication through GitHub Actions after required human approval. The earlier `v0.1.0-beta.2` tag identifies the failed draft-upload candidate and remains unchanged; the next version includes its HTTP upload fix. `0.1.0-beta.1` was submitted through npm OIDC staging on 20 October 2026 and remains a separate, reserved candidate. The fresh version includes those product and error-feedback changes plus the new publication path. The source repository and guides are public; consult npm and the changelog for actual publication status.
+`opencode-gigacode@0.1.0-beta.1` is public under `next`, following human approval of its OIDC stage on 20 October 2026. Its public archive and installed native behavior are verified below. The source repository and guides are public; check the live registry tags when selecting the default install version.
+
+This checkout prepares the still-unreleased `opencode-gigacode@0.1.0-beta.3` for direct OIDC publication through GitHub Actions after required human approval. The earlier `v0.1.0-beta.2` tag identifies the failed draft-upload candidate and remains unchanged; the next version includes its HTTP upload fix. A passing rehearsal or uploaded stage alone does not establish publication.
+
+### Published beta.1 verification
+
+| Item | Verified result on 20 October 2026 |
+| --- | --- |
+| Public package | [`opencode-gigacode@0.1.0-beta.1`](https://www.npmjs.com/package/opencode-gigacode/v/0.1.0-beta.1), recorded by npm at 20:50:16 UTC; MIT licence and `next` channel. |
+| Source | [`465c2ebd2110812715975fe90de340e11777a358`](https://github.com/expiracy/gigacode/commit/465c2ebd2110812715975fe90de340e11777a358), tagged `v0.1.0-beta.1`. |
+| Tested stage | [CI and OIDC staging run](https://github.com/expiracy/gigacode/actions/runs/39472299073); stage `2e0f3a0d-e826-4812-b4e4-38826677b652` was approved by the maintainer in npm. |
+| Archive | The 67-file public tarball is byte-identical to the tested stage; SHA-256 `9fedd2360d4b0c1e34507bedaa6d9d75039cef518354bd2d6048234de019899d`. |
+| Installed checks | All 10 production installation/lifecycle checks and 28 native checks passed from the public archive and resolved production dependencies on macOS with OpenCode 2.0.28. |
+
+The post-publication checks used isolated profiles and a local scripted provider,
+with no external model calls. They exercised installation, setup, replacement,
+removal, agent registration, explicit planning, automatic implementation,
+settings, permissions, checks, and restart/recovery. Product logos, screenshots,
+and the Ko-fi link were also verified in the public archive. These results
+belong to beta.1; they do not certify future candidates or expand the host matrix.
 
 ### Prior alpha validation
 
@@ -47,7 +66,7 @@ The evidence below belongs to `0.1.0-alpha.1` from 18 October 2026. It is histor
 | Registry identity | Public registry lookup returned 404 for `opencode-gigacode` on 18 October 2026 before upload. This historical lookup does not reserve the name or establish current registry status. |
 | Review | Reviewed on PR #1 from `codex/release-prep-alpha` during the private-repository alpha preparation on 18 October 2026. |
 | Publishing access | `npm whoami` authenticated as `expiracy` on 18 October 2026. Authentication alone does not establish publication success. |
-| Publication | The registry records alpha.1 publication at 19:50 UTC on 18 October 2026. As of the 20 October beta preparation, beta.1 remains unpublished and the existing `next` tag is unchanged. |
+| Publication | The registry records alpha.1 publication at 19:50 UTC on 18 October 2026. The separate beta.1 publication and validation are recorded above. |
 
 Record the exact candidate version, command, host/platform, and actual result when reproducing these checks. The native suites use isolated profiles and a scripted model provider; optional real-model evaluations require explicit connection and budget arguments.
 
@@ -123,7 +142,7 @@ Replace the paths and commit placeholder with the intended output directory and 
 
 The `main` branch requires an up-to-date pull request with a passing aggregate **CI** result from GitHub Actions, including for administrators. Force pushes and branch deletion are disabled. The PR gate requires no extra review for this single-maintainer repository; direct production publication has a separate required human deployment approval.
 
-One-time npm trusted-publisher setup remains a maintainer step. Configure it for this GitHub repository, workflow `release.yml`, and environment `npm`. Under **Allowed actions**, permit `npm stage publish` only; leave direct `npm publish` and `npm dist-tag` disabled. Configure the GitHub `npm` environment and, where supported, its protection rules. A rehearsal does not change npm account security or publisher settings. The source repository is public; registry staging still requires its own configured trusted publisher.
+The npm stage-only trusted publisher was configured and inspected on 20 October 2026 for this repository, workflow `release.yml`, and environment `npm`, then used for beta.1. When recreating it, permit `npm stage publish` only under **Allowed actions**; leave direct `npm publish` and `npm dist-tag` disabled for this binding. Configure the matching GitHub `npm` environment and, where supported, its protection rules. A rehearsal does not change npm account security or publisher settings. This stage-only binding does not configure production publication or change legacy-token access policy.
 
 When staging is explicitly requested, run the workflow with `stage=true`. Its stage job runs directly in `release.yml`, uses Node 24/npm 11.16.0 and OIDC, re-verifies the downloaded artifact, keeps npm provenance disabled in the current workflow configuration, and submits that exact tarball to npm staging under `next`. It records a staging receipt; it does not finish publication. Final npm stage approval requires a human with 2FA. A GitHub environment is a human gate only when its required-reviewer protections are configured. This staging workflow has no direct npm publication path; the separate production workflow below provides it. See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) for maintainer setup.
 
