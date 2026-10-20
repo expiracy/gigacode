@@ -1,6 +1,6 @@
 {
   "name": "opencode-gigacode",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "Transparent, durable multi-agent workflows for OpenCode 2",
   "license": "MIT",
   "repository": {
