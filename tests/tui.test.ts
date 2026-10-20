@@ -1117,6 +1117,120 @@ test("native command failures give actionable visible errors without another RPC
   } finally { await cleanup!() }
 })
 
+test("an unexpected settings presentation failure shows a native error notification without replaying the command", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  try {
+    f.seed(family, ["parent", "supervisor", "worker"])
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "config", result: {} })
+    expect(f.toasts).toEqual([{ title: "GigaCode settings error", message: "GigaCode returned no effective configuration. Check the installation and restart OpenCode.", variant: "error", sessionID: "parent" }])
+    expect(f.calls).toBe(0)
+    expect(f.controls).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("presentation error notifications redact credentials and bound native notification text", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.context.ui.dialog.select = async () => { throw new Error("Connection failed:\nAuthorization: Bearer fixture-secret-abc " + "x".repeat(900)) }
+  try {
+    f.seed(family, ["parent", "supervisor", "worker"])
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.toasts).toHaveLength(1)
+    expect(f.toasts[0].message).not.toContain("fixture-secret-abc")
+    expect(f.toasts[0].message).toContain("[REDACTED]")
+    expect(f.toasts[0].message).not.toContain("\n")
+    expect(f.toasts[0].message.length).toBeLessThanOrEqual(400)
+  } finally { await cleanup!() }
+})
+
+test("an unexpected workflow dialog failure notifies once and does not replay controls on reconnect", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.context.ui.dialog.select = async () => { throw new Error("The native workflow dialog disconnected") }
+  try {
+    f.seed(family, ["parent", "supervisor", "worker"])
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", result: {} }); await settle()
+    expect(f.toasts).toEqual([{ title: "GigaCode workflow error", message: "The native workflow dialog disconnected", variant: "error", sessionID: "parent" }])
+    await f.nativeEvent("server.connected")
+    expect(f.toasts).toHaveLength(1)
+    expect(f.controls).toHaveLength(0)
+    expect(f.workflowReads).toHaveLength(1)
+  } finally { await cleanup!() }
+})
+
+test("a normal native settings dialog abort does not show an error notification", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.context.ui.dialog.select = async () => { throw new DOMException("The dialog was dismissed", "AbortError") }
+  try {
+    f.seed(family, ["parent", "supervisor", "worker"])
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.toasts).toEqual([])
+    expect(f.settingsSaves).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("a failed command-result viewer falls back to a native error notification without retrying the command", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.context.ui.dialog.alert = async () => { throw new Error("The native command result viewer disconnected") }
+  try {
+    f.seed(family, ["parent", "supervisor", "worker"])
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "status", error: "Unable to read workflow state" })
+    expect(f.toasts).toEqual([{ title: "GigaCode command error", message: "The native command result viewer disconnected", variant: "error", sessionID: "parent" }])
+    expect(f.calls).toBe(0)
+    expect(f.controls).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("a command-viewer failure delivered after reconnect does not notify from the retired dialog", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  let reject!: (error: Error) => void
+  f.context.ui.dialog.alert = () => new Promise((_resolve, fail) => { reject = fail })
+  try {
+    f.seed(family, ["parent", "supervisor", "worker"])
+    f.route({ type: "session", sessionID: "parent" })
+    const pending = f.event({ sessionId: "parent", command: "status", error: "Unable to read workflow state" })
+    await settle()
+    await f.nativeEvent("server.connected")
+    reject(new Error("The old command viewer disconnected"))
+    await pending
+    expect(f.toasts).toEqual([])
+    expect(f.controls).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("unavailable native error notifications do not reject handlers or retry commands", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  let notifications = 0
+  f.context.ui.toast.show = () => { notifications++; throw new Error("Native notification delivery unavailable") }
+  try {
+    f.seed(family, ["parent", "supervisor", "worker"])
+    f.route({ type: "session", sessionID: "parent" })
+    await f.event({ sessionId: "parent", command: "config", result: {} })
+    expect(notifications).toBe(1)
+    expect(f.calls).toBe(0)
+    expect(f.controls).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
+test("a committed settings save stays successful when its native success notification is unavailable", async () => {
+  const f = fixture(), cleanup = await plugin.setup(f.context as any)
+  f.context.ui.toast.show = () => { throw new Error("Native notification delivery unavailable") }
+  try {
+    f.seed(family, ["parent", "supervisor", "worker"])
+    f.route({ type: "session", sessionID: "parent" })
+    f.choose("Configuration/Edit project settings", "limits", "workers", "back", "save")
+    f.enter("1"); f.confirm()
+    await f.event({ sessionId: "parent", command: "config", result: f.response })
+    expect(f.settingsSaves).toHaveLength(1)
+    expect(f.settingsSaves[0].input.options).toEqual({ limits: { workers: 1 } })
+    expect(f.dialogs.filter(dialog => dialog.title === "Unable to confirm settings save")).toEqual([])
+    expect(f.controls).toHaveLength(0)
+  } finally { await cleanup!() }
+})
+
 test("terminal reload unsubscribes once and does not display late results", async () => {
   const f = fixture(), cleanup = await plugin.setup(f.context as any)
   f.route({ type: "session", sessionID: "parent" })

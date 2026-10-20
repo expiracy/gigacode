@@ -123,6 +123,24 @@ One-time npm trusted-publisher setup remains a maintainer step. Configure it for
 
 If staging is separately authorised later, run the workflow with `stage=true`. Its stage job runs directly in `release.yml`, uses Node 24/npm 11.16.0 and OIDC, re-verifies the downloaded artifact, keeps npm provenance disabled in the current workflow configuration, and submits that exact tarball to npm staging under `next`. It records a staging receipt; it does not finish publication. Final npm stage approval requires a human with 2FA. A GitHub environment is a human gate only when its required-reviewer protections are configured. The workflow has no direct npm publication path. See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) for maintainer setup.
 
+### GitHub draft releases
+
+The manual workflow **Prepare GitHub release** (`github-release.yml`) prepares a draft for the version in the selected source commit. In GitHub, open **Actions → Prepare GitHub release → Run workflow**, choose `main`, and leave `delivery` at `rehearsal`. It runs the reusable CI gate and downloads the single artifact tested by that run. It verifies the tarball against its original `release.json`, then generates release notes and `SHA256SUMS`. The equivalent CLI request is:
+
+```sh
+gh workflow run github-release.yml --ref main -f delivery=rehearsal
+```
+
+The rehearsal generates local evidence without calling GitHub's release API. Its sanitized diagnostics, `RELEASE_NOTES.md`, and `SHA256SUMS` are retained for 14 days; the original tarball and manifest remain in the CI artifact for 30 days. Download those artifacts to inspect the exact candidate before requesting a draft.
+
+When you intend to create the version tag and draft, use the same screen with `delivery` set to `draft`, or run:
+
+```sh
+gh workflow run github-release.yml --ref main -f delivery=draft
+```
+
+Draft creation requires the protected `main` branch of `expiracy/gigacode` and a passing CI run in that invocation. Only the draft job receives repository write permission. It prepares a draft for `v<package-version>` with the verified tarball, original manifest, and `SHA256SUMS` as assets. A repeated request can finish missing assets on a matching draft; conflicting assets or an already published release fail without replacement. A maintainer must review and publish the draft manually. This workflow does not change npm staging or publication.
+
 ## Opt-in model evaluations
 
 The evaluation runner attaches to an explicitly selected loopback OpenCode server and creates isolated scratch projects. It covers bug fixes, features, conflicting-source research, read-only planning and interruption after accepted predecessor work. Independent code oracles, file-scope checks and native evidence determine automatic results; the generated Markdown rubric leaves prose quality for human review. Reports retain failed attempts, cleanup failures and unavailable accounting.

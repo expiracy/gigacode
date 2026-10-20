@@ -2,13 +2,17 @@
 
 ## 0.1.0-beta.1 — unreleased
 
+- Clarify automatic implementation in the GigaCode agent and optional explicit planning; shorten the README and add Ko-fi support links.
+- Show bounded, redacted native error notifications when settings, workflow, or command viewers cannot open; suppress normal cancellation and stale-dialog notifications.
+- Add a manual GitHub release rehearsal and draft action with immutable version tags and the exact CI-tested package, metadata, and checksums. Human publication remains separate.
+
 The current candidate is a beta with planned npm tag `next`. It has not been published. Rehearse the local tarball and verify this version's release checks; the alpha evidence below does not certify the beta. The source repository is public, and the README links to public source guides and product images.
 
 - Updated candidate version and installation/documentation links to `0.1.0-beta.1`.
 - Added workflow and settings screenshots from an isolated native example, with a product overview, beta-channel quickstart, and capture provenance.
 - Added the GigaCode logo and full application captures with GigaCode selected, including the workflow and settings popups in context.
 - Fixed a recovery race that could reject a valid worker while ownership moved to a replacement supervisor.
-- Added automatic type/unit/workflow checks, package lifecycle checks on three platforms, native host checks, and a manual exact-artifact release rehearsal. Optional future OIDC staging still requires separate authorisation and human npm approval; pushes and tags cannot publish.
+- Added automatic type/unit/workflow checks, package lifecycle checks on three platforms, native host checks, and a manual exact-artifact release rehearsal. OIDC staging requires an explicit manual request and configured npm trust; final publication requires human npm approval; pushes and tags cannot publish.
 - Retained the workflow controls, explicit setup, doctor diagnostics, requirements, and limitations described in the alpha baseline below.
 
 ## 0.1.0-alpha.1 — 2026-10-18

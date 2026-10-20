@@ -5,11 +5,18 @@ import { GigaCodeRpc } from "./src/rpc.ts"
 import type { WorkflowRun, WorkflowSnapshot } from "./src/workflow-view.ts"
 import { openSettingsMenu } from "./src/settings-menu.ts"
 import { showWorkflowInspection, showWorkflowExport } from "./src/workflow-inspection-ui.ts"
+import { sanitizeEventData } from "./src/redaction.ts"
+import { showToast } from "./src/ui-feedback.ts"
 
 interface CommandResult { sessionId: string; command: string; result?: object; error?: string }
 type Setting = DialogSelectOption<string> & { detail: string }
 
 const json = (value: unknown) => JSON.stringify(value, null, 2)
+const errorMessage = (cause: unknown, fallback: string) => {
+  const message = cause instanceof Error ? cause.message : typeof cause === "string" ? cause : fallback
+  return (sanitizeEventData(message) as string).replaceAll(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 400) || fallback
+}
+const aborted = (cause: unknown) => cause instanceof Error && cause.name === "AbortError"
 
 /** Native root hydration loads immediate children only; GigaCode workers are grandchildren. */
 async function hydrateFamily(ctx: Context, sessionID: string, signal: AbortSignal) {
@@ -84,6 +91,7 @@ export default Plugin.define({
   setup(ctx) {
     const rpc = ctx.client.rpc(GigaCodeRpc)
     let disposed = false
+    let commandEpoch = 0
     let workflowRefresh: ((force?: boolean) => Promise<void>) | undefined
     let workflowStop: (() => void) | undefined
     let settingsController: AbortController | undefined
@@ -97,7 +105,7 @@ export default Plugin.define({
       const controller = loading = new AbortController()
       void hydrateFamily(ctx, id, controller.signal).catch(() => {
         if (disposed || controller.signal.aborted) return
-        ctx.ui.toast.show({ title: "GigaCode subagents", message: "Unable to load existing subagents. Reopen this conversation or reconnect to retry.", variant: "error", sessionID: id })
+        showToast(ctx, { title: "GigaCode subagents", message: "Unable to load existing subagents. Reopen this conversation or reconnect to retry.", variant: "error", sessionID: id })
       })
     }
     const disposeRoot = createRoot(dispose => {
@@ -108,12 +116,15 @@ export default Plugin.define({
       })
       return dispose
     })
-    const reconnect = ctx.data.on("server.connected", () => { settingsController?.abort(); refresh(sessionID); void workflowRefresh?.(true) })
+    const reconnect = ctx.data.on("server.connected", () => { commandEpoch++; settingsController?.abort(); refresh(sessionID); void workflowRefresh?.(true) })
     const configuration = async (value: unknown, id: string) => {
       const current = () => { const route = ctx.ui.router.current(); return !disposed && route.type === "session" && route.sessionID === id }
       settingsController?.abort()
       const controller = settingsController = new AbortController()
       try { await openSettingsMenu(ctx, value, id, rpc, current, controller.signal) }
+      catch (cause) {
+        if (current() && !controller.signal.aborted && !aborted(cause)) showToast(ctx, { title: "GigaCode settings error", message: errorMessage(cause, "Unable to open GigaCode settings. Retry /gigacode config."), variant: "error", sessionID: id })
+      }
       finally { controller.abort(); if (settingsController === controller) settingsController = undefined }
     }
     const workflow = async (id: string, runId?: string) => {
@@ -150,7 +161,7 @@ export default Plugin.define({
               setError(undefined)
             }
           }
-          catch (cause) { if (current()) setError(cause instanceof Error ? cause.message : String(cause)) }
+          catch (cause) { if (current()) setError(errorMessage(cause, "Unable to refresh this workflow. Reconnect to retry.")) }
         })()
         pending = work
         void work.finally(() => { if (pending === work) pending = undefined })
@@ -182,7 +193,7 @@ export default Plugin.define({
           } else await refresh(true)
         } catch (cause) {
           if (valid()) {
-            ctx.ui.toast.show({ title: "GigaCode control error", message: cause instanceof Error ? cause.message : String(cause), variant: "error", sessionID: id })
+            showToast(ctx, { title: "GigaCode control error", message: errorMessage(cause, "Unable to complete this workflow action. Inspect its state before retrying."), variant: "error", sessionID: id })
             await refresh(true)
           }
         }
@@ -276,7 +287,7 @@ export default Plugin.define({
               if (!current() || interaction !== epoch) break
               const run = snapshot().runs.find(run => run.id === captured.id && run.parentSessionId === id)
               if (!error() && run && ready(run) && run.proposalRevision === captured.revision) void control("run", run, selection!, captured.revision)
-              else { setControlling(false); ctx.ui.toast.show({ title: "GigaCode saved proposal", message: "The selected proposal changed or is no longer ready. Review the workflow before running it.", variant: "info", sessionID: id }) }
+              else { setControlling(false); showToast(ctx, { title: "GigaCode saved proposal", message: "The selected proposal changed or is no longer ready. Review the workflow before running it.", variant: "info", sessionID: id }) }
             } else setControlling(false)
             continue
           }
@@ -288,6 +299,8 @@ export default Plugin.define({
             continue
           }
         }
+      } catch (cause) {
+        if (current() && !controller.signal.aborted && !aborted(cause)) showToast(ctx, { title: "GigaCode workflow error", message: errorMessage(cause, "Unable to display this workflow. Retry /gigacode status."), variant: "error", sessionID: id })
       } finally { stop() }
     }
     const unsubscribe = rpc.events.on("commandResult", async event => {
@@ -297,10 +310,18 @@ export default Plugin.define({
       if (route.type !== "session" || route.sessionID !== data.sessionId) return
       settingsController?.abort()
       workflowStop?.()
-      if (data.error) { await ctx.ui.dialog.alert({ title: "GigaCode command error", message: data.error }); return }
-      if (data.command.trim() === "config") await configuration(data.result, data.sessionId)
-      else if (/^status(?:\s|$)/.test(data.command.trim())) void workflow(data.sessionId, data.command.trim().split(/\s+/)[1])
-      else await ctx.ui.dialog.alert({ title: "GigaCode command result", message: json(data.result) })
+      const epoch = ++commandEpoch
+      try {
+        if (data.error) { await ctx.ui.dialog.alert({ title: "GigaCode command error", message: errorMessage(data.error, "Unable to complete this command. Inspect the workflow before retrying.") }); return }
+        if (data.command.trim() === "config") await configuration(data.result, data.sessionId)
+        else if (/^status(?:\s|$)/.test(data.command.trim())) void workflow(data.sessionId, data.command.trim().split(/\s+/)[1])
+        else await ctx.ui.dialog.alert({ title: "GigaCode command result", message: json(data.result) })
+      } catch (cause) {
+        const route = ctx.ui.router.current()
+        if (!disposed && commandEpoch === epoch && route.type === "session" && route.sessionID === data.sessionId && !aborted(cause)) {
+          showToast(ctx, { title: "GigaCode command error", message: errorMessage(cause, "Unable to display this command result. Inspect the workflow before retrying."), variant: "error", sessionID: data.sessionId })
+        }
+      }
     })
     return () => { if (!disposed) { disposed = true; settingsController?.abort(); workflowStop?.(); loading?.abort(); disposeRoot(); reconnect(); unsubscribe() } }
   },
