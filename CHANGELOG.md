@@ -9,15 +9,15 @@
 
 - Add a manual **Publish npm package** workflow: rehearsal by default, direct OIDC publication after required human approval in the protected `npm-production` GitHub environment.
 - Require the immutable version tag to identify the exact source commit, publish the CI-tested tarball without repacking or lifecycle scripts, and verify public registry integrity with provenance enabled.
-- Retain the separate npm staging path. `0.1.0-beta.1` was submitted through OIDC staging on 20 October 2026; this fresh version avoids reusing that reserved version.
+- Retain the separate npm staging path. `0.1.0-beta.1` was published from its OIDC stage on 20 October 2026; this fresh version keeps that published version immutable.
 
-## 0.1.0-beta.1 — unreleased
+## 0.1.0-beta.1 — 2026-10-20
 
 - Clarify automatic implementation in the GigaCode agent and optional explicit planning; shorten the README and add Ko-fi support links.
 - Show bounded, redacted native error notifications when settings, workflow, or command viewers cannot open; suppress normal cancellation and stale-dialog notifications.
 - Add a manual GitHub release rehearsal and draft action with immutable version tags and the exact CI-tested package, metadata, and checksums. Human publication remains separate.
 
-The current candidate is a beta with planned npm tag `next`. It has not been published. Rehearse the local tarball and verify this version's release checks; the alpha evidence below does not certify the beta. The source repository is public, and the README links to public source guides and product images.
+Published to npm under `next` after human approval of the CI-tested OIDC stage. The public archive matches the staged bytes; all 10 production installation/lifecycle checks and 28 native checks passed on macOS with OpenCode 2.0.28. See the [beta release verification](docs/development.md#published-beta1-verification). The source repository, guides, and product images are public.
 
 - Updated candidate version and installation/documentation links to `0.1.0-beta.1`.
 - Added workflow and settings screenshots from an isolated native example, with a product overview, beta-channel quickstart, and capture provenance.
