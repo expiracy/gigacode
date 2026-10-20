@@ -5,6 +5,7 @@ import { editLimit } from "./settings-limits-ui.ts"
 import { editChecks } from "./settings-checks-ui.ts"
 import { editAdvanced } from "./settings-advanced-ui.ts"
 import { changes } from "./settings-presentation.ts"
+import { showToast } from "./ui-feedback.ts"
 
 export interface SettingsRpc {
   settings(input: { sessionId: string; scope?: SettingsScope }, options: { location: { directory: string }; signal: AbortSignal }): Promise<unknown>
@@ -75,7 +76,7 @@ export async function editSettings(ctx: Context, sessionId: string, rpc: Setting
         if (!confirmed) continue
         try {
           await rpc.saveSettings({ sessionId, ...scopeInput, revision: view.revision, options: draft, replaceAdvanced: true }, { location, signal })
-          if (active()) ctx.ui.toast.show({ title: "GigaCode settings saved", message: scope === "global" ? "Global defaults saved. Reload OpenCode to apply them across projects. Project overrides still take precedence." : "Project settings apply to new workflows in this location. Global defaults are unchanged.", variant: "success", sessionID: sessionId })
+          if (active()) showToast(ctx, { title: "GigaCode settings saved", message: scope === "global" ? "Global defaults saved. Reload OpenCode to apply them across projects. Project overrides still take precedence." : "Project settings apply to new workflows in this location. Global defaults are unchanged.", variant: "success", sessionID: sessionId })
         } catch (error) {
           if (active()) await ctx.ui.dialog.alert({ title: "Unable to confirm settings save", message: `${error instanceof Error ? error.message : "Save request failed"}\nReopen the editor to read current settings before trying again.` })
         }

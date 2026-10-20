@@ -54,6 +54,7 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run typecheck
       - run: bun run test --timeout 15000
+      - run: node --test tests/github-release.test.mjs
 
   artifact:
     name: Build release artifact
