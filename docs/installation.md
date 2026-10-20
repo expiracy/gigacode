@@ -23,10 +23,10 @@ Bun is also supported as the installer: use `bun add --global opencode-gigacode@
 
 ### Install a local candidate
 
-A verified local tarball can be installed before registry publication. For example, the `0.1.0-beta.1` candidate uses:
+A verified local tarball can be installed before registry publication. For example, the `0.1.0-beta.2` candidate uses:
 
 ```sh
-npm install --global /absolute/path/to/opencode-gigacode-0.1.0-beta.1.tgz
+npm install --global /absolute/path/to/opencode-gigacode-0.1.0-beta.2.tgz
 gigacode setup --global
 ```
 

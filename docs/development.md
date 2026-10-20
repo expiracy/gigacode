@@ -16,7 +16,7 @@ To rehearse the distributable locally, create an output directory outside the ch
 
 ```sh
 npm pack --ignore-scripts --pack-destination /absolute/path/to/release-artifacts
-npm install --global /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-beta.1.tgz
+npm install --global /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-beta.2.tgz
 gigacode setup --global
 ```
 
@@ -24,7 +24,7 @@ This installs the local artifact without publishing it. Use an isolated profile 
 
 ## Release checklist
 
-As of release preparation on 20 October 2026, the candidate is `opencode-gigacode@0.1.0-beta.1`, planned for npm's `next` tag. It is unreleased; final publication still needs separate human approval. Rehearse its tarball locally and record beta-specific gate/CI results before considering a release. The published alpha remains on `next`; no beta staging action has been performed in this preparation. The source repository and its guides are public. Consult the npm listing and changelog for subsequent release status.
+This checkout prepares `opencode-gigacode@0.1.0-beta.2` for direct OIDC publication through GitHub Actions after required human approval. `0.1.0-beta.1` was submitted through npm OIDC staging on 20 October 2026 and remains a separate, reserved candidate. The fresh version includes those product and error-feedback changes plus the new publication path. The source repository and guides are public; consult npm and the changelog for actual publication status.
 
 ### Prior alpha validation
 
@@ -102,7 +102,7 @@ The reusable `ci.yml` runs automatically on pull requests and pushes to `main`, 
 The manual workflow **Prepare npm release** (`release.yml`) reuses those checks and defaults to an artifact rehearsal. Its required `version` input must exactly match `package.json` on `main`; the optional Boolean `stage` defaults to `false`. Once the reviewed workflow is available on `main`, run:
 
 ```sh
-gh workflow run release.yml --ref main -f version=0.1.0-beta.1 -F stage=false
+gh workflow run release.yml --ref main -f version=0.1.0-beta.2 -F stage=false
 ```
 
 This builds one tarball, runs its installed-package lifecycle checks, and retains the exact tarball with `release.json` as `npm-package-<commit>-<run-attempt>` for 30 days. The manifest binds the package version and `next` tag to the full source commit, SHA-512 integrity, SHA-1 checksum, size, file count, and runtime versions. Native/parallel diagnostic artifacts are retained for seven days. Rehearsal does not change npm registry state. Pushes and tags cannot automatically stage or publish a package.
@@ -110,18 +110,18 @@ This builds one tarball, runs its installed-package lifecycle checks, and retain
 From a clean, committed authorised source checkout, use an empty output directory outside the checkout for a local rehearsal:
 
 ```sh
-bun run scripts/release-artifact.ts prepare /absolute/path/to/release-artifacts 0.1.0-beta.1
-bun run scripts/release-artifact.ts verify /absolute/path/to/release-artifacts 0.1.0-beta.1 <full-commit-sha>
-bun run scripts/check-package.ts --artifact /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-beta.1.tgz
+bun run scripts/release-artifact.ts prepare /absolute/path/to/release-artifacts 0.1.0-beta.2
+bun run scripts/release-artifact.ts verify /absolute/path/to/release-artifacts 0.1.0-beta.2 <full-commit-sha>
+bun run scripts/check-package.ts --artifact /absolute/path/to/release-artifacts/opencode-gigacode-0.1.0-beta.2.tgz
 ```
 
 Replace the paths and commit placeholder with the intended output directory and exact 40-character commit. `prepare` packs once and validates package/docs metadata; `verify` checks the retained bytes and metadata without repacking or publishing. The final command exercises that artifact's installed-package lifecycle. A future staging action must use the verified artifact rather than building another tarball.
 
-The `main` branch requires an up-to-date pull request with a passing aggregate **CI** result from GitHub Actions, including for administrators. Force pushes and branch deletion are disabled. No additional human review approval is required for this single-maintainer workflow.
+The `main` branch requires an up-to-date pull request with a passing aggregate **CI** result from GitHub Actions, including for administrators. Force pushes and branch deletion are disabled. The PR gate requires no extra review for this single-maintainer repository; direct production publication has a separate required human deployment approval.
 
 One-time npm trusted-publisher setup remains a maintainer step. Configure it for this GitHub repository, workflow `release.yml`, and environment `npm`. Under **Allowed actions**, permit `npm stage publish` only; leave direct `npm publish` and `npm dist-tag` disabled. Configure the GitHub `npm` environment and, where supported, its protection rules. A rehearsal does not change npm account security or publisher settings. The source repository is public; registry staging still requires its own configured trusted publisher.
 
-If staging is separately authorised later, run the workflow with `stage=true`. Its stage job runs directly in `release.yml`, uses Node 24/npm 11.16.0 and OIDC, re-verifies the downloaded artifact, keeps npm provenance disabled in the current workflow configuration, and submits that exact tarball to npm staging under `next`. It records a staging receipt; it does not finish publication. Final npm stage approval requires a human with 2FA. A GitHub environment is a human gate only when its required-reviewer protections are configured. The workflow has no direct npm publication path. See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) for maintainer setup.
+When staging is explicitly requested, run the workflow with `stage=true`. Its stage job runs directly in `release.yml`, uses Node 24/npm 11.16.0 and OIDC, re-verifies the downloaded artifact, keeps npm provenance disabled in the current workflow configuration, and submits that exact tarball to npm staging under `next`. It records a staging receipt; it does not finish publication. Final npm stage approval requires a human with 2FA. A GitHub environment is a human gate only when its required-reviewer protections are configured. This staging workflow has no direct npm publication path; the separate production workflow below provides it. See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) for maintainer setup.
 
 ### GitHub draft releases
 
@@ -140,6 +140,63 @@ gh workflow run github-release.yml --ref main -f delivery=draft
 ```
 
 Draft creation requires the protected `main` branch of `expiracy/gigacode` and a passing CI run in that invocation. Only the draft job receives repository write permission. It prepares a draft for `v<package-version>` with the verified tarball, original manifest, and `SHA256SUMS` as assets. A repeated request can finish missing assets on a matching draft; conflicting assets or an already published release fail without replacement. A maintainer must review and publish the draft manually. This workflow does not change npm staging or publication.
+
+### Direct npm publication from GitHub Actions
+
+**Publish npm package** (`publish.yml`) defaults to rehearsal. Explicit direct
+publication waits for human approval in **npm-production** after all checks pass.
+The workflow uses the one exact CI-tested tarball, verifies source/version/MIT
+licence/integrity, and publishes through OIDC with provenance enabled and
+lifecycle scripts disabled. It never approves npm stages or substitutes tokens.
+
+One-time setup:
+
+- GitHub environment **npm-production**: required reviewer **expiracy**,
+  administrator bypass disabled, and branch **main** only. Allow this solo
+  maintainer to approve their own dispatched run; approval is still a deliberate
+  human action in GitHub.
+- A separate npm trusted publisher for `expiracy/gigacode`, workflow
+  **publish.yml**, environment **npm-production**, permitting direct publish.
+  Keep `release.yml` / `npm` stage-only. No npm secret or standalone dist-tag
+  permission is needed.
+
+```sh
+npm trust github opencode-gigacode \
+  --repository=expiracy/gigacode --file=publish.yml \
+  --environment=npm-production --allow-publish
+```
+
+The GitHub production environment was configured with these rules on 20 October
+2026. Recheck live required reviewers, disabled bypass, and exact branch policy;
+writing an environment name in YAML alone does not configure a human gate.
+
+Release sequence:
+
+1. Merge an unused version and release notes through the required CI gate.
+2. Run **Prepare GitHub release** with `delivery=draft` to create immutable
+   `v<version>` and a reviewable draft package at that source commit.
+3. Run **Publish npm package** in rehearsal mode and inspect its recorded source,
+   version, channel, integrity, and diagnostics.
+4. Request `delivery=publish`; after CI passes, inspect **Review deployments** and
+   approve the concrete `npm-production` deployment in GitHub.
+5. Verify the public exact-version integrity, installed package and native host
+   behavior, and npm provenance. Review/publish the GitHub draft separately.
+
+```sh
+gh workflow run publish.yml --ref main -f version=0.1.0-beta.2 -f delivery=rehearsal
+gh workflow run publish.yml --ref main -f version=0.1.0-beta.2 -f delivery=publish
+```
+
+The production job requires protected upstream `main`, an explicit request and
+matching existing version tag, and rejects legacy credentials. Registry errors
+fail closed. A previously published version is a successful rerun only if its
+integrity and intended channel still match; reruns do not overwrite versions or
+move tags. `next` does not automatically become `latest`.
+
+The final deployment approval belongs to a human. Do not approve or bypass it
+through an automated API call. Existing npm stages share the same version
+namespace and must follow npm's human 2FA approval path; use fresh versions for
+this direct-publication path.
 
 ## Opt-in model evaluations
 
