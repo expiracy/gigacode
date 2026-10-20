@@ -22,6 +22,10 @@ test("the npm artifact accepts its reviewed product screenshots", () => {
   expect(() => assertPackageContents([...runtimeFiles, "docs/assets/workflows.png", "docs/assets/settings.png"])).not.toThrow()
 })
 
+test("the npm artifact accepts the product capture provenance included by npm", () => {
+  expect(() => assertPackageContents([...runtimeFiles, "docs/assets/workflows.png", "docs/assets/settings.png", "docs/assets/README.md"])).not.toThrow()
+})
+
 test("unreviewed screenshots remain excluded from the npm artifact", () => {
   expect(() => assertPackageContents([...runtimeFiles, "docs/assets/provider-account.png"])).toThrow("Unexpected packaged file: docs/assets/provider-account.png")
 })
