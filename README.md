@@ -14,11 +14,11 @@ Multi-agent workflows for **OpenCode 2**. Select **GigaCode**, ask for an implem
 ## Install
 
 ```sh
-npm install --global opencode-gigacode@next
+npm install --global opencode-gigacode@latest
 gigacode setup --global
 ```
 
-This README describes **0.1.0-beta.3**. `@next` follows the prerelease channel; `@latest` follows the default release. They can point to different versions. Restart OpenCode, connect a model with tool support, and select **GigaCode** beside **Build** and **Plan**.
+This README describes **0.1.0**. `@next` follows the prerelease channel; `@latest` follows the default release. They can point to different versions. Restart OpenCode, connect a model with tool support, and select **GigaCode** beside **Build** and **Plan**.
 
 | Requirement | Supported |
 | --- | --- |
@@ -29,7 +29,7 @@ This README describes **0.1.0-beta.3**. `@next` follows the prerelease channel; 
 
 - `@next` follows the prerelease channel; [check npm](https://www.npmjs.com/package/opencode-gigacode?activeTab=versions) for published versions.
 - Setup registers the installed package, adds its agents, enables delegation depth of at least two, and backs up changed configuration. Keep the global package installed.
-- Run `gigacode doctor` for local diagnostics. See [installation, profiles, updates, and removal](https://github.com/expiracy/gigacode/blob/edf63e1b349da12536541805b5a546435aa781e4/docs/installation.md).
+- Run `gigacode doctor` for local diagnostics. See [installation, profiles, updates, and removal](https://github.com/expiracy/gigacode/blob/v0.1.0/docs/installation.md).
 
 ## Choose how to work
 
@@ -66,16 +66,16 @@ OpenCode's separate **Build** and **Plan** agents remain available. Native permi
 - Workers use native sessions and permission checks. The version-sensitive execution bridge bypasses outer tool hooks; assess compatibility with other plugins separately.
 - Multiple workers consume model requests and context. Default bounds: **4 workers**, **2 runs per project**, **24 attempts per run**, **45 minutes active run time**. These are not billing ceilings; no paid fallback model is selected automatically.
 - State and exports live in the canonical project's **`.gigacode/`**. Exclude it from Git and review exports before sharing. Inspection is bounded and is not private model reasoning or a complete event replay.
-- Writers are serial by default. Optional parallel writers require a clean committed Git root and disjoint plain UTF-8 additions/modifications. See [workflow limits and recovery](https://github.com/expiracy/gigacode/blob/edf63e1b349da12536541805b5a546435aa781e4/docs/commands.md).
+- Writers are serial by default. Optional parallel writers require a clean committed Git root and disjoint plain UTF-8 additions/modifications. See [workflow limits and recovery](https://github.com/expiracy/gigacode/blob/v0.1.0/docs/commands.md).
 
 ## Hosts, guides, and support
 
 - **OpenCode:** CI covers package installation on Ubuntu, macOS, and Windows; native Linux integrations cover all three supported host versions. Native macOS was also checked locally; native Windows is outside the integration matrix.
-- **OpenChamber 2.2.0:** conversational GigaCode use works with a supported bundled host. Terminal popups and deterministic command results have no desktop viewer; use **Settings → Plugins → Options (JSON)** or `gigacode.json`. [OpenChamber settings](https://github.com/expiracy/gigacode/blob/edf63e1b349da12536541805b5a546435aa781e4/docs/configuration.md#openchamber-settings).
-- [Models and configuration](https://github.com/expiracy/gigacode/blob/edf63e1b349da12536541805b5a546435aa781e4/docs/configuration.md) · [Commands and recipes](https://github.com/expiracy/gigacode/blob/edf63e1b349da12536541805b5a546435aa781e4/docs/commands.md)
-- [Development and tagged releases](https://github.com/expiracy/gigacode/blob/main/docs/development.md) · [Architecture](https://github.com/expiracy/gigacode/blob/edf63e1b349da12536541805b5a546435aa781e4/docs/architecture.md) · [Changelog](https://github.com/expiracy/gigacode/blob/main/CHANGELOG.md)
+- **OpenChamber 2.2.0:** conversational GigaCode use works with a supported bundled host. Terminal popups and deterministic command results have no desktop viewer; use **Settings → Plugins → Options (JSON)** or `gigacode.json`. [OpenChamber settings](https://github.com/expiracy/gigacode/blob/v0.1.0/docs/configuration.md#openchamber-settings).
+- [Models and configuration](https://github.com/expiracy/gigacode/blob/v0.1.0/docs/configuration.md) · [Commands and recipes](https://github.com/expiracy/gigacode/blob/v0.1.0/docs/commands.md)
+- [Development and tagged releases](https://github.com/expiracy/gigacode/blob/v0.1.0/docs/development.md) · [Architecture](https://github.com/expiracy/gigacode/blob/v0.1.0/docs/architecture.md) · [Changelog](https://github.com/expiracy/gigacode/blob/v0.1.0/CHANGELOG.md)
 - [Report an issue](https://github.com/expiracy/gigacode/issues) with Bun/OpenCode versions and redacted error or run evidence.
 
-Independent project; not affiliated with Anthropic, OpenCode, OpenChamber, or OpenUltraCode. Licensed under [MIT](https://github.com/expiracy/gigacode/blob/edf63e1b349da12536541805b5a546435aa781e4/LICENSE).
+Independent project; not affiliated with Anthropic, OpenCode, OpenChamber, or OpenUltraCode. Licensed under [MIT](https://github.com/expiracy/gigacode/blob/v0.1.0/LICENSE).
 
 [![Support on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/expiracy)

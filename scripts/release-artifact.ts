@@ -9,7 +9,7 @@ export interface ReleaseMetadata {
   schemaVersion: 1
   name: "opencode-gigacode"
   version: string
-  tag: "next"
+  tag: "next" | "latest"
   filename: string
   commit: string
   integrity: string
@@ -28,25 +28,32 @@ export async function describeReleaseArtifact(path: string, expectedVersion: str
   const filename = `opencode-gigacode-${expectedVersion}.tgz`
   if (basename(path) !== filename) throw new Error(`Release tarball filename must be ${filename}`)
   return {
-    schemaVersion: 1, name: "opencode-gigacode", version: expectedVersion, tag: "next", filename, commit,
+    schemaVersion: 1, name: "opencode-gigacode", version: expectedVersion, tag: releaseChannel(expectedVersion), filename, commit,
     integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
     shasum: createHash("sha1").update(bytes).digest("hex"), size: bytes.length, fileCount: artifact.files.length, runtime,
   }
+}
+
+/** Stable versions use latest; numbered alpha/beta prereleases use next. */
+export function releaseChannel(version: string): ReleaseMetadata["tag"] {
+  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha|beta)\.(?:0|[1-9]\d*))?$/.test(version)) throw new Error("Release versions must be stable semantic versions or numbered alpha/beta prereleases")
+  return version.includes("-") ? "next" : "latest"
 }
 
 /** Validate the package contract before preparing a release candidate. */
 export function validateReleaseManifest(manifest: Record<string, any>, expectedVersion: string): void {
   if (manifest.private === true) throw new Error("A release artifact must not be private")
   if (manifest.name !== "opencode-gigacode" || manifest.version !== expectedVersion) throw new Error(`Package name must be opencode-gigacode and version must be ${expectedVersion}`)
-  if (!/^\d+\.\d+\.\d+-(?:alpha|beta)\.\d+$/.test(expectedVersion)) throw new Error("This release pipeline requires an alpha or beta prerelease version")
-  if (manifest.publishConfig?.registry !== "https://registry.npmjs.org/" || manifest.publishConfig?.access !== "public" || manifest.publishConfig?.tag !== "next") throw new Error("Release artifacts must target the public npm registry with tag next")
+  const tag = releaseChannel(expectedVersion)
+  if (manifest.publishConfig?.registry !== "https://registry.npmjs.org/" || manifest.publishConfig?.access !== "public" || manifest.publishConfig?.tag !== tag) throw new Error(`Release artifacts must target the public npm registry with tag ${tag}`)
   if (manifest.license !== "MIT") throw new Error("Release artifacts must declare the MIT licence")
 }
 
 export async function validateReleaseDocumentation(contents: Map<string, File>, expectedVersion: string): Promise<void> {
+  const tag = releaseChannel(expectedVersion)
   for (const path of ["README.md", "docs/installation.md"]) {
     const text = await contents.get(path)?.text()
-    if (!text?.includes(expectedVersion) || !text.includes("opencode-gigacode@next")) throw new Error(`${path} must describe ${expectedVersion} on the next channel`)
+    if (!text?.includes(expectedVersion) || !text.includes(`opencode-gigacode@${tag}`)) throw new Error(`${path} must describe ${expectedVersion} on the ${tag} channel`)
     for (const match of text.matchAll(/https:\/\/cdn\.jsdelivr\.net\/npm\/opencode-gigacode@([^/\s)]+)/g)) {
       if (match[1] !== expectedVersion) throw new Error(`${path} refers to a different package version`)
     }
@@ -55,7 +62,7 @@ export async function validateReleaseDocumentation(contents: Map<string, File>, 
   if (/^##\s+(\S+)/m.exec(changelog ?? "")?.[1] !== expectedVersion) throw new Error("The first changelog entry must match the release version")
 }
 export async function verifyReleaseArtifact(directory: string, expectedVersion: string, expectedCommit: string): Promise<ReleaseMetadata> {
-  if (!/^\d+\.\d+\.\d+-(?:alpha|beta)\.\d+$/.test(expectedVersion)) throw new Error("This release pipeline requires an alpha or beta prerelease version")
+  releaseChannel(expectedVersion)
   const metadata = JSON.parse(await readFile(join(directory, "release.json"), "utf8")) as ReleaseMetadata
   if (!/^[a-f0-9]{40}$/.test(expectedCommit) || metadata.commit !== expectedCommit) throw new Error("Release source commit mismatch")
   const filename = `opencode-gigacode-${expectedVersion}.tgz`

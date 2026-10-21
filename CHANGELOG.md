@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0 — Unreleased
+
+- Prepare the first stable release for npm `latest`, keeping existing prerelease tags and versions unchanged. Publication and the GitHub release remain subject to human approval.
+- Validate stable semantic versions throughout artifact preparation and registry verification; retain alpha/beta delivery on `next` and mark stable GitHub drafts as normal releases.
+- Include automatic GigaCode agent workflows, optional explicit planning, native settings and workflow popups, bounded error notifications, and the tested global installation lifecycle from the published beta.
+- Retain the exact supported OpenCode host versions, runtime requirements, permission behavior, limits, and CI artifact checks. A stable package version does not expand host support or erase the documented limitations.
+
 ## 0.1.0-beta.3 — Unreleased
 
 - Correct GitHub release-asset HTTP framing by sending the exact verified byte length. A real local HTTP test exercises the installed GitHub CLI with binary and Unicode bytes.

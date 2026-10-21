@@ -131,7 +131,8 @@ test("an annotated version tag is accepted only when its final target is the tes
   assert.ok(calls.some(endpoint => endpoint.endsWith(`/git/tags/${"c".repeat(40)}`)));
 });
 
-async function fixture(sourceVersion = "0.1.0-beta.1") {
+async function fixture(sourceVersion = "0.1.0-beta.1", artifactVersion = "0.1.0-beta.1") {
+  const tag = artifactVersion.includes("-") ? "next" : "latest";
   const directory = await mkdtemp(path.join(tmpdir(), "gigacode-github-release-test-"));
   const sourceDirectory = path.join(directory, "source");
   const artifacts = path.join(directory, "artifact");
@@ -140,12 +141,12 @@ async function fixture(sourceVersion = "0.1.0-beta.1") {
   await mkdir(path.join(artifacts, "package/src"));
   await mkdir(path.join(artifacts, "package/scripts"));
   const metadata = {
-    name: "opencode-gigacode", version: "0.1.0-beta.1", license: "MIT",
+    name: "opencode-gigacode", version: artifactVersion, license: "MIT",
     repository: { url: "git+https://github.com/expiracy/gigacode.git" },
-    publishConfig: { access: "public", registry: "https://registry.npmjs.org/", tag: "next" },
+    publishConfig: { access: "public", registry: "https://registry.npmjs.org/", tag },
   };
   await writeFile(path.join(sourceDirectory, "package.json"), JSON.stringify({ ...metadata, version: sourceVersion }));
-  const changelog = "# Changes\n\n## 0.1.0-beta.1\n\nClear provider errors and tested release packages.\n";
+  const changelog = `# Changes\n\n## ${artifactVersion}\n\nClear provider errors and tested release packages.\n`;
   await writeFile(path.join(sourceDirectory, "CHANGELOG.md"), changelog);
   const git = args => execFileSync("git", args, { cwd: sourceDirectory, encoding: "utf8" });
   git(["init", "--quiet"]);
@@ -154,19 +155,19 @@ async function fixture(sourceVersion = "0.1.0-beta.1") {
   const commit = git(["rev-parse", "HEAD"]).trim();
   const files = {
     "package.json": JSON.stringify(metadata), "LICENSE": "MIT License\n",
-    "README.md": "opencode-gigacode@next 0.1.0-beta.1\n",
-    "docs/installation.md": "opencode-gigacode@next 0.1.0-beta.1\n", "CHANGELOG.md": changelog,
+    "README.md": `opencode-gigacode@${tag} ${artifactVersion}\n`,
+    "docs/installation.md": `opencode-gigacode@${tag} ${artifactVersion}\n`, "CHANGELOG.md": changelog,
     "index.ts": "export default {};\n", "tui.ts": "export default {};\n",
     "scripts/cli.ts": "export {};\n", "scripts/install.ts": "export {};\n", "scripts/doctor.ts": "export {};\n",
     "src/plugin.ts": "export {};\n", "src/config.ts": "export {};\n",
   };
   for (const [name, contents] of Object.entries(files)) await writeFile(path.join(artifacts, "package", name), contents);
-  const filename = "opencode-gigacode-0.1.0-beta.1.tgz";
+  const filename = `opencode-gigacode-${artifactVersion}.tgz`;
   execFileSync("tar", ["-czf", path.join(artifacts, filename), "-C", artifacts, "package"]);
   const bytes = await readFile(path.join(artifacts, filename));
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   await writeFile(path.join(artifacts, "release.json"), JSON.stringify({
-    schemaVersion: 1, commit, name: metadata.name, version: metadata.version, tag: "next", filename,
+    schemaVersion: 1, commit, name: metadata.name, version: metadata.version, tag, filename,
     integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
     shasum: createHash("sha1").update(bytes).digest("hex"), size: bytes.length,
     fileCount: Object.keys(files).length, runtime: { bun: "1.3.14", node: process.version, npm: "11.16.0" },
@@ -182,6 +183,32 @@ test("the tested archive version must exactly match the checked source package",
   const f = await fixture("0.1.0-beta.2");
   try { await assert.rejects(prepareCandidate(f.options), /checked source version/); }
   finally { await f.clean(); }
+});
+
+test("a verified stable candidate prepares a normal draft with its exact stable archive", async () => {
+  const f = await fixture("0.1.0", "0.1.0");
+  try {
+    const value = await prepareCandidate(f.options);
+    assert.equal(value.version, "0.1.0");
+    assert.equal(value.tag, "v0.1.0");
+    assert.equal(value.prerelease, false);
+    assert.match(value.notes, /Channel: `latest`/);
+    const calls = [];
+    await deliverGitHubRelease({ mode: "draft", candidate: value, env: { ...context, GITHUB_SHA: f.options.commit }, transport: {
+      request: async (method, endpoint, body) => {
+        calls.push({ method, endpoint, body });
+        if (endpoint.includes("/git/ref/tags/")) throw Object.assign(new Error("Not found"), { status: 404 });
+        if (endpoint.includes("/releases?")) return [];
+        if (endpoint.endsWith("/releases") && method === "POST") return { id: 12, html_url: "https://github.com/expiracy/gigacode/releases/tag/v0.1.0" };
+        return { id: 12, draft: true };
+      },
+      upload: async (_id, asset) => assert.ok(value.assets.includes(asset)),
+    } });
+    const release = calls.find(call => call.endpoint.endsWith("/releases") && call.method === "POST");
+    assert.equal(release.body.prerelease, false);
+    assert.equal(release.body.draft, true);
+    assert.equal(release.body.tag_name, "v0.1.0");
+  } finally { await f.clean(); }
 });
 
 test("the candidate retains the exact archive and manifest and records useful notes and checksums", async () => {

@@ -116,6 +116,42 @@ test("registry lookup verifies the latest selector using its returned package ve
   assert.deepEqual(found, data);
 });
 
+test("registry lookup accepts an exact stable release version", async () => {
+  const data = { name: candidate.name, version: "0.1.0", dist: { integrity: candidate.integrity } };
+  assert.deepEqual(await readPublicVersion(candidate.name, "0.1.0", async url => {
+    assert.equal(url, `https://registry.npmjs.org/${candidate.name}/0.1.0`);
+    return new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
+  }), data);
+});
+
+test("stable publication follows its packaged latest tag and verifies the exact stable version", async () => {
+  const value = { ...candidate, version: "0.1.0", tag: "latest" };
+  const selectors = [];
+  let writes = 0;
+  const result = await publishArtifact({ mode: "publish", candidate: value, env: context, resolveTag: () => commit,
+    lookup: async (name, selector) => {
+      selectors.push(selector);
+      return selectors.length === 1 ? undefined : { name, version: value.version, dist: { integrity: value.integrity } };
+    },
+    publish: async (artifact, options) => {
+      writes++;
+      assert.equal(artifact, value);
+      assert.deepEqual(options, { tag: "latest" });
+    },
+  });
+  assert.equal(result.outcome, "published");
+  assert.equal(result.tag, "latest");
+  assert.equal(result.packagedTag, "latest");
+  assert.deepEqual(selectors, ["0.1.0", "0.1.0", "latest"]);
+  assert.equal(writes, 1);
+});
+
+test("invalid exact versions are rejected before a registry request", async () => {
+  for (const version of ["v0.1.0", "01.1.0", "0.1.0+build", "0.1.0-rc.1", "0.1.0-beta.01", "0.1.0/path"]) {
+    await assert.rejects(readPublicVersion(candidate.name, version, () => assert.fail("Invalid versions must not reach npm")), /Expected a stable version/);
+  }
+});
+
 test("npm receives an isolated copy of the tested bytes with OIDC and provenance and no inherited credentials", async () => {
   const bytes = Buffer.from("the exact tested npm tarball bytes");
   let copiedPath;
