@@ -18,7 +18,7 @@ npm install --global opencode-gigacode@next
 gigacode setup --global
 ```
 
-This README describes **0.1.0-beta.3**. `@next` installs the latest published prerelease. Restart OpenCode, connect a model with tool support, and select **GigaCode** beside **Build** and **Plan**.
+This README describes **0.1.0-beta.3**. `@next` follows the prerelease channel; `@latest` follows the default release. They can point to different versions. Restart OpenCode, connect a model with tool support, and select **GigaCode** beside **Build** and **Plan**.
 
 | Requirement | Supported |
 | --- | --- |
