@@ -172,6 +172,17 @@ The workflow uses the one exact CI-tested tarball, verifies source/version/MIT
 licence/integrity, and publishes through OIDC with provenance enabled and
 lifecycle scripts disabled. It never approves npm stages or substitutes tokens.
 
+Choose the same `channel` for rehearsal and publication:
+
+| Channel input | Result |
+| --- | --- |
+| `package` (default) | Keep the package's configured tag, currently `next`. |
+| `latest` | Publish the new version as the default npm install, including a beta. |
+
+The review summary and receipt record the chosen publication channel separately
+from the packaged `next` tag. This choice does not repack or modify the tested
+archive. Selecting `latest` also makes this version's README the default npm page.
+
 One-time setup:
 
 - GitHub environment **npm-production**: required reviewer **expiracy**,
@@ -201,23 +212,25 @@ Release sequence:
 1. Merge an unused version and release notes through the required CI gate.
 2. Run **Prepare GitHub release** with `delivery=draft` to create immutable
    `v<version>` and a reviewable draft package at that source commit.
-3. Run **Publish npm package** in rehearsal mode and inspect its recorded source,
+3. Run **Publish npm package** in rehearsal mode, choose `channel=latest` for a
+   default release (or keep `package` for `next`), and inspect its recorded source,
    version, channel, integrity, and diagnostics.
-4. Request `delivery=publish`; after CI passes, inspect **Review deployments** and
-   approve the concrete `npm-production` deployment in GitHub.
+4. Request `delivery=publish` with the same channel; after CI passes, inspect
+   **Review deployments** and approve the concrete `npm-production` deployment.
 5. Verify the public exact-version integrity, installed package and native host
    behavior, and npm provenance. Review/publish the GitHub draft separately.
 
 ```sh
-gh workflow run publish.yml --ref main -f version=0.1.0-beta.3 -f delivery=rehearsal
-gh workflow run publish.yml --ref main -f version=0.1.0-beta.3 -f delivery=publish
+gh workflow run publish.yml --ref main -f version=0.1.0-beta.3 -f delivery=rehearsal -f channel=latest
+gh workflow run publish.yml --ref main -f version=0.1.0-beta.3 -f delivery=publish -f channel=latest
 ```
 
 The production job requires protected upstream `main`, an explicit request and
 matching existing version tag, and rejects legacy credentials. Registry errors
 fail closed. A previously published version is a successful rerun only if its
-integrity and intended channel still match; reruns do not overwrite versions or
-move tags. `next` does not automatically become `latest`.
+integrity and chosen channel still match; reruns do not overwrite versions or
+move tags. This publishes unused versions; it cannot promote an existing `next`
+release to `latest`. Publishing to `latest` does not also move `next`.
 
 The final deployment approval belongs to a human. Do not approve or bypass it
 through an automated API call. Existing npm stages share the same version

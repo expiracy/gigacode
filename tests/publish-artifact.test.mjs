@@ -24,8 +24,16 @@ const context = {
 test("rehearsal reports the tested candidate without contacting npm or publishing", async () => {
   const unexpected = () => { throw new Error("Unexpected external operation"); };
   assert.deepEqual(await publishArtifact({ mode: "rehearsal", candidate, lookup: unexpected, publish: unexpected }), {
-    outcome: "rehearsal", name: candidate.name, version: candidate.version, integrity: candidate.integrity, tag: "next",
+    outcome: "rehearsal", name: candidate.name, version: candidate.version, integrity: candidate.integrity, tag: "next", packagedTag: "next",
   });
+});
+
+test("explicit latest rehearsal reports the chosen channel without changing the packaged channel", async () => {
+  const unexpected = () => { throw new Error("Unexpected external operation"); };
+  const result = await publishArtifact({ mode: "rehearsal", channel: "latest", candidate, lookup: unexpected, publish: unexpected });
+  assert.equal(result.tag, "latest");
+  assert.equal(result.packagedTag, "next");
+  assert.equal(candidate.tag, "next");
 });
 
 test("publish refuses unprotected source before any registry operation", async () => {
@@ -55,6 +63,25 @@ test("an absent version publishes once and succeeds only after public integrity 
   assert.equal(reads, 3);
 });
 
+test("a new beta explicitly publishes to latest and verifies latest while preserving candidate metadata", async () => {
+  const reads = [];
+  const writes = [];
+  const result = await publishArtifact({ mode: "publish", channel: "latest", candidate, env: context, resolveTag: () => commit,
+    lookup: async (name, selector) => {
+      reads.push(selector);
+      return reads.length === 1 ? undefined : { name, version: candidate.version, dist: { integrity: candidate.integrity } };
+    },
+    publish: async (value, options) => writes.push({ value, options }),
+  });
+  assert.deepEqual(reads, [candidate.version, candidate.version, "latest"]);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].value, candidate);
+  assert.deepEqual(writes[0].options, { tag: "latest" });
+  assert.equal(candidate.tag, "next");
+  assert.equal(result.tag, "latest");
+  assert.equal(result.packagedTag, "next");
+});
+
 test("publication requires its immutable version tag at the exact tested commit", async () => {
   const unexpected = () => { throw new Error("Unexpected registry operation"); };
   await assert.rejects(publishArtifact({ mode: "publish", candidate, env: context,
@@ -80,6 +107,15 @@ test("registry lookup accepts npm's actual exact-version missing response", asyn
   })), undefined);
 });
 
+test("registry lookup verifies the latest selector using its returned package version", async () => {
+  const data = { name: candidate.name, version: candidate.version, dist: { integrity: candidate.integrity } };
+  const found = await readPublicVersion(candidate.name, "latest", async url => {
+    assert.equal(url, `https://registry.npmjs.org/${candidate.name}/latest`);
+    return new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
+  });
+  assert.deepEqual(found, data);
+});
+
 test("npm receives an isolated copy of the tested bytes with OIDC and provenance and no inherited credentials", async () => {
   const bytes = Buffer.from("the exact tested npm tarball bytes");
   let copiedPath;
@@ -101,6 +137,17 @@ test("npm receives an isolated copy of the tested bytes with OIDC and provenance
     },
   });
   await assert.rejects(readFile(copiedPath), /ENOENT/);
+});
+
+test("npm receives the explicit latest tag with the exact original tarball", async () => {
+  const bytes = Buffer.from("a beta artifact packaged with tag next");
+  const value = { ...candidate, bytes, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` };
+  await runNpmPublish(value, { tag: "latest", env: context, run: async (file, args) => {
+    assert.equal(file, "npm");
+    assert.equal(args[args.indexOf("--tag") + 1], "latest");
+    assert.deepEqual(await readFile(args[1]), bytes);
+  } });
+  assert.equal(value.tag, "next");
 });
 
 test("artifact verification refuses a candidate whose version differs from checked source", async () => {
@@ -161,6 +208,25 @@ test("the real CLI rehearses the verified artifact and retains a review receipt 
   } finally { await f.cleanup(); }
 });
 
+test("the real CLI records latest for approval without changing its next-tagged tested archive", async () => {
+  const f = await fixture();
+  try {
+    const diagnostics = path.join(f.directory, "diagnostics");
+    const summary = path.join(f.directory, "summary.md");
+    execFileSync(process.execPath, [path.join(f.sourceDirectory, "scripts/publish-artifact.mjs"), "rehearsal", "--channel", "latest", "--directory", f.artifacts, "--commit", f.commit, "--diagnostics", diagnostics], {
+      cwd: f.sourceDirectory, env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: summary }, encoding: "utf8",
+    });
+    const record = JSON.parse(await readFile(path.join(diagnostics, "result.json"), "utf8"));
+    assert.equal(record.tag, "latest");
+    assert.equal(record.packagedTag, "next");
+    assert.equal(record.integrity, f.metadata.integrity);
+    assert.match(await readFile(summary, "utf8"), /Publication channel: `latest`/);
+    assert.match(await readFile(summary, "utf8"), /Packaged channel: `next`/);
+    assert.deepEqual(JSON.parse(await readFile(path.join(f.artifacts, "release.json"), "utf8")), f.metadata);
+    assert.deepEqual(await readFile(path.join(f.artifacts, candidate.filename)), f.bytes);
+  } finally { await f.cleanup(); }
+});
+
 test("publication context refuses alternate workflows, forks, triggers, runners and legacy credentials", () => {
   for (const change of [
     { GITHUB_EVENT_NAME: "push" }, { GITHUB_REPOSITORY: "example/gigacode" }, { GITHUB_REF: "refs/heads/topic" },
@@ -192,6 +258,62 @@ test("a moved next channel fails without promoting an older existing version", a
     lookup: async (name, selector) => ({ name, version: selector === "next" ? "0.1.0-beta.3" : candidate.version, dist: { integrity: candidate.integrity } }),
     publish: () => assert.fail("An existing version must not move tags"),
   }), /next channel points elsewhere; no npm tags were changed/);
+});
+
+test("latest cannot promote an existing version whose latest tag points elsewhere", async () => {
+  const reads = [];
+  await assert.rejects(publishArtifact({ mode: "publish", channel: "latest", candidate, env: context, resolveTag: () => commit,
+    lookup: async (name, selector) => {
+      reads.push(selector);
+      return { name, version: selector === "latest" ? "0.1.0-beta.1" : candidate.version, dist: { integrity: candidate.integrity } };
+    },
+    publish: () => assert.fail("Existing versions must not be published or retagged"),
+  }), /latest channel points elsewhere; no npm tags were changed/);
+  assert.deepEqual(reads, [candidate.version, "latest"]);
+});
+
+test("a matching latest rerun succeeds without another publication", async () => {
+  const result = await publishArtifact({ mode: "publish", channel: "latest", candidate, env: context, resolveTag: () => commit,
+    lookup: async name => ({ name, version: candidate.version, dist: { integrity: candidate.integrity } }),
+    publish: () => assert.fail("A matching rerun must not publish"),
+  });
+  assert.equal(result.outcome, "already-published");
+  assert.equal(result.tag, "latest");
+  assert.equal(result.packagedTag, "next");
+});
+
+test("unsupported channel choices fail before any external operation", async () => {
+  const unexpected = () => { throw new Error("Unexpected external operation"); };
+  for (const channel of ["", "next", "Latest", "latest --access restricted"]) {
+    await assert.rejects(publishArtifact({ mode: "publish", channel, candidate, env: context,
+      resolveTag: unexpected, lookup: unexpected, publish: unexpected,
+    }), /Choose package or latest publication channel/);
+    if (channel !== "next") await assert.rejects(runNpmPublish(candidate, { tag: channel, run: unexpected }), /Choose next or latest npm publication tag/);
+  }
+});
+
+test("a latest publish fails if public bytes appear only on next", async () => {
+  let writes = 0;
+  let reads = 0;
+  await assert.rejects(publishArtifact({ mode: "publish", channel: "latest", candidate, env: context, resolveTag: () => commit,
+    lookup: async (name, selector) => {
+      if (++reads === 1) return undefined;
+      return { name, version: selector === "latest" ? "0.1.0-beta.1" : candidate.version, dist: { integrity: candidate.integrity } };
+    },
+    publish: async () => { writes++; },
+  }), /did not verify on the latest channel/);
+  assert.equal(writes, 1);
+  assert.equal(reads, 3);
+});
+
+test("the CLI rejects invalid channel input before reading any artifact", () => {
+  assert.throws(() => execFileSync(process.execPath, [new URL("../scripts/publish-artifact.mjs", import.meta.url).pathname,
+    "rehearsal", "--channel", "untrusted", "--directory", "/missing/artifact", "--commit", commit, "--diagnostics", "/missing/diagnostics",
+  ], { env: { PATH: process.env.PATH }, encoding: "utf8", stdio: "pipe" }), error => {
+    assert.match(error.stderr, /Choose package or latest publication channel/);
+    assert.doesNotMatch(error.stderr, /ENOENT/);
+    return true;
+  });
 });
 
 test("failed registry verification after a publish does not replay the write", async () => {
