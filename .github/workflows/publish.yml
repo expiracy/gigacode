@@ -13,6 +13,12 @@ on:
         description: Exact package version on main (for example 0.1.0-beta.2)
         type: string
         required: true
+      channel:
+        description: package keeps its tag; latest makes this version the default npm install
+        type: choice
+        options: [package, latest]
+        default: package
+        required: true
 
 permissions:
   contents: read
@@ -38,7 +44,9 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
           DELIVERY: ${{ inputs.delivery }}
+          PUBLICATION_CHANNEL: ${{ inputs.channel }}
         run: |
+          case "$PUBLICATION_CHANNEL" in package|latest) ;; *) exit 1 ;; esac
           bun -e 'const p = await Bun.file("package.json").json(); if (p.version !== process.env.EXPECTED_VERSION) throw new Error("Publication input must match package.json exactly");'
           if [ "$DELIVERY" = publish ]; then
             test "$GITHUB_REPOSITORY" = expiracy/gigacode
@@ -79,7 +87,9 @@ jobs:
           path: ${{ runner.temp }}/release
           digest-mismatch: error
       - name: Rehearse the exact tested artifact without npm authentication
-        run: node scripts/publish-artifact.mjs rehearsal --directory "$RUNNER_TEMP/release" --commit "$GITHUB_SHA" --diagnostics "$RUNNER_TEMP/npm-publish-review"
+        env:
+          PUBLICATION_CHANNEL: ${{ inputs.channel }}
+        run: node scripts/publish-artifact.mjs rehearsal --channel "$PUBLICATION_CHANNEL" --directory "$RUNNER_TEMP/release" --commit "$GITHUB_SHA" --diagnostics "$RUNNER_TEMP/npm-publish-review"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -127,7 +137,8 @@ jobs:
         env:
           GIGACODE_PUBLISH_ACTION: ${{ inputs.delivery }}
           GIGACODE_PUBLISH_ENVIRONMENT: npm-production
-        run: node scripts/publish-artifact.mjs publish --directory "$RUNNER_TEMP/release" --commit "$GITHUB_SHA" --diagnostics "$RUNNER_TEMP/npm-publish-receipt"
+          PUBLICATION_CHANNEL: ${{ inputs.channel }}
+        run: node scripts/publish-artifact.mjs publish --channel "$PUBLICATION_CHANNEL" --directory "$RUNNER_TEMP/release" --commit "$GITHUB_SHA" --diagnostics "$RUNNER_TEMP/npm-publish-receipt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
