@@ -60,7 +60,7 @@ export function resolveVersionTag(candidate, sourceDirectory = root) {
 export async function readPublicVersion(name, version, request = fetch) {
   assert.equal(name, "opencode-gigacode", "Unexpected npm package.");
   const channel = ["next", "latest"].includes(version);
-  assert.ok(channel || /^\d+\.\d+\.\d+-(?:alpha|beta)\.\d+$/.test(version), "Expected an alpha or beta prerelease or the next/latest channel.");
+  assert.ok(channel || /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha|beta)\.(?:0|[1-9]\d*))?$/.test(version), "Expected a stable version, numbered alpha/beta prerelease or the next/latest channel.");
   const response = await request(`https://registry.npmjs.org/${name}/${version}`, {
     headers: { accept: "application/json" }, redirect: "error", signal: AbortSignal.timeout(30_000),
   });

@@ -1,6 +1,6 @@
 {
   "name": "opencode-gigacode",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0",
   "description": "Transparent, durable multi-agent workflows for OpenCode 2",
   "license": "MIT",
   "repository": {
@@ -12,7 +12,7 @@
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public",
-    "tag": "next"
+    "tag": "latest"
   },
   "type": "module",
   "bin": {

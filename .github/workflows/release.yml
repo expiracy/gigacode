@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Exact package version on main (for example 0.1.0-beta.1)
+        description: Exact package version on main (for example 0.1.0)
         type: string
         required: true
       stage:
@@ -91,12 +91,15 @@ jobs:
         env:
           ARTIFACT_PATH: ${{ runner.temp }}/release/${{ needs.checks.outputs.filename }}
           NPM_CONFIG_PROVENANCE: 'false'
-        run: npm stage publish "$ARTIFACT_PATH" --tag next --access public --ignore-scripts --json --registry https://registry.npmjs.org/ > "$RUNNER_TEMP/staging-receipt.json"
+        run: |
+          artifact_tag="$(bun -p 'require(process.env.RUNNER_TEMP + "/release/release.json").tag')"
+          case "$artifact_tag" in next|latest) ;; *) exit 1 ;; esac
+          npm stage publish "$ARTIFACT_PATH" --tag "$artifact_tag" --access public --ignore-scripts --json --registry https://registry.npmjs.org/ > "$RUNNER_TEMP/staging-receipt.json"
       - name: Record staging receipt
         run: |
           # The template expressions belong to JavaScript, not the shell.
           # shellcheck disable=SC2016
-          bun -e 'const data = await Bun.file(process.env.RUNNER_TEMP + "/staging-receipt.json").json(); const p = data["opencode-gigacode"]; if (!p?.stageId) throw new Error("npm returned no staging receipt"); await Bun.write(process.env.GITHUB_STEP_SUMMARY, `### Awaiting npm approval\n\n${p.id} staged under next. Stage ID: ${p.stageId}\n\nA maintainer must approve it with 2FA on npm. CI does not approve or publish it.\n`);'
+          bun -e 'const data = await Bun.file(process.env.RUNNER_TEMP + "/staging-receipt.json").json(); const artifact = await Bun.file(process.env.RUNNER_TEMP + "/release/release.json").json(); const p = data["opencode-gigacode"]; if (!p?.stageId) throw new Error("npm returned no staging receipt"); await Bun.write(process.env.GITHUB_STEP_SUMMARY, `### Awaiting npm approval\n\n${p.id} staged under ${artifact.tag}. Stage ID: ${p.stageId}\n\nA maintainer must approve it with 2FA on npm. CI does not approve or publish it.\n`);'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

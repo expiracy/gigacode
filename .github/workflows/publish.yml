@@ -10,7 +10,7 @@ on:
         default: rehearsal
         required: true
       version:
-        description: Exact package version on main (for example 0.1.0-beta.2)
+        description: Exact package version on main (for example 0.1.0)
         type: string
         required: true
       channel:

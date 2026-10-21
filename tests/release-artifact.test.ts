@@ -7,20 +7,20 @@ import { assertCleanSource, describeReleaseArtifact, validateReleaseDocumentatio
 const version = "0.1.0-beta.1"
 const commit = "0123456789abcdef0123456789abcdef01234567"
 const runtime = { bun: "1.3.14", node: "v22.0.0", npm: "11.0.0" }
-const manifest = () => ({ name: "opencode-gigacode", version, license: "MIT", publishConfig: { registry: "https://registry.npmjs.org/", access: "public", tag: "next" } })
-const documentation = () => new Map(Object.entries({
-  "README.md": `Beta version: ${version}\nnpm install --global opencode-gigacode@next\nhttps://cdn.jsdelivr.net/npm/opencode-gigacode@${version}/LICENSE\n`,
-  "CHANGELOG.md": `# Changelog\n\n## ${version} — unreleased\n`,
-  "docs/installation.md": `Install opencode-gigacode@${version} or opencode-gigacode@next.\n`,
+const manifest = (selectedVersion = version) => ({ name: "opencode-gigacode", version: selectedVersion, license: "MIT", publishConfig: { registry: "https://registry.npmjs.org/", access: "public", tag: selectedVersion.includes("-") ? "next" : "latest" } })
+const documentation = (selectedVersion = version) => new Map(Object.entries({
+  "README.md": `Version: ${selectedVersion}\nnpm install --global opencode-gigacode@${manifest(selectedVersion).publishConfig.tag}\nhttps://cdn.jsdelivr.net/npm/opencode-gigacode@${selectedVersion}/LICENSE\n`,
+  "CHANGELOG.md": `# Changelog\n\n## ${selectedVersion} — unreleased\n`,
+  "docs/installation.md": `Install opencode-gigacode@${selectedVersion} or opencode-gigacode@${manifest(selectedVersion).publishConfig.tag}.\n`,
 }).map(([path, text]) => [path, new File([text], path)]))
 
-async function fixture() {
+async function fixture(selectedVersion = version) {
   const root = await mkdtemp(join(tmpdir(), "gigacode release artifact-"))
-  const path = join(root, `opencode-gigacode-${version}.tgz`)
+  const path = join(root, `opencode-gigacode-${selectedVersion}.tgz`)
   const files: Record<string, string> = Object.fromEntries(["index.ts", "tui.ts", "scripts/cli.ts", "scripts/install.ts", "scripts/doctor.ts", "src/plugin.ts", "src/config.ts"].map(name => [`package/${name}`, "export {}\n"]))
-  for (const [name, file] of documentation()) files[`package/${name}`] = await file.text()
+  for (const [name, file] of documentation(selectedVersion)) files[`package/${name}`] = await file.text()
   files["package/LICENSE"] = "MIT License\n"
-  files["package/package.json"] = JSON.stringify(manifest())
+  files["package/package.json"] = JSON.stringify(manifest(selectedVersion))
   await Bun.Archive.write(path, files, { compress: "gzip" })
   return { root, path, cleanup: () => rm(root, { recursive: true, force: true }) }
 }
@@ -35,6 +35,29 @@ test("release preparation requires the requested candidate version", () => {
 
 test("prerelease artifacts cannot target the latest channel", () => {
   expect(() => validateReleaseManifest({ ...manifest(), publishConfig: { ...manifest().publishConfig, tag: "latest" } }, version)).toThrow("public npm registry with tag next")
+})
+
+test("stable release preparation accepts the public latest channel", () => {
+  expect(() => validateReleaseManifest({ ...manifest(), version: "0.1.0", publishConfig: { ...manifest().publishConfig, tag: "latest" } }, "0.1.0")).not.toThrow()
+})
+
+test("stable artifacts require latest and reject unsupported or noncanonical version strings", () => {
+  expect(() => validateReleaseManifest({ ...manifest("0.1.0"), publishConfig: manifest().publishConfig }, "0.1.0")).toThrow("public npm registry with tag latest")
+  for (const selectedVersion of ["v0.1.0", "01.1.0", "0.01.0", "0.1.00", "0.1.0-rc.1", "0.1.0-beta.01", "0.1.0+build", "0.1.0/path"]) {
+    expect(() => validateReleaseManifest(manifest(selectedVersion), selectedVersion)).toThrow("stable semantic versions or numbered alpha/beta prereleases")
+  }
+})
+
+test("a stable tarball verifies unchanged with latest metadata and stable documentation", async () => {
+  const value = await fixture("0.1.0")
+  try {
+    const metadata = await describeReleaseArtifact(value.path, "0.1.0", commit, runtime)
+    expect(metadata).toMatchObject({ version: "0.1.0", tag: "latest", filename: "opencode-gigacode-0.1.0.tgz", commit })
+    await writeFile(join(value.root, "release.json"), JSON.stringify(metadata))
+    const before = await readFile(value.path)
+    expect(await verifyReleaseArtifact(value.root, "0.1.0", commit)).toEqual(metadata)
+    expect(await readFile(value.path)).toEqual(before)
+  } finally { await value.cleanup() }
 })
 
 test("release preparation rejects stale versioned guide links", async () => {

@@ -4,29 +4,29 @@
 
 GigaCode requires Bun 1.3.10 or newer at runtime and accepts only OpenCode 2.0.25, 2.0.26, or 2.0.28. Setup checks the selected host; the plugin checks the live host again when loaded. A connected model with tool support is required for workflows. Git is optional unless you enable isolated parallel writers.
 
-## Install the prerelease
+## Install the default release
 
-With Bun available on your `PATH`, install the published prerelease channel and explicitly register it with OpenCode:
+With Bun available on your `PATH`, install the default release channel and explicitly register it with OpenCode:
 
 ```sh
-npm install --global opencode-gigacode@next
+npm install --global opencode-gigacode@latest
 gigacode setup --global
 ```
 
-Check the [npm listing](https://www.npmjs.com/package/opencode-gigacode) for the current published version. To pin one published release, replace `@next` with `@<version>`. Bun is required at runtime regardless of the installer.
+Check the [npm listing](https://www.npmjs.com/package/opencode-gigacode) for published versions. To pin this version, use `opencode-gigacode@0.1.0`; for another version, replace `@latest` with `@<version>`. `@next` remains a separate prerelease channel and may identify a different version. Bun is required at runtime regardless of the installer.
 
 Restart OpenCode and select **GigaCode**. `gigacode help` confirms that the global executable is available. If your shell cannot find it, check that your package manager's global binary directory is on `PATH`.
 
 Setup is explicit. Installing the package alone does not change your OpenCode configuration. Setup registers the installed package's absolute path, so it remains available without a source checkout. Keep the global package installed while registered. Avoid transient `npx` or `bunx` setup commands: their temporary package paths are not durable registrations. For direct source setup and unpublished candidate rehearsals, see [working from source](development.md#working-from-source).
 
-Bun is also supported as the installer: use `bun add --global opencode-gigacode@next`, then the same `gigacode setup --global` command. If using Bun's global installation, `bun pm bin --global` prints the binary directory to add to `PATH`. Keep one package manager responsible for installation, updates, and removal.
+Bun is also supported as the installer: use `bun add --global opencode-gigacode@latest`, then the same `gigacode setup --global` command. If using Bun's global installation, `bun pm bin --global` prints the binary directory to add to `PATH`. Keep one package manager responsible for installation, updates, and removal.
 
 ### Install a local candidate
 
-A verified local tarball can be installed before registry publication. For example, the `0.1.0-beta.3` candidate uses:
+A verified local tarball can be installed before registry publication. For example, the `0.1.0` candidate uses:
 
 ```sh
-npm install --global /absolute/path/to/opencode-gigacode-0.1.0-beta.3.tgz
+npm install --global /absolute/path/to/opencode-gigacode-0.1.0.tgz
 gigacode setup --global
 ```
 
@@ -77,7 +77,7 @@ GigaCode requires fresh settings. Settle active workflows from any previous prod
 
 ## Update
 
-Settle active workflows, install the intended published prerelease with `npm install --global opencode-gigacode@next` or pin a published version with `npm install --global opencode-gigacode@<version>`. Then rerun `gigacode setup --global` against the same profile and restart OpenCode. Repeat setup for any standalone project registrations. Review compatibility before upgrading OpenCode: versions outside the exact allowlist are rejected.
+Settle active workflows, install the intended default release with `npm install --global opencode-gigacode@latest` or pin a published version with `npm install --global opencode-gigacode@<version>`. Then rerun `gigacode setup --global` against the same profile and restart OpenCode. Repeat setup for any standalone project registrations. Review compatibility before upgrading OpenCode: versions outside the exact allowlist are rejected.
 
 For a local candidate, install its verified tarball instead. For a Bun-managed installation, use `bun add --global` with the published version or tarball. Old saved runs keep their captured settings; configuration changes can invalidate saved proposal fingerprints. The release checks rehearse same-version package replacement; they do not establish compatibility for every future version-to-version upgrade.
 
