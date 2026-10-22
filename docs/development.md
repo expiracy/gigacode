@@ -137,7 +137,37 @@ bun run test:parallel
 
 `test:package` packs the distributable and installs it without development dependencies into a temporary global prefix outside the checkout, including a path with spaces. It exercises the installed CLI and doctor, setup, preserved settings, and idempotence. It then overwrites the same prefix with the tarball and checks replacement and setup stability, followed by scoped manual deregistration and `npm uninstall`. Unrelated native configuration, customised agents/options, project state, and backups are checked for preservation. Registry access is required to install production dependencies; `PACKAGE_CHECK_OFFLINE=1` can use an existing npm cache selected with `npm_config_cache`. This check does not publish anything. On macOS, use a canonical temporary directory, such as `TMPDIR=/private/tmp`, for tests: runtime metadata deliberately rejects symlinked paths.
 
-The reusable `ci.yml` runs automatically on pull requests and pushes to `main`, and can also be dispatched manually. It checks types, unit tests, workflow lint, the package lifecycle on Ubuntu/macOS/Windows, all three exact native hosts on Ubuntu, and isolated parallel writers on Ubuntu/2.0.28. Its aggregate job is named **CI**. Actions are pinned to commit SHAs; Dependabot checks action updates weekly. A workflow definition alone does not establish a passing release result; retain the run and commit with its actual outcomes.
+The reusable `ci.yml` always runs a changed-file planner and the required **CI**
+aggregate on pull requests and pushes to `main`. Drafts use the same policy as
+ready pull requests, so becoming ready cannot reuse a cheaper check for the same
+commit. Feature-branch pushes do not start a second workflow.
+
+| Changes or request | Coverage |
+| --- | --- |
+| Documentation allowlist only | Planner and aggregate; code jobs are intentionally skipped. The allowlist covers the README, changelog, licence, funding metadata, Markdown guides and documentation images. |
+| Ordinary source, tests, unknown paths or an empty comparison | One Ubuntu job for types, unit tests and workflow lint, then the aggregate. |
+| Dependencies, runtime configuration, public entrypoints, workflows, delivery helpers or native integration harnesses | Full compatibility profile automatically. This includes `package.json`, lockfiles, root TypeScript configs, `index.ts`/`tui.ts`, CLI/install/doctor entrypoints, artifact/package/publish/GitHub release helpers, `scripts/ci-plan.mjs`, `.github/workflows/` and the native/parallel harnesses and fixtures. |
+| Manual **Checks** with `full=true`, or any release workflow | Full compatibility profile regardless of changed files. `full=true` is the manual default; choose `full=false` for Ubuntu checks only. |
+
+The full profile builds one tarball **after** Ubuntu checks pass, tests its
+installed lifecycle on Ubuntu/macOS/Windows, exercises all three supported native
+hosts on Ubuntu, and checks isolated parallel writers on Ubuntu/2.0.28. Automatic
+and standalone manual runs retain the tarball and full-run diagnostics for **one
+day**. The three release callers explicitly request full coverage, **30-day**
+package retention and **seven-day** native/parallel diagnostics. Fast runs upload
+no package artifacts. Checks use local scripted providers, with no paid model
+calls.
+
+There are no top-level path filters on the required workflow. The aggregate
+requires every planned job to succeed and accepts only the profile's intentional
+skips; missing planner outputs, failed comparisons, cancellations and unexpected
+skips fail the gate. Actions remain pinned to commit SHAs, with least permissions
+and timeouts; Dependabot checks updates weekly. Retain the actual run and source
+commit when making release-verification claims.
+
+```sh
+gh workflow run ci.yml --ref main -F full=true
+```
 
 `test:parallel` uses a private scripted-provider host to exercise permission-checked Git preparation, actual moved native subagents, canonical shared state, exact integration and fresh root verification. It deliberately configures a native startup marker and asserts that the preparation path does not run it. Set `OPENCODE_SPIKE_BIN` to the matching installed host as for the production integration suite.
 
@@ -237,18 +267,21 @@ Release sequence:
 1. Merge an unused version and release notes through the required CI gate.
 2. Run **Prepare GitHub release** with `delivery=draft` to create immutable
    `v<version>` and a reviewable draft package at that source commit.
-3. Run **Publish npm package** in rehearsal mode, choose `channel=latest` for a
-   default release (or keep `package` to follow the configured tag), and inspect its recorded source,
-   version, channel, integrity, and diagnostics.
-4. Request `delivery=publish` with the same channel; after CI passes, inspect
-   **Review deployments** and approve the concrete `npm-production` deployment.
+3. Request **Publish npm package** with `delivery=publish`, choosing
+   `channel=latest` for a default release or `package` for the configured tag.
+   This invocation runs full CI and rehearses its exact artifact before approval.
+   Inspect the source, version, channel, integrity and diagnostics in that run.
+4. In **Review deployments**, approve the concrete `npm-production` deployment.
 5. Verify the public exact-version integrity, installed package and native host
    behavior, and npm provenance. Review/publish the GitHub draft separately.
 
 ```sh
-gh workflow run publish.yml --ref main -f version=0.1.0 -f delivery=rehearsal -f channel=latest
 gh workflow run publish.yml --ref main -f version=0.1.0 -f delivery=publish -f channel=latest
 ```
+
+A separate `delivery=rehearsal` run is optional for additional inspection or
+troubleshooting. It runs the full matrix again; the publication workflow already
+includes this rehearsal before the human approval gate.
 
 The production job requires protected upstream `main`, an explicit request and
 matching existing version tag, and rejects legacy credentials. Registry errors
