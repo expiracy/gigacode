@@ -28,9 +28,30 @@ a dummy token, and a loopback server; it does not require a GitHub sign-in.
 
 ## Release checklist
 
-`opencode-gigacode@0.1.0-beta.1` is public under `next`, following human approval of its OIDC stage on 20 October 2026. Its public archive and installed native behavior are verified below. The source repository and guides are public; check the live registry tags when selecting the default install version.
+`opencode-gigacode@0.1.0` is public under `latest`, following human approval of its GitHub OIDC deployment on 21 October 2026. The version tag and public archive remain bound to their original source. The GitHub release is a separate unpublished draft; check the live registry tags when choosing an install version.
 
-This checkout prepares the still-unreleased stable `opencode-gigacode@0.1.0` for direct OIDC publication to `latest` through GitHub Actions after required human approval. Existing prerelease tags and published versions remain unchanged; stable release preparation includes the verified HTTP upload fix and explicit channel selection. A passing rehearsal or uploaded stage alone does not establish publication.
+Current source also includes a delivery-verification fix for future releases: read npm's canonical package index and allow bounded read-only visibility checks after a successful publish. Prepare an unused version before the next publication. These source changes do not replace the published `0.1.0` bytes or move its immutable tag. A passing rehearsal or uploaded stage alone does not establish publication.
+
+### Published 0.1.0 verification
+
+| Item | Verified result |
+| --- | --- |
+| Public release | [`opencode-gigacode@0.1.0`](https://www.npmjs.com/package/opencode-gigacode/v/0.1.0), npm publication time **21 October 2026, 07:19:05.257 UTC**, tag `latest`, MIT licence. |
+| Source | [`c5f75a5cb1d12915f8ea476d2e6ed446c87494c4`](https://github.com/expiracy/gigacode/commit/c5f75a5cb1d12915f8ea476d2e6ed446c87494c4), immutable tag `v0.1.0`. |
+| Actions evidence | [Draft and exact artifact checks](https://github.com/expiracy/gigacode/actions/runs/39559626989), [npm rehearsal](https://github.com/expiracy/gigacode/actions/runs/39559933449), and [human-approved publication](https://github.com/expiracy/gigacode/actions/runs/39560349121). The first publication job reported a visibility-check failure after the write; public verification below establishes the resulting package. |
+| Archive | **394,370 bytes**, **67 files**; SHA-256 `1b5556df455da548e19b0d10f283d7506e32eecb490bddaeb1fd1463cd03bc16`; SHA-1 `d8b105ed8671b9be4bd00f3c61ad25f712cf3034`. A fresh npm-cache download matched the draft and production CI archives byte for byte. |
+| Integrity | `sha512-RZJBj8vKp91avnU7mTsp51I2Ay2x0r7rMk0JzCHObW2+btjyy/zjXy+3AjnpYaaDSkIhwe2sl2F44cAzCFHM3Q==`. The exact-version and `latest` records identify these same bytes. |
+| Production lifecycle | Fresh public-package install, CLI, setup, doctor, same-prefix replacement, deregistration and removal: **10 checks passed** on **22 October 2026**, macOS arm64, Bun 1.3.14, Node 26.3.0, isolated npm **12.2.0**. No development dependencies or user profile changes. |
+| Native integration | Fresh public archive in **OpenCode 2.0.28**: **28 checks passed**, including planning, implementation/review/checks, scoped settings, replacement/restart, recovery and cancellation. **149 local scripted-provider requests**, zero paid model calls. |
+| npm provenance | Public SLSA payload subject and SHA-512 match the archive; source matches `c5f75a5…`; workflow is `.github/workflows/publish.yml` on `main`, invocation `39560349121/attempts/1`. These checks inspected payload fields and digest; they did not independently reverify signatures. |
+| Product page | The public archive's README begins with the GigaCode logo. Its pinned public SVG returned HTTP 200 and matched the packaged logo; three logo variants, three full-app screenshots and the Ko-fi link are included. |
+
+Two local lifecycle attempts using npm 11.16.0 reached the test's 120-second
+removal timeout after
+installation, setup, doctor and replacement succeeded; npm 12.2.0 passed the full
+lifecycle. The first concurrent native run missed a live config-feedback event;
+the sequential run passed all 28 checks. These initial failures remain in the
+verification diagnostics. The supported host allowlist is unchanged.
 
 ### Published beta.1 verification
 
@@ -200,8 +221,12 @@ npm trust github opencode-gigacode \
   --environment=npm-production --allow-publish
 ```
 
-The production npm binding is not yet configured. Create it when a future
-release is ready; npm requires its first successful publish within two days.
+The production npm binding was configured on **21 October 2026** for
+`expiracy/gigacode`, `publish.yml`, and `npm-production`, then used for `0.1.0`.
+Its npm OIDC configuration ID is `e69fa26b-3db7-4093-89f8-03826a1857c7`.
+It permits direct publication; npm also permits staging for trusted publishers.
+No standalone dist-tag permission was configured. Recheck the live binding when
+changing delivery settings; the separate stage-only binding remains unchanged.
 
 The GitHub production environment was configured with these rules on 20 October
 2026. Recheck live required reviewers, disabled bypass, and exact branch policy;
@@ -231,6 +256,18 @@ fail closed. A previously published version is a successful rerun only if its
 integrity and chosen channel still match; reruns do not overwrite versions or
 move tags. This publishes unused versions; it cannot promote an existing `next`
 release to `latest`. Publishing to `latest` does not also move `next`.
+
+Public verification reads one canonical npm package index per check with
+`cache-control: no-cache`, selecting the exact version from `versions` and the
+chosen channel from `dist-tags` in that same snapshot. After a new successful
+publish, a missing exact version or stale/absent channel permits at most **six
+read-only checks**, with waits of **5, 15, 40, 80 and 160 seconds** (**five minutes
+total**). Conflicting package metadata or integrity and
+registry/authentication/network errors fail immediately. The npm publish command
+is issued once; visibility checks never replay it or move tags.
+The production job has a **20-minute timeout**, covering the bounded publish,
+registry requests and visibility grace period with setup and diagnostic-upload
+headroom. Review and CI job limits remain unchanged.
 
 The final deployment approval belongs to a human. Do not approve or bypass it
 through an automated API call. Existing npm stages share the same version

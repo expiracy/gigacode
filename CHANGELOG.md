@@ -1,11 +1,13 @@
 # Changelog
 
-## 0.1.0 — Unreleased
+## 0.1.0 — 2026-10-21
 
-- Prepare the first stable release for npm `latest`, keeping existing prerelease tags and versions unchanged. Publication and the GitHub release remain subject to human approval.
+- Publish the first stable package to npm `latest` through GitHub OIDC after human deployment approval, keeping existing prerelease tags and versions unchanged. The GitHub release remains a draft for separate review.
 - Validate stable semantic versions throughout artifact preparation and registry verification; retain alpha/beta delivery on `next` and mark stable GitHub drafts as normal releases.
 - Include automatic GigaCode agent workflows, optional explicit planning, native settings and workflow popups, bounded error notifications, and the tested global installation lifecycle from the published beta.
 - Retain the exact supported OpenCode host versions, runtime requirements, permission behavior, limits, and CI artifact checks. A stable package version does not expand host support or erase the documented limitations.
+
+npm records publication at 07:19:05 UTC on 21 October 2026. Fresh public-registry verification on 22 October confirmed the exact tested archive, `latest`, provenance payload, README logo, all 10 production installation/lifecycle checks with npm 12.2.0, and all 28 native OpenCode 2.0.28 checks with a local scripted provider. The initial delivery job reported a registry-visibility failure after publication; see the [stable release verification](docs/development.md#published-010-verification) for hashes and retained limitations. The `v0.1.0` source and published bytes remain immutable.
 
 ## 0.1.0-beta.3 — Unreleased
 

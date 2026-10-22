@@ -4,10 +4,13 @@ import { execFile, execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+const exactVersion = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha|beta)\.(?:0|[1-9]\d*))?$/;
+const visibilityDelays = [5_000, 15_000, 40_000, 80_000, 160_000];
 
 export async function preparePublishCandidate({ directory, commit, sourceDirectory = root }) {
   assert.match(commit, /^[a-f0-9]{40}$/, "Supply the full source commit.");
@@ -57,19 +60,46 @@ export function resolveVersionTag(candidate, sourceDirectory = root) {
   } catch { throw new Error(`Create the immutable version tag v${candidate.version} with the GitHub release workflow before publishing.`); }
 }
 
-export async function readPublicVersion(name, version, request = fetch) {
+async function readPackageIndex(name, request) {
   assert.equal(name, "opencode-gigacode", "Unexpected npm package.");
-  const channel = ["next", "latest"].includes(version);
-  assert.ok(channel || /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha|beta)\.(?:0|[1-9]\d*))?$/.test(version), "Expected a stable version, numbered alpha/beta prerelease or the next/latest channel.");
-  const response = await request(`https://registry.npmjs.org/${name}/${version}`, {
-    headers: { accept: "application/json" }, redirect: "error", signal: AbortSignal.timeout(30_000),
+  // npm publication invalidates this index; independent /version and /tag
+  // endpoints can retain the negative lookup made before the first publish.
+  const response = await request(`https://registry.npmjs.org/${name}`, {
+    headers: { accept: "application/json", "cache-control": "no-cache" }, redirect: "error", signal: AbortSignal.timeout(30_000),
   });
   assert.ok(response.headers.get("content-type")?.includes("application/json"), "npm returned a non-JSON response.");
   const data = await response.json();
-  if (response.status === 404 && (data === `version not found: ${version}` || data?.error === `version not found: ${version}` || data?.error === "Not found")) return undefined;
   assert.equal(response.status, 200, `npm registry lookup failed (HTTP ${response.status}).`);
-  assert.ok(data?.name === name && (channel || data.version === version) && typeof data.dist?.integrity === "string", "npm returned invalid version metadata.");
+  assert.ok(data?.name === name && data.versions && typeof data.versions === "object" && !Array.isArray(data.versions)
+    && data["dist-tags"] && typeof data["dist-tags"] === "object" && !Array.isArray(data["dist-tags"]), "npm returned an invalid package index.");
   return data;
+}
+
+function assertPublicSelector(version) {
+  assert.ok(["next", "latest"].includes(version) || exactVersion.test(version), "Expected a stable version, numbered alpha/beta prerelease or the next/latest channel.");
+}
+
+function selectPublicVersion(data, version) {
+  const channel = ["next", "latest"].includes(version);
+  const selected = channel ? data["dist-tags"][version] : version;
+  if (selected === undefined) return undefined;
+  assert.ok(typeof selected === "string" && exactVersion.test(selected), "npm returned an invalid channel version.");
+  if (!Object.hasOwn(data.versions, selected)) return undefined;
+  const record = data.versions[selected];
+  assert.ok(record?.name === data.name && record.version === selected && record.license === "MIT" && typeof record.dist?.integrity === "string", "npm returned invalid version metadata.");
+  return record;
+}
+
+export async function readPublicVersion(name, version, request = fetch) {
+  assertPublicSelector(version);
+  return selectPublicVersion(await readPackageIndex(name, request), version);
+}
+
+export async function readPublicPublication(name, version, channel, request = fetch) {
+  assert.ok(exactVersion.test(version), "Expected an exact release version.");
+  assert.ok(["next", "latest"].includes(channel), "Expected the next or latest publication channel.");
+  const index = await readPackageIndex(name, request);
+  return { version: selectPublicVersion(index, version), channel: selectPublicVersion(index, channel) };
 }
 
 export function assertPublishContext(env = process.env) {
@@ -87,7 +117,7 @@ export function assertPublishContext(env = process.env) {
 }
 
 function assertPublishedBytes(record, candidate) {
-  assert.ok(record?.name === candidate.name && record.version === candidate.version && record.dist?.integrity === candidate.integrity,
+  assert.ok(record?.name === candidate.name && record.version === candidate.version && record.license === "MIT" && record.dist?.integrity === candidate.integrity,
     "The npm version contains different bytes or invalid metadata; prepare a new version.");
 }
 
@@ -97,7 +127,7 @@ export function publicationTag(candidate, channel = "package") {
   return channel === "latest" ? "latest" : candidate.tag;
 }
 
-export async function publishArtifact({ mode, channel = "package", candidate, env = process.env, lookup, publish, resolveTag = resolveVersionTag }) {
+export async function publishArtifact({ mode, channel = "package", candidate, env = process.env, lookup = readPublicPublication, publish, resolveTag = resolveVersionTag, wait = sleep }) {
   const tag = publicationTag(candidate, channel);
   if (mode === "rehearsal") return {
     outcome: "rehearsal", name: candidate.name, version: candidate.version, integrity: candidate.integrity, tag, packagedTag: candidate.tag,
@@ -106,18 +136,27 @@ export async function publishArtifact({ mode, channel = "package", candidate, en
   assertPublishContext(env);
   assert.equal(candidate.commit, env.GITHUB_SHA, "The tested artifact must match the workflow commit.");
   assert.equal(await resolveTag(candidate), candidate.commit, "The immutable version tag must identify the tested commit.");
-  const existing = await lookup(candidate.name, candidate.version);
-  if (existing) {
-    assertPublishedBytes(existing, candidate);
-    const publicChannel = await lookup(candidate.name, tag);
+  const existing = await lookup(candidate.name, candidate.version, tag);
+  if (existing.version) {
+    assertPublishedBytes(existing.version, candidate);
+    const publicChannel = existing.channel;
     assert.ok(publicChannel?.version === candidate.version && publicChannel.dist?.integrity === candidate.integrity, `The ${tag} channel points elsewhere; no npm tags were changed.`);
+    assertPublishedBytes(publicChannel, candidate);
     return { outcome: "already-published", name: candidate.name, version: candidate.version, integrity: candidate.integrity, tag, packagedTag: candidate.tag };
   }
   await publish(candidate, { tag });
-  assertPublishedBytes(await lookup(candidate.name, candidate.version), candidate);
-  const publicChannel = await lookup(candidate.name, tag);
-  assert.ok(publicChannel?.version === candidate.version && publicChannel.dist?.integrity === candidate.integrity, `Publication did not verify on the ${tag} channel; review npm before rerunning.`);
-  return { outcome: "published", name: candidate.name, version: candidate.version, integrity: candidate.integrity, tag, packagedTag: candidate.tag };
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const { version: publicVersion, channel: publicChannel } = await lookup(candidate.name, candidate.version, tag);
+    if (publicVersion) {
+      assertPublishedBytes(publicVersion, candidate);
+      if (publicChannel?.version === candidate.version) {
+        assertPublishedBytes(publicChannel, candidate);
+        return { outcome: "published", name: candidate.name, version: candidate.version, integrity: candidate.integrity, tag, packagedTag: candidate.tag };
+      }
+    }
+    if (attempt < visibilityDelays.length) await wait(visibilityDelays[attempt]);
+  }
+  throw new Error(`Publication did not verify on the ${tag} channel after six public visibility checks; review npm before rerunning. Publication was not retried.`);
 }
 
 export function sanitizeDiagnostic(value, env = process.env) {
@@ -151,7 +190,7 @@ if (process.argv[1] && await realpath(process.argv[1]).catch(() => "") === fileU
     options = parsed.options;
     if (parsed.mode === "publish") assertPublishContext();
     const candidate = await preparePublishCandidate(options);
-    const delivered = await publishArtifact({ mode: parsed.mode, channel: options.channel, candidate, lookup: readPublicVersion, publish: runNpmPublish });
+    const delivered = await publishArtifact({ mode: parsed.mode, channel: options.channel, candidate, publish: runNpmPublish });
     result = { ...delivered, commit: candidate.commit, sha256: candidate.sha256, versionTag: `v${candidate.version}` };
     const message = parsed.mode === "rehearsal"
       ? "Rehearsal passed. No npm publication was requested. Create the version tag, then explicitly request publication and approve the npm-production environment."
