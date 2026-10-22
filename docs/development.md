@@ -158,6 +158,10 @@ package retention and **seven-day** native/parallel diagnostics. Fast runs uploa
 no package artifacts. Checks use local scripted providers, with no paid model
 calls.
 
+- [Standard hosted runners are free for public repositories](https://docs.github.com/en/actions/reference/runners/github-hosted-runners). These workflows use standard runners.
+- [Artifact storage has a separate allowance shared with GitHub Packages](https://docs.github.com/en/billing/concepts/product-billing/github-actions); short retention limits stored artifacts.
+- Keep the external **Actions $0 budget with usage blocking enabled** as the spending stop. Workflows do not edit billing settings. Dependency-cache uploads remain disabled, and superseded PR runs are cancelled.
+
 There are no top-level path filters on the required workflow. The aggregate
 requires every planned job to succeed and accepts only the profile's intentional
 skips; missing planner outputs, failed comparisons, cancellations and unexpected
