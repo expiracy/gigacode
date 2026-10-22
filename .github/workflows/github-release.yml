@@ -65,6 +65,8 @@ jobs:
     needs: validate
     uses: ./.github/workflows/ci.yml
     with:
+      full: true
+      artifact-retention-days: 30
       version: ${{ needs.validate.outputs.version }}
     permissions:
       contents: read
