@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { assertPublishContext, preparePublishCandidate, publishArtifact, readPublicVersion, resolveVersionTag, runNpmPublish, sanitizeDiagnostic } from "../scripts/publish-artifact.mjs";
+import { assertPublishContext, preparePublishCandidate, publishArtifact, readPublicPublication, readPublicVersion, resolveVersionTag, runNpmPublish, sanitizeDiagnostic } from "../scripts/publish-artifact.mjs";
 
 const commit = "a".repeat(40);
 const candidate = {
@@ -20,6 +20,7 @@ const context = {
   ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.actions.githubusercontent.com/example",
   ACTIONS_ID_TOKEN_REQUEST_TOKEN: "opaque-oidc-request-token",
 };
+const snapshot = (version, channel = version) => ({ version, channel });
 
 test("rehearsal reports the tested candidate without contacting npm or publishing", async () => {
   const unexpected = () => { throw new Error("Unexpected external operation"); };
@@ -44,36 +45,36 @@ test("publish refuses unprotected source before any registry operation", async (
 test("a published identical version is reported without publishing or moving npm tags", async () => {
   const calls = [];
   const result = await publishArtifact({ mode: "publish", candidate, env: context, resolveTag: () => commit,
-    lookup: async (name, version) => { calls.push([name, version]); return { name, version: candidate.version, dist: { integrity: candidate.integrity } }; },
+    lookup: async (name, version, channel) => { calls.push([name, version, channel]); return snapshot({ name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } }); },
     publish: () => { throw new Error("An existing version must not be published again"); },
   });
   assert.equal(result.outcome, "already-published");
-  assert.deepEqual(calls, [[candidate.name, candidate.version], [candidate.name, "next"]]);
+  assert.deepEqual(calls, [[candidate.name, candidate.version, "next"]]);
 });
 
 test("an absent version publishes once and succeeds only after public integrity matches", async () => {
   const calls = [];
   let reads = 0;
   const result = await publishArtifact({ mode: "publish", candidate, env: context, resolveTag: () => commit,
-    lookup: async () => ++reads === 1 ? undefined : { name: candidate.name, version: candidate.version, dist: { integrity: candidate.integrity } },
+    lookup: async () => ++reads === 1 ? snapshot() : snapshot({ name: candidate.name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } }),
     publish: async value => { calls.push(value); },
   });
   assert.equal(result.outcome, "published");
   assert.deepEqual(calls, [candidate]);
-  assert.equal(reads, 3);
+  assert.equal(reads, 2);
 });
 
 test("a new beta explicitly publishes to latest and verifies latest while preserving candidate metadata", async () => {
   const reads = [];
   const writes = [];
   const result = await publishArtifact({ mode: "publish", channel: "latest", candidate, env: context, resolveTag: () => commit,
-    lookup: async (name, selector) => {
-      reads.push(selector);
-      return reads.length === 1 ? undefined : { name, version: candidate.version, dist: { integrity: candidate.integrity } };
+    lookup: async (name, version, channel) => {
+      reads.push([version, channel]);
+      return reads.length === 1 ? snapshot() : snapshot({ name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } });
     },
     publish: async (value, options) => writes.push({ value, options }),
   });
-  assert.deepEqual(reads, [candidate.version, candidate.version, "latest"]);
+  assert.deepEqual(reads, [[candidate.version, "latest"], [candidate.version, "latest"]]);
   assert.equal(writes.length, 1);
   assert.equal(writes[0].value, candidate);
   assert.deepEqual(writes[0].options, { tag: "latest" });
@@ -89,39 +90,56 @@ test("publication requires its immutable version tag at the exact tested commit"
   }), /version tag.*tested commit/);
 });
 
-test("registry lookup treats only a structured npm 404 as an absent version", async () => {
+test("registry lookup reads a missing version from the canonical package index without negative endpoint caching", async () => {
   const calls = [];
   const result = await readPublicVersion(candidate.name, candidate.version, async (url, options) => {
     calls.push({ url, options });
-    return new Response(JSON.stringify({ error: "version not found: 0.1.0-beta.2" }), { status: 404, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ name: candidate.name, versions: {}, "dist-tags": {} }), { headers: { "content-type": "application/json" } });
   });
   assert.equal(result, undefined);
-  assert.equal(calls[0].url, "https://registry.npmjs.org/opencode-gigacode/0.1.0-beta.2");
+  assert.equal(calls[0].url, "https://registry.npmjs.org/opencode-gigacode");
+  assert.equal(calls[0].options.headers["cache-control"], "no-cache");
   assert.ok(calls[0].options.signal instanceof AbortSignal);
   assert.equal(calls[0].options.redirect, "error");
 });
 
-test("registry lookup accepts npm's actual exact-version missing response", async () => {
-  assert.equal(await readPublicVersion(candidate.name, candidate.version, async () => new Response(JSON.stringify(`version not found: ${candidate.version}`), {
-    status: 404, headers: { "content-type": "application/json" },
+test("a valid canonical package index can have no chosen channel yet", async () => {
+  assert.equal(await readPublicVersion(candidate.name, "next", async () => new Response(JSON.stringify({ name: candidate.name, versions: {}, "dist-tags": {} }), {
+    headers: { "content-type": "application/json" },
   })), undefined);
 });
 
 test("registry lookup verifies the latest selector using its returned package version", async () => {
-  const data = { name: candidate.name, version: candidate.version, dist: { integrity: candidate.integrity } };
+  const data = { name: candidate.name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } };
   const found = await readPublicVersion(candidate.name, "latest", async url => {
-    assert.equal(url, `https://registry.npmjs.org/${candidate.name}/latest`);
-    return new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
+    assert.equal(url, `https://registry.npmjs.org/${candidate.name}`);
+    return new Response(JSON.stringify({ name: candidate.name, versions: { [candidate.version]: data }, "dist-tags": { latest: candidate.version } }), { headers: { "content-type": "application/json" } });
   });
   assert.deepEqual(found, data);
 });
 
 test("registry lookup accepts an exact stable release version", async () => {
-  const data = { name: candidate.name, version: "0.1.0", dist: { integrity: candidate.integrity } };
+  const data = { name: candidate.name, version: "0.1.0", license: "MIT", dist: { integrity: candidate.integrity } };
   assert.deepEqual(await readPublicVersion(candidate.name, "0.1.0", async url => {
-    assert.equal(url, `https://registry.npmjs.org/${candidate.name}/0.1.0`);
-    return new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
+    assert.equal(url, `https://registry.npmjs.org/${candidate.name}`);
+    return new Response(JSON.stringify({ name: candidate.name, versions: { "0.1.0": data }, "dist-tags": { latest: "0.1.0" } }), { headers: { "content-type": "application/json" } });
   }), data);
+});
+
+test("one canonical index snapshot supplies both exact version and selected channel", async () => {
+  const current = { name: candidate.name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } };
+  const older = { ...current, version: "0.1.0-beta.1", dist: { integrity: "sha512-older" } };
+  let requests = 0;
+  const result = await readPublicPublication(candidate.name, candidate.version, "next", async (url, options) => {
+    requests++;
+    assert.equal(url, `https://registry.npmjs.org/${candidate.name}`);
+    assert.equal(options.headers["cache-control"], "no-cache");
+    return new Response(JSON.stringify({ name: candidate.name, versions: { [current.version]: current, [older.version]: older }, "dist-tags": { next: older.version } }), {
+      headers: { "content-type": "application/json" },
+    });
+  });
+  assert.deepEqual(result, { version: current, channel: older });
+  assert.equal(requests, 1);
 });
 
 test("stable publication follows its packaged latest tag and verifies the exact stable version", async () => {
@@ -129,9 +147,9 @@ test("stable publication follows its packaged latest tag and verifies the exact 
   const selectors = [];
   let writes = 0;
   const result = await publishArtifact({ mode: "publish", candidate: value, env: context, resolveTag: () => commit,
-    lookup: async (name, selector) => {
-      selectors.push(selector);
-      return selectors.length === 1 ? undefined : { name, version: value.version, dist: { integrity: value.integrity } };
+    lookup: async (name, version, channel) => {
+      selectors.push([version, channel]);
+      return selectors.length === 1 ? snapshot() : snapshot({ name, version: value.version, license: "MIT", dist: { integrity: value.integrity } });
     },
     publish: async (artifact, options) => {
       writes++;
@@ -142,7 +160,7 @@ test("stable publication follows its packaged latest tag and verifies the exact 
   assert.equal(result.outcome, "published");
   assert.equal(result.tag, "latest");
   assert.equal(result.packagedTag, "latest");
-  assert.deepEqual(selectors, ["0.1.0", "0.1.0", "latest"]);
+  assert.deepEqual(selectors, [["0.1.0", "latest"], ["0.1.0", "latest"]]);
   assert.equal(writes, 1);
 });
 
@@ -284,14 +302,17 @@ test("registry auth, server, arbitrary 404, non-JSON and transport failures fail
 
 test("conflicting public bytes cannot publish, overwrite or change tags", async () => {
   await assert.rejects(publishArtifact({ mode: "publish", candidate, env: context, resolveTag: () => commit,
-    lookup: async () => ({ name: candidate.name, version: candidate.version, dist: { integrity: "sha512-different" } }),
+    lookup: async () => snapshot({ name: candidate.name, version: candidate.version, license: "MIT", dist: { integrity: "sha512-different" } }),
     publish: () => assert.fail("Conflicting versions must stay immutable"),
   }), /different bytes/);
 });
 
 test("a moved next channel fails without promoting an older existing version", async () => {
   await assert.rejects(publishArtifact({ mode: "publish", candidate, env: context, resolveTag: () => commit,
-    lookup: async (name, selector) => ({ name, version: selector === "next" ? "0.1.0-beta.3" : candidate.version, dist: { integrity: candidate.integrity } }),
+    lookup: async name => snapshot(
+      { name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } },
+      { name, version: "0.1.0-beta.3", license: "MIT", dist: { integrity: "sha512-newer" } },
+    ),
     publish: () => assert.fail("An existing version must not move tags"),
   }), /next channel points elsewhere; no npm tags were changed/);
 });
@@ -299,18 +320,21 @@ test("a moved next channel fails without promoting an older existing version", a
 test("latest cannot promote an existing version whose latest tag points elsewhere", async () => {
   const reads = [];
   await assert.rejects(publishArtifact({ mode: "publish", channel: "latest", candidate, env: context, resolveTag: () => commit,
-    lookup: async (name, selector) => {
-      reads.push(selector);
-      return { name, version: selector === "latest" ? "0.1.0-beta.1" : candidate.version, dist: { integrity: candidate.integrity } };
+    lookup: async (name, version, channel) => {
+      reads.push([version, channel]);
+      return snapshot(
+        { name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } },
+        { name, version: "0.1.0-beta.1", license: "MIT", dist: { integrity: "sha512-older" } },
+      );
     },
     publish: () => assert.fail("Existing versions must not be published or retagged"),
   }), /latest channel points elsewhere; no npm tags were changed/);
-  assert.deepEqual(reads, [candidate.version, "latest"]);
+  assert.deepEqual(reads, [[candidate.version, "latest"]]);
 });
 
 test("a matching latest rerun succeeds without another publication", async () => {
   const result = await publishArtifact({ mode: "publish", channel: "latest", candidate, env: context, resolveTag: () => commit,
-    lookup: async name => ({ name, version: candidate.version, dist: { integrity: candidate.integrity } }),
+    lookup: async name => snapshot({ name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } }),
     publish: () => assert.fail("A matching rerun must not publish"),
   });
   assert.equal(result.outcome, "already-published");
@@ -332,14 +356,18 @@ test("a latest publish fails if public bytes appear only on next", async () => {
   let writes = 0;
   let reads = 0;
   await assert.rejects(publishArtifact({ mode: "publish", channel: "latest", candidate, env: context, resolveTag: () => commit,
-    lookup: async (name, selector) => {
-      if (++reads === 1) return undefined;
-      return { name, version: selector === "latest" ? "0.1.0-beta.1" : candidate.version, dist: { integrity: candidate.integrity } };
+    lookup: async name => {
+      if (++reads === 1) return snapshot();
+      return snapshot(
+        { name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } },
+        { name, version: "0.1.0-beta.1", license: "MIT", dist: { integrity: "sha512-older" } },
+      );
     },
     publish: async () => { writes++; },
+    wait: async () => {},
   }), /did not verify on the latest channel/);
   assert.equal(writes, 1);
-  assert.equal(reads, 3);
+  assert.equal(reads, 7);
 });
 
 test("the CLI rejects invalid channel input before reading any artifact", () => {
@@ -356,10 +384,137 @@ test("failed registry verification after a publish does not replay the write", a
   let reads = 0;
   let writes = 0;
   await assert.rejects(publishArtifact({ mode: "publish", candidate, env: context, resolveTag: () => commit,
-    lookup: async () => { if (++reads === 1) return undefined; throw new Error("Registry temporarily unavailable"); },
+    lookup: async () => { if (++reads === 1) return snapshot(); throw new Error("Registry temporarily unavailable"); },
     publish: async () => { writes++; },
+    wait: () => assert.fail("Network errors must fail immediately"),
   }), /Registry temporarily unavailable/);
   assert.equal(writes, 1);
+});
+
+test("a successful publish waits for a temporarily missing public version without replaying npm", async () => {
+  const selectors = [];
+  const waits = [];
+  let writes = 0;
+  const result = await publishArtifact({ mode: "publish", candidate, env: context, resolveTag: () => commit,
+    lookup: async (name, version, channel) => {
+      selectors.push([version, channel]);
+      return selectors.length <= 2 ? snapshot() : snapshot({ name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } });
+    },
+    publish: async () => { writes++; },
+    wait: async milliseconds => { waits.push(milliseconds); },
+  });
+  assert.equal(result.outcome, "published");
+  assert.deepEqual(selectors, [[candidate.version, "next"], [candidate.version, "next"], [candidate.version, "next"]]);
+  assert.equal(waits.length, 1);
+  assert.equal(writes, 1);
+});
+
+test("a conflicting public licence after publishing fails immediately without another npm write", async () => {
+  let reads = 0;
+  let writes = 0;
+  await assert.rejects(publishArtifact({ mode: "publish", candidate, env: context, resolveTag: () => commit,
+    lookup: async name => ++reads === 1 ? snapshot() : snapshot({ name, version: candidate.version, license: "GPL-3.0", dist: { integrity: candidate.integrity } }),
+    publish: async () => { writes++; },
+    wait: () => assert.fail("Conflicting licences must not be retried"),
+  }), /different bytes or invalid metadata/);
+  assert.equal(writes, 1);
+  assert.equal(reads, 2);
+});
+
+test("post-publish verification retries stale and absent chosen channels with bounded read-only waits", async () => {
+  const selectors = [];
+  const waits = [];
+  let writes = 0;
+  const record = { name: candidate.name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } };
+  const result = await publishArtifact({ mode: "publish", candidate, env: context, resolveTag: () => commit,
+    lookup: async (_name, version, channel) => {
+      selectors.push([version, channel]);
+      if (selectors.length === 1) return snapshot();
+      if (selectors.length === 2) return snapshot(record, { ...record, version: "0.1.0-beta.1", dist: { integrity: "sha512-older" } });
+      return selectors.length === 3 ? { version: record, channel: undefined } : snapshot(record);
+    },
+    publish: async () => { writes++; },
+    wait: async milliseconds => { waits.push(milliseconds); },
+  });
+  assert.equal(result.outcome, "published");
+  assert.equal(writes, 1);
+  assert.deepEqual(waits, [5_000, 15_000]);
+  assert.deepEqual(selectors, Array.from({ length: 4 }, () => [candidate.version, "next"]));
+});
+
+test("missing post-publish visibility stops after six checks without repeating npm", async () => {
+  let reads = 0;
+  let writes = 0;
+  const waits = [];
+  await assert.rejects(publishArtifact({ mode: "publish", candidate, env: context, resolveTag: () => commit,
+    lookup: async () => { reads++; return snapshot(); },
+    publish: async () => { writes++; },
+    wait: async milliseconds => { waits.push(milliseconds); },
+  }), /after six public visibility checks.*Publication was not retried/);
+  assert.equal(reads, 7);
+  assert.equal(writes, 1);
+  assert.deepEqual(waits, [5_000, 15_000, 40_000, 80_000, 160_000]);
+  assert.equal(waits.reduce((sum, milliseconds) => sum + milliseconds, 0), 300_000);
+});
+
+test("the real default reader makes one canonical request per bounded post-publish check", async context_ => {
+  const requests = [];
+  const waits = [];
+  let writes = 0;
+  context_.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url, options });
+    return new Response(JSON.stringify({ name: candidate.name, versions: {}, "dist-tags": {} }), {
+      headers: { "content-type": "application/json" },
+    });
+  });
+  await assert.rejects(publishArtifact({ mode: "publish", candidate, env: context, resolveTag: () => commit,
+    publish: async () => { writes++; }, wait: async milliseconds => { waits.push(milliseconds); },
+  }), /after six public visibility checks/);
+  assert.equal(requests.length, 7, "One preflight request and six post-write visibility requests");
+  for (const request of requests) {
+    assert.equal(request.url, `https://registry.npmjs.org/${candidate.name}`);
+    assert.equal(request.options.headers["cache-control"], "no-cache");
+  }
+  assert.deepEqual(waits, [5_000, 15_000, 40_000, 80_000, 160_000]);
+  assert.equal(writes, 1);
+});
+
+test("conflicting exact public metadata after a successful write never enters the visibility retry", async () => {
+  const valid = { name: candidate.name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } };
+  for (const change of [{ name: "unexpected" }, { version: "0.1.0-beta.1" }, { license: "GPL-3.0" }, { dist: { integrity: "sha512-different" } }]) {
+    let reads = 0;
+    let writes = 0;
+    await assert.rejects(publishArtifact({ mode: "publish", candidate, env: context, resolveTag: () => commit,
+      lookup: async () => ++reads === 1 ? snapshot() : snapshot({ ...valid, ...change }),
+      publish: async () => { writes++; },
+      wait: () => assert.fail("A conflict must fail immediately"),
+    }), /different bytes or invalid metadata/);
+    assert.equal(reads, 2);
+    assert.equal(writes, 1);
+  }
+});
+
+test("canonical package metadata rejects conflicts and missing-package errors instead of treating them as propagation", async () => {
+  const valid = { name: candidate.name, version: candidate.version, license: "MIT", dist: { integrity: candidate.integrity } };
+  for (const change of [{ name: "unexpected" }, { version: "0.1.0-beta.1" }, { license: "GPL-3.0" }, { dist: {} }]) {
+    await assert.rejects(readPublicVersion(candidate.name, candidate.version, async () => new Response(JSON.stringify({
+      name: candidate.name, versions: { [candidate.version]: { ...valid, ...change } }, "dist-tags": {},
+    }), { headers: { "content-type": "application/json" } })), /invalid version metadata/);
+  }
+  await assert.rejects(readPublicVersion(candidate.name, candidate.version, async () => new Response(JSON.stringify({ error: "Not found" }), {
+    status: 404, headers: { "content-type": "application/json" },
+  })), /HTTP 404/);
+});
+
+test("malformed package maps and channel targets cannot masquerade as a missing public version", async () => {
+  for (const body of [
+    { name: "unexpected", versions: {}, "dist-tags": {} },
+    { name: candidate.name, versions: [], "dist-tags": {} },
+    { name: candidate.name, versions: {}, "dist-tags": [] },
+    { name: candidate.name, versions: {}, "dist-tags": { latest: "https://unexpected.example" } },
+  ]) await assert.rejects(readPublicVersion(candidate.name, "latest", async () => new Response(JSON.stringify(body), {
+    headers: { "content-type": "application/json" },
+  })), /invalid package index|invalid channel version/);
 });
 
 test("a changed in-memory archive is rejected before npm starts", async () => {
